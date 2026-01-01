@@ -1,50 +1,113 @@
-# Welcome to your Expo app 👋
+# IKM Marketplace - Mobile App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Mobile application for sellers to manage their store, products, and orders on the IKM Marketplace platform.
 
-## Get started
+## Features
 
-1. Install dependencies
+- ✅ Seller authentication (login/signup)
+- ✅ Seller dashboard with statistics
+- ✅ Product management (create, edit, view)
+- ✅ Order management (view, update status)
+- ✅ Store settings management
+- ✅ Real-time data updates via Firestore listeners
 
-   ```bash
-   npm install
-   ```
+## Architecture
 
-2. Start the app
+This app follows a strict client-server separation architecture:
 
-   ```bash
-   npx expo start
-   ```
+- **Client-side**: Read-only operations with real-time Firestore listeners
+- **Backend API**: All write operations go through backend endpoints
+- **Security**: Firebase Auth with custom claims for role management
+- **Data Flow**: Real-time listeners for reads, API calls for writes
 
-In the output, you'll find options to open the app in a
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed architecture documentation.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Setup
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### Prerequisites
 
-## Get a fresh project
+- Node.js 18+
+- Expo CLI
+- Firebase project with Firestore and Authentication enabled
 
-When you're ready, run:
+### Installation
 
+1. Install dependencies:
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+2. Configure Firebase:
+   - Copy `.env.example` to `.env`
+   - Fill in your Firebase configuration values
 
-## Learn more
+3. Start the development server:
+```bash
+npm start
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+### Environment Variables
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Create a `.env` file in the root directory:
 
-## Join the community
+```
+EXPO_PUBLIC_FIREBASE_API_KEY=your-api-key
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=your-auth-domain
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=your-storage-bucket
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
+EXPO_PUBLIC_FIREBASE_APP_ID=your-app-id
+EXPO_PUBLIC_API_BASE_URL=http://localhost:3000/api
+```
 
-Join our community of developers creating universal apps.
+## Project Structure
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```
+app/
+  (auth)/          # Authentication screens (login, signup)
+  (tabs)/          # Main app tabs (dashboard, products, orders)
+  products/        # Product detail/edit screens
+  orders/          # Order detail screen
+  settings.tsx     # Store settings screen
+
+lib/
+  firebase/
+    config.ts      # Firebase initialization
+    auth/          # Authentication hooks
+    firestore/     # Read-only Firestore hooks
+  api/             # Backend API client and endpoints
+
+types/             # TypeScript type definitions
+```
+
+## Important Notes
+
+- **No Buyer Features**: This mobile app does NOT include customer/buyer functionality. All purchases must be completed through the web application.
+- **Backend Required**: This app requires a backend API server to handle write operations. The API base URL is configured via `EXPO_PUBLIC_API_BASE_URL`.
+- **Firebase Security Rules**: Ensure your Firestore security rules are properly configured to match the architecture (see ARCHITECTURE.md).
+
+## Development
+
+### Running on iOS
+```bash
+npm run ios
+```
+
+### Running on Android
+```bash
+npm run android
+```
+
+### Running on Web
+```bash
+npm run web
+```
+
+## Next Steps
+
+1. Set up your Firebase project and configure security rules
+2. Deploy your backend API server
+3. Configure environment variables
+4. Test authentication flow
+5. Add image upload functionality for products
+6. Implement offline support and caching
