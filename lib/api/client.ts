@@ -1,17 +1,10 @@
 // API client for backend calls
 import { getIdToken } from '../firebase/auth/use-user';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:3000/api';
+const DEFAULT_API_BASE_URL = 'http://localhost:3000/api';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 
-// Warn if using default localhost URL
-if (!process.env.EXPO_PUBLIC_API_BASE_URL || API_BASE_URL === 'http://localhost:3000/api') {
-  console.warn(
-    '⚠️ EXPO_PUBLIC_API_BASE_URL is not set or using default localhost.\n' +
-    'Products, Users, and Admin operations will fail.\n' +
-    'Please set EXPO_PUBLIC_API_BASE_URL in your .env file or create Cloud Functions for these operations.'
-  );
-}
-
+let hasWarnedMissingBaseUrl = false;
 export interface ApiError {
   message: string;
   code?: string;
@@ -24,6 +17,17 @@ class ApiClient {
     options: RequestInit = {}
   ): Promise<T> {
     try {
+      // Avoid noisy startup warnings: only warn when the REST client is actually used.
+      if (!process.env.EXPO_PUBLIC_API_BASE_URL || API_BASE_URL === DEFAULT_API_BASE_URL) {
+        if (!hasWarnedMissingBaseUrl) {
+          hasWarnedMissingBaseUrl = true;
+          console.warn(
+            'EXPO_PUBLIC_API_BASE_URL is not set (or using default localhost). ' +
+              'REST-backed features will fail until a backend is configured.'
+          );
+        }
+      }
+
       const token = await getIdToken();
       
       const headers: HeadersInit = {

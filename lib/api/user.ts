@@ -1,8 +1,10 @@
-// User API endpoints - Uses Cloud Functions for store settings
-import { apiClient } from './client';
+// User API endpoints
+// Cloud-Functions-first: reads come from Firestore, writes go through Cloud Functions.
 import { cloudFunctions } from './cloud-functions';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { User, StoreSettings } from '@/types';
+import { doc, getDoc } from 'firebase/firestore';
+import { firestore } from '@/lib/firebase/config';
 
 export interface UpdateUserProfileData {
   displayName?: string;
@@ -66,12 +68,76 @@ export interface UpdateUserProfileData {
 export const userApi = {
   // Get current user profile
   getProfile: async (userId: string): Promise<User> => {
-    return apiClient.get<User>(`/users/${userId}`);
+    const snap = await getDoc(doc(firestore, 'users', userId));
+    if (!snap.exists()) {
+      throw new Error('User profile not found');
+    }
+    const data: any = snap.data();
+    return {
+      id: snap.id,
+      displayName: data.displayName || '',
+      email: data.email || '',
+      firstName: data.firstName,
+      lastName: data.lastName,
+      phone: data.phone,
+      whatsappNumber: data.whatsappNumber,
+      isAdmin: data.isAdmin || false,
+      storeName: data.storeName,
+      storeDescription: data.storeDescription,
+      storeLogoUrl: data.storeLogoUrl,
+      storeBannerUrl: data.storeBannerUrl,
+      storeLocation: data.storeLocation,
+      businessType: data.businessType,
+      storePolicies: data.storePolicies,
+      payoutDetails: data.payoutDetails,
+      onboardingCompleted: data.onboardingCompleted,
+      isGuest: data.isGuest,
+      createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : data.createdAt,
+      updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : data.updatedAt,
+    };
   },
 
   // Update user profile
   updateProfile: async (userId: string, data: UpdateUserProfileData): Promise<User> => {
-    return apiClient.put<User>(`/users/${userId}`, data);
+    // Reuse the same Cloud Function used for store updates (server-side validates and writes).
+    // Convert logo/banner to base64 only when local URIs are passed.
+    let logoBase64: string | undefined;
+    let bannerBase64: string | undefined;
+
+    const maybeLogo = (data as any).storeLogoUrl;
+    const maybeBanner = (data as any).storeBannerUrl;
+
+    if (typeof maybeLogo === 'string' && (maybeLogo.startsWith('file://') || maybeLogo.startsWith('asset://'))) {
+      try {
+        logoBase64 = await convertImageToBase64(maybeLogo);
+      } catch (error: any) {
+        console.error('Failed to convert logo to base64:', error);
+      }
+    } else if (typeof maybeLogo === 'string' && maybeLogo.startsWith('data:')) {
+      logoBase64 = maybeLogo;
+    }
+
+    if (typeof maybeBanner === 'string' && (maybeBanner.startsWith('file://') || maybeBanner.startsWith('asset://'))) {
+      try {
+        bannerBase64 = await convertImageToBase64(maybeBanner);
+      } catch (error: any) {
+        console.error('Failed to convert banner to base64:', error);
+      }
+    } else if (typeof maybeBanner === 'string' && maybeBanner.startsWith('data:')) {
+      bannerBase64 = maybeBanner;
+    }
+
+    await cloudFunctions.updateStoreSettings({
+      sellerId: userId,
+      updateData: {
+        ...data,
+        ...(logoBase64 ? { logoBase64 } : {}),
+        ...(bannerBase64 ? { bannerBase64 } : {}),
+      },
+    });
+
+    // Best-effort: return latest user doc.
+    return userApi.getProfile(userId);
   },
 
   // Update store settings (uses Cloud Function)
@@ -116,8 +182,8 @@ export const userApi = {
       },
     });
 
-    // Return updated user (might need to fetch from Firestore)
-    return {} as User;
+    // Best-effort: return latest user doc (store may also live in /stores and is read via hooks).
+    return userApi.getProfile(userId);
   },
 };
 
