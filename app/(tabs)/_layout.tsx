@@ -1,12 +1,39 @@
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import React from 'react';
+import { ActivityIndicator, View } from 'react-native';
 
 import { CustomTabBar } from '@/components/custom-tab-bar';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getAppVariant } from '@/lib/utils/app-variant';
 
 export default function TabLayout() {
   const { colors } = useTheme();
+  const { user, loading } = useUser();
+
+  // Seller app only.
+  if (getAppVariant() !== 'seller') {
+    return <Redirect href="/" />;
+  }
+
+  // Prevent tab navigator from mounting before auth state is ready.
+  if (loading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (!user) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  if (!hasAppAccess(user)) {
+    return <Redirect href="/(auth)/login" />;
+  }
 
   return (
     <Tabs

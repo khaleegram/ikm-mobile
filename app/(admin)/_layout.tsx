@@ -1,14 +1,43 @@
 // Admin panel layout
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import React from 'react';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Platform } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { hasAppAccess } from '@/lib/utils/auth-helpers';
+import { getAppVariant } from '@/lib/utils/app-variant';
 
 export default function AdminTabLayout() {
   const { colors } = useTheme();
+  const { user, loading } = useUser();
   const insets = useSafeAreaInsets();
+
+  // Admin lives inside the Seller app only.
+  if (getAppVariant() !== 'seller') {
+    return <Redirect href="/" />;
+  }
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (!user) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  if (!hasAppAccess(user)) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  if (!user.isAdmin) {
+    return <Redirect href="/(tabs)" />;
+  }
 
   return (
     <Tabs

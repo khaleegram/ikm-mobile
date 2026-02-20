@@ -1,13 +1,14 @@
 import { auth } from '@/lib/firebase/config';
 import { router } from 'expo-router';
 import { signInWithEmailAndPassword } from 'firebase/auth';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { getAppVariant } from '@/lib/utils/app-variant';
 import {
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -23,29 +24,50 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 export default function LoginScreen() {
   const { colors, colorScheme } = useTheme();
   const insets = useSafeAreaInsets();
+  const { user, loading: authLoading } = useUser();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
   const lightBrown = '#A67C52';
+
+  // Seller/admin app: once auth flips to signed-in, leave the auth stack immediately.
+  // (Routing decision stays centralized in `app/index.tsx`.)
+  useEffect(() => {
+    if (getAppVariant() !== 'seller') return;
+    if (authLoading) return;
+    if (!user) return;
+    router.replace('/');
+  }, [user, authLoading]);
   
-  const handleLogin = async () => {
-    if (!email || !password) {
-      haptics.error();
-      Alert.alert('Error', 'Please fill in all fields');
-      return;
-    }
+  const handleLogin = () => {
+    if (loading) return;
+
+    // Flip UI state first so the user always gets immediate feedback.
     setLoading(true);
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-      haptics.success();
-    } catch (error: any) {
-      haptics.error();
-      Alert.alert('Login Failed', error.message);
-    } finally {
-      setLoading(false);
-    }
+
+    setTimeout(async () => {
+      try {
+        if (!email || !password) {
+          haptics.error();
+          Alert.alert('Error', 'Please fill in all fields');
+          return;
+        }
+
+        await signInWithEmailAndPassword(auth, email.trim(), password);
+        haptics.success();
+
+        // Navigate immediately. Auth state + layouts will handle the final destination.
+        router.replace('/');
+      } catch (error: any) {
+        haptics.error();
+        const msg = error?.message || error?.code || 'Unknown error';
+        Alert.alert('Login Failed', msg);
+      } finally {
+        setLoading(false);
+      }
+    }, 0);
   };
 
   const styles = createStyles(colors, insets, lightBrown);
@@ -111,15 +133,12 @@ export default function LoginScreen() {
               style={styles.mainButton} 
               onPress={handleLogin}
               disabled={loading}
+              activeOpacity={0.85}
             >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Text style={styles.buttonText}>Sign In to Dashboard</Text>
-                  <IconSymbol name="arrow.right" size={18} color="#fff" />
-                </>
-              )}
+              <>
+                <Text style={styles.buttonText}>Sign In to Dashboard</Text>
+                <IconSymbol name="arrow.right" size={18} color="#fff" />
+              </>
             </TouchableOpacity>
 
             <TouchableOpacity 
