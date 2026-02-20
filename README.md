@@ -46,6 +46,30 @@ npm install
 npm start
 ```
 
+## App Variants (Two Store Listings)
+
+This repo supports **two separate app store listings** from one codebase:
+
+- `market` (Market Street app)
+- `seller` (Seller/Admin app, no Market Street)
+
+Select the variant via environment variable:
+
+```powershell
+# Market Street app
+$env:EXPO_PUBLIC_APP_VARIANT="market"
+npm start
+
+# Seller/Admin app
+$env:EXPO_PUBLIC_APP_VARIANT="seller"
+npm start
+```
+
+If you use EAS Build, use the variant-specific profiles in `eas.json`:
+
+- `market-development`, `market-preview`, `market-production`
+- `seller-development`, `seller-preview`, `seller-production`
+
 ### Environment Variables
 
 Create a `.env` file in the root directory:
