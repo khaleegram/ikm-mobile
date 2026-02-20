@@ -1,19 +1,18 @@
 // Admin dashboard
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, RefreshControl } from 'react-native';
-import { useTheme } from '@/lib/theme/theme-context';
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { LinearGradient } from 'expo-linear-gradient';
+import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { ThemeToggle } from '@/components/theme-toggle';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { useAllOrders, useAllProducts, useAllUsers, usePlatformStats } from '@/lib/firebase/firestore/admin';
+import { premiumShadow } from '@/lib/theme/styles';
+import { useTheme } from '@/lib/theme/theme-context';
+import { haptics } from '@/lib/utils/haptics';
 import { router } from 'expo-router';
-import { premiumCard, premiumShadow } from '@/lib/theme/styles';
-import { usePlatformStats, useAllOrders, useAllUsers, useAllProducts } from '@/lib/firebase/firestore/admin';
 import { useState } from 'react';
-import { Order } from '@/types';
+import { ActivityIndicator, Alert, Platform, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function AdminDashboard() {
-  const { colors, colorScheme } = useTheme();
+  const { colors, colorScheme, toggleTheme } = useTheme();
   const { user, signOut } = useUser();
   const stats = usePlatformStats();
   const { orders, loading: ordersLoading } = useAllOrders();
@@ -21,7 +20,8 @@ export default function AdminDashboard() {
   const { products, loading: productsLoading } = useAllProducts();
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
-  const styles = createStyles(colors);
+  const lightBrown = '#A67C52';
+  const styles = createStyles(colors, insets, lightBrown);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -30,6 +30,7 @@ export default function AdminDashboard() {
   };
 
   const handleLogout = () => {
+    haptics.medium();
     Alert.alert(
       'Logout',
       'Are you sure you want to logout?',
@@ -106,48 +107,52 @@ export default function AdminDashboard() {
   const isLoading = ordersLoading || usersLoading || productsLoading;
 
   return (
-    <ScrollView 
-      style={styles.container} 
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
-      }>
-      {/* Header with gradient */}
-      <LinearGradient
-        colors={colorScheme === 'light' 
-          ? [colors.primary, colors.accent] 
-          : [colors.gradientStart, colors.gradientEnd]}
-        style={[styles.header, { paddingTop: insets.top + 20 }]}>
-        <View style={styles.headerContent}>
-          <View style={styles.headerLeft}>
-            <View style={[styles.badge, { backgroundColor: 'rgba(255, 255, 255, 0.25)' }]}>
-              <IconSymbol name="shield.fill" size={28} color="#fff" />
-            </View>
-            <View>
-              <Text style={styles.welcomeText}>Welcome back,</Text>
-              <Text style={styles.adminName}>{user?.displayName || 'Admin'}</Text>
-            </View>
-          </View>
-          <View style={styles.headerActions}>
-            <ThemeToggle />
-            <TouchableOpacity
-              style={[styles.logoutButton, { backgroundColor: 'rgba(255, 255, 255, 0.2)' }]}
-              onPress={handleLogout}
-              activeOpacity={0.7}>
-              <IconSymbol name="rectangle.portrait.and.arrow.right" size={20} color="#fff" />
-            </TouchableOpacity>
-          </View>
+    <View style={styles.container}>
+      <StatusBar barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'} />
+      
+      {/* Floating Island Header */}
+      <View style={styles.floatingHeaderContainer}>
+        <View style={[styles.nameIsland, { backgroundColor: lightBrown }]}>
+          <Text style={styles.islandLabel}>ADMIN DASHBOARD</Text>
+          <Text style={styles.islandTitle} numberOfLines={1}>
+            {user?.displayName || 'Admin'}
+          </Text>
         </View>
-      </LinearGradient>
+        
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.medium(); toggleTheme(); }}
+          scaleValue={0.9}>
+          <IconSymbol 
+            name={colorScheme === 'dark' ? "sun.max.fill" : "moon.fill"} 
+            size={20} 
+            color={lightBrown} 
+          />
+        </AnimatedPressable>
+
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={handleLogout}
+          scaleValue={0.9}>
+          <IconSymbol name="rectangle.portrait.and.arrow.right" size={20} color={lightBrown} />
+        </AnimatedPressable>
+      </View>
+
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={lightBrown} />
+        }>
 
       <View style={styles.content}>
         {/* Stats Grid */}
         <View style={styles.statsGrid}>
           {displayStats.map((stat, index) => (
-            <TouchableOpacity
+            <View
               key={index}
-              style={[styles.statCard, { backgroundColor: colors.card }]}
-              activeOpacity={0.7}>
+              style={[styles.statCard, { backgroundColor: colors.card }]}>
               <View style={[styles.statIcon, { backgroundColor: `${stat.color}20` }]}>
                 <IconSymbol name={stat.icon as any} size={24} color={stat.color} />
               </View>
@@ -156,7 +161,7 @@ export default function AdminDashboard() {
               {stat.subtitle && (
                 <Text style={[styles.statSubtitle, { color: colors.textSecondary }]}>{stat.subtitle}</Text>
               )}
-            </TouchableOpacity>
+            </View>
           ))}
         </View>
 
@@ -164,11 +169,11 @@ export default function AdminDashboard() {
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Admin Tools</Text>
         <View style={styles.actionsGrid}>
           {quickActions.map((action, index) => (
-            <TouchableOpacity
+            <AnimatedPressable
               key={index}
               style={[styles.actionCard, { backgroundColor: colors.card }]}
-              onPress={() => router.push(action.route as any)}
-              activeOpacity={0.7}>
+              onPress={() => { haptics.light(); router.push(action.route as any); }}
+              scaleValue={0.98}>
               <View style={[styles.actionIcon, { backgroundColor: `${action.color}20` }]}>
                 <IconSymbol name={action.icon as any} size={28} color={action.color} />
               </View>
@@ -181,7 +186,7 @@ export default function AdminDashboard() {
                 )}
               </View>
               <IconSymbol name="chevron.right" size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
+            </AnimatedPressable>
           ))}
         </View>
 
@@ -200,11 +205,11 @@ export default function AdminDashboard() {
           ) : (
             <>
               {recentOrders.map((order, index) => (
-                <TouchableOpacity
+                <AnimatedPressable
                   key={order.id}
                   style={styles.activityItem}
-                  onPress={() => router.push(`../orders/${order.id}` as any)}
-                  activeOpacity={0.7}>
+                  onPress={() => { haptics.light(); router.push(`../orders/${order.id}` as any); }}
+                  scaleValue={0.98}>
                   <View style={[styles.activityDot, { backgroundColor: getStatusColor(order.status) }]} />
                   <View style={styles.activityContent}>
                     <Text style={[styles.activityText, { color: colors.text }]}>
@@ -212,7 +217,7 @@ export default function AdminDashboard() {
                     </Text>
                     <View style={styles.activityMeta}>
                       <Text style={[styles.activityTime, { color: colors.textSecondary }]}>
-                        {new Date(order.createdAt).toLocaleString()}
+                        {order.createdAt ? (order.createdAt instanceof Date ? order.createdAt : order.createdAt.toDate()).toLocaleString() : 'N/A'}
                       </Text>
                       <View style={[styles.statusChip, { backgroundColor: `${getStatusColor(order.status)}20` }]}>
                         <Text style={[styles.statusChipText, { color: getStatusColor(order.status) }]}>
@@ -222,78 +227,87 @@ export default function AdminDashboard() {
                     </View>
                   </View>
                   <IconSymbol name="chevron.right" size={20} color={colors.textSecondary} />
-                </TouchableOpacity>
+                </AnimatedPressable>
               ))}
               {orders.length > 5 && (
-                <TouchableOpacity
+                <AnimatedPressable
                   style={styles.viewAllButton}
-                  onPress={() => router.push('/(admin)/orders')}
-                  activeOpacity={0.7}>
-                  <Text style={[styles.viewAllText, { color: colors.primary }]}>View All Orders</Text>
-                  <IconSymbol name="chevron.right" size={16} color={colors.primary} />
-                </TouchableOpacity>
+                  onPress={() => { haptics.light(); router.push('/(admin)/orders'); }}
+                  scaleValue={0.98}>
+                  <Text style={[styles.viewAllText, { color: lightBrown }]}>View All Orders</Text>
+                  <IconSymbol name="chevron.right" size={16} color={lightBrown} />
+                </AnimatedPressable>
               )}
             </>
           )}
         </View>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
-const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>) =>
+const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>, insets: any, lightBrown: string) =>
   StyleSheet.create({
     container: {
       flex: 1,
       backgroundColor: colors.background,
     },
-    header: {
-      paddingBottom: 32,
-      paddingHorizontal: 20,
-      borderBottomLeftRadius: 24,
-      borderBottomRightRadius: 24,
-      ...premiumShadow,
-    },
-    headerContent: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-    },
-    headerLeft: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 12,
+    scrollView: {
       flex: 1,
     },
-    headerActions: {
+    scrollContent: {
+      flexGrow: 1,
+      paddingTop: insets.top + 10 + 44 + 15 + 20,
+      paddingBottom: 20,
+    },
+    floatingHeaderContainer: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      zIndex: 1000,
+      paddingTop: insets.top + 10,
+      paddingHorizontal: 20,
+      paddingBottom: 15,
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 12,
+      backgroundColor: 'transparent',
+      gap: 8,
+      pointerEvents: 'box-none',
     },
-    logoutButton: {
+    nameIsland: {
+      flex: 1,
+      backgroundColor: lightBrown,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      borderRadius: 22,
+      ...Platform.select({
+        ios: { shadowColor: lightBrown, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 5 },
+        android: { elevation: 3 }
+      })
+    },
+    iconIsland: {
+      backgroundColor: colors.card,
       width: 44,
       height: 44,
       borderRadius: 22,
-      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: colors.border,
       justifyContent: 'center',
+      alignItems: 'center',
+      ...premiumShadow,
     },
-    welcomeText: {
-      fontSize: 16,
-      color: 'rgba(255, 255, 255, 0.8)',
-      marginBottom: 4,
+    islandLabel: {
+      color: 'rgba(255,255,255,0.7)',
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 0.8,
     },
-    adminName: {
-      fontSize: 28,
-      fontWeight: 'bold',
+    islandTitle: {
       color: '#fff',
-    },
-    badge: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
-      backgroundColor: 'rgba(255, 255, 255, 0.2)',
-      alignItems: 'center',
-      justifyContent: 'center',
+      fontSize: 17,
+      fontWeight: '800',
     },
     content: {
       padding: 20,
@@ -307,7 +321,9 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     statCard: {
       width: '47%',
       padding: 16,
-      borderRadius: 16,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     statIcon: {
@@ -344,8 +360,10 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       flexDirection: 'row',
       alignItems: 'center',
       padding: 16,
-      borderRadius: 16,
+      borderRadius: 20,
       gap: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     actionIcon: {
@@ -368,7 +386,9 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     },
     activityCard: {
       padding: 20,
-      borderRadius: 16,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     activityItem: {

@@ -1,26 +1,29 @@
 // Admin reports and analytics
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
-import { useTheme } from '@/lib/theme/theme-context';
-import { useMemo, useState } from 'react';
+import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { premiumShadow, premiumCard } from '@/lib/theme/styles';
-import { usePlatformStats, useAllOrders, useAllUsers, useAllProducts } from '@/lib/firebase/firestore/admin';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAllOrders, useAllProducts, useAllUsers, usePlatformStats } from '@/lib/firebase/firestore/admin';
+import { premiumShadow } from '@/lib/theme/styles';
+import { useTheme } from '@/lib/theme/theme-context';
+import { haptics } from '@/lib/utils/haptics';
 import { OrderStatus } from '@/types';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Platform, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function AdminReports() {
-  const { colors, colorScheme } = useTheme();
+  const { colors, colorScheme, toggleTheme } = useTheme();
   const stats = usePlatformStats();
   const { orders, loading: ordersLoading } = useAllOrders();
   const { users, loading: usersLoading } = useAllUsers();
   const { products, loading: productsLoading } = useAllProducts();
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
-  const styles = createStyles(colors);
+  const lightBrown = '#A67C52';
+  const styles = createStyles(colors, insets, lightBrown);
 
   const onRefresh = async () => {
     setRefreshing(true);
+    haptics.light();
     setTimeout(() => setRefreshing(false), 1000);
   };
 
@@ -58,7 +61,7 @@ export default function AdminReports() {
         revenue: orders
           .filter(o => {
             if (!o.createdAt) return false;
-            const orderDate = new Date(o.createdAt);
+            const orderDate = o.createdAt instanceof Date ? o.createdAt : o.createdAt.toDate();
             return orderDate.toISOString().split('T')[0] === dateKey &&
               o.status !== 'Cancelled' && o.status !== 'Disputed';
           })
@@ -94,7 +97,7 @@ export default function AdminReports() {
         date: date.toISOString().split('T')[0],
         count: users.filter(u => {
           if (!u.createdAt) return false;
-          const userDate = new Date(u.createdAt);
+          const userDate = u.createdAt instanceof Date ? u.createdAt : u.createdAt.toDate();
           return userDate.toISOString().split('T')[0] === date.toISOString().split('T')[0];
         }).length,
       };
@@ -139,28 +142,44 @@ export default function AdminReports() {
   const isLoading = ordersLoading || usersLoading || productsLoading;
 
   return (
-    <ScrollView 
-      style={styles.container} 
-      showsVerticalScrollIndicator={false}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
-      }>
-      {/* Header */}
-      <LinearGradient
-        colors={colorScheme === 'light' 
-          ? [colors.primary, colors.accent] 
-          : [colors.gradientStart, colors.gradientEnd]}
-        style={[styles.header, { paddingTop: insets.top }]}>
-        <View style={styles.headerContent}>
-          <View>
-            <Text style={styles.title}>Reports & Analytics</Text>
-            <Text style={styles.subtitle}>Platform insights and metrics</Text>
-          </View>
-          <View style={[styles.iconContainer, { backgroundColor: colorScheme === 'light' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.2)' }]}>
-            <IconSymbol name="chart.bar.fill" size={24} color="#FFFFFF" />
-          </View>
+    <View style={styles.container}>
+      <StatusBar barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'} />
+      
+      {/* Floating Island Header */}
+      <View style={styles.floatingHeaderContainer}>
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.light(); }}
+          scaleValue={0.9}>
+          <IconSymbol name="chevron.left" size={20} color={colors.text} />
+        </AnimatedPressable>
+        
+        <View style={[styles.nameIsland, { backgroundColor: lightBrown }]}>
+          <Text style={styles.islandLabel}>ANALYTICS & REPORTS</Text>
+          <Text style={styles.islandTitle} numberOfLines={1}>
+            Platform Insights
+          </Text>
         </View>
-      </LinearGradient>
+        
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.medium(); toggleTheme(); }}
+          scaleValue={0.9}>
+          <IconSymbol 
+            name={colorScheme === 'dark' ? "sun.max.fill" : "moon.fill"} 
+            size={20} 
+            color={lightBrown} 
+          />
+        </AnimatedPressable>
+      </View>
+
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={lightBrown} />
+        }>
 
       <View style={styles.content}>
         {/* Overview Stats */}
@@ -246,44 +265,72 @@ export default function AdminReports() {
           </View>
         </View>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
-const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>) =>
+const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>, insets: any, lightBrown: string) =>
   StyleSheet.create({
     container: {
       flex: 1,
       backgroundColor: colors.background,
     },
-    header: {
-      paddingBottom: 24,
+    scrollView: {
+      flex: 1,
+    },
+    scrollContent: {
+      flexGrow: 1,
+      paddingTop: insets.top + 10 + 44 + 15 + 20,
+      paddingBottom: 20,
+    },
+    floatingHeaderContainer: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      zIndex: 1000,
+      paddingTop: insets.top + 10,
       paddingHorizontal: 20,
-      borderBottomLeftRadius: 24,
-      borderBottomRightRadius: 24,
-      ...premiumShadow,
-    },
-    headerContent: {
+      paddingBottom: 15,
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
+      backgroundColor: 'transparent',
+      gap: 8,
+      pointerEvents: 'box-none',
     },
-    title: {
-      fontSize: 32,
-      fontWeight: 'bold',
-      color: '#FFFFFF',
-      marginBottom: 4,
+    nameIsland: {
+      flex: 1,
+      backgroundColor: lightBrown,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      borderRadius: 22,
+      ...Platform.select({
+        ios: { shadowColor: lightBrown, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 5 },
+        android: { elevation: 3 }
+      })
     },
-    subtitle: {
-      fontSize: 16,
-      color: 'rgba(255, 255, 255, 0.9)',
-    },
-    iconContainer: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
+    iconIsland: {
+      backgroundColor: colors.card,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: colors.border,
       justifyContent: 'center',
       alignItems: 'center',
+      ...premiumShadow,
+    },
+    islandLabel: {
+      color: 'rgba(255,255,255,0.7)',
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 0.8,
+    },
+    islandTitle: {
+      color: '#fff',
+      fontSize: 17,
+      fontWeight: '800',
     },
     content: {
       padding: 20,
@@ -303,7 +350,9 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     statCard: {
       width: '47%',
       padding: 16,
-      borderRadius: 16,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     statIcon: {
@@ -324,8 +373,10 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     },
     sectionCard: {
       padding: 20,
-      borderRadius: 16,
+      borderRadius: 20,
       marginBottom: 24,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     revenueRow: {

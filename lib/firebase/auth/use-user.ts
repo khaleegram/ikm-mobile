@@ -122,7 +122,17 @@ export function useUser() {
               const userDoc = await getDoc(doc(firestore, 'users', firebaseUser.uid));
               if (userDoc.exists()) {
                 const userData = userDoc.data();
-                isSeller = userData.role === 'seller' || !!userData.storeName;
+                // Be permissive: older data may use different role names or sellerType flags.
+                const role = typeof userData.role === 'string' ? userData.role : '';
+                const sellerType = typeof userData.sellerType === 'string' ? userData.sellerType : '';
+                isSeller =
+                  role === 'seller' ||
+                  role === 'street' ||
+                  role === 'business' ||
+                  sellerType === 'street' ||
+                  sellerType === 'business' ||
+                  sellerType === 'both' ||
+                  !!userData.storeName;
               }
             } catch (error) {
               console.error('Error checking seller status:', error);

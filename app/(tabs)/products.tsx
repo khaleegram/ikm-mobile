@@ -47,6 +47,7 @@ export default function ProductsScreen() {
     return colors.error;
   };
 
+
   // Filter Logic
   const filteredProducts = useMemo(() => {
     return products.filter(p => p.name?.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -57,6 +58,7 @@ export default function ProductsScreen() {
     haptics.light();
     setTimeout(() => setRefreshing(false), 1000);
   };
+
 
   // Loading state with skeleton
   if (loading && products.length === 0) {
@@ -284,7 +286,7 @@ const createStyles = (colors: any, insets: any, themeBrown: string) => StyleShee
   searchIsland: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, height: 48, borderRadius: 24, borderWidth: 1 },
   searchInput: { flex: 1, marginLeft: 10, fontSize: 15, fontWeight: '600' },
 
-  listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 10 },
+  listContainer: { paddingHorizontal: 20, paddingBottom: 70 + insets.bottom + 20, paddingTop: 10 },
   columnWrapper: { justifyContent: 'space-between', marginBottom: 16 },
   gridCard: { width: COLUMN_WIDTH, borderRadius: 24, borderWidth: 1, padding: 8 },
   imageWrapper: { width: '100%', aspectRatio: 1, borderRadius: 18, overflow: 'hidden', backgroundColor: '#f5f5f5', position: 'relative' },

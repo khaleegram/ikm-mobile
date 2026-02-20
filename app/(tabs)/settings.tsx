@@ -1,13 +1,13 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert, StatusBar } from 'react-native';
+import { AnimatedPressable } from '@/components/animated-pressable';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
-import { router } from 'expo-router';
-import { isAdmin } from '@/lib/utils/auth-helpers';
 import { useTheme } from '@/lib/theme/theme-context';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { isAdmin } from '@/lib/utils/auth-helpers';
 import { haptics } from '@/lib/utils/haptics';
-import { AnimatedPressable } from '@/components/animated-pressable';
+import { router } from 'expo-router';
+import { ActivityIndicator, Alert, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function SettingsTabScreen() {
   const { user, signOut, loading: authLoading } = useUser();
@@ -71,7 +71,9 @@ export default function SettingsTabScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 70 + insets.bottom + 20 }]} 
+        showsVerticalScrollIndicator={false}>
         
         {/* 2. PROFILE ISLAND */}
         <View style={[styles.island, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -181,7 +183,7 @@ const styles = StyleSheet.create({
   islandLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   islandTitle: { color: '#fff', fontSize: 17, fontWeight: '800' },
 
-  scrollContent: { padding: 20 },
+  scrollContent: { padding: 20, paddingBottom: 70 + 20 },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: '#999', textTransform: 'uppercase', marginBottom: 12, marginLeft: 4, marginTop: 20 },
   island: { borderRadius: 24, borderWidth: 1, overflow: 'hidden', marginBottom: 16 },
   profileHeader: { flexDirection: 'row', alignItems: 'center', padding: 18, gap: 14 },

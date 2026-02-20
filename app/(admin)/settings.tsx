@@ -1,22 +1,24 @@
 // Admin platform settings
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
-import { useTheme } from '@/lib/theme/theme-context';
-import { useState, useEffect } from 'react';
+import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { premiumCard, premiumShadow } from '@/lib/theme/styles';
-import { usePlatformSettings } from '@/lib/firebase/firestore/platform-settings';
 import { adminApi } from '@/lib/api/admin';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { usePlatformSettings } from '@/lib/firebase/firestore/platform-settings';
+import { premiumShadow } from '@/lib/theme/styles';
+import { useTheme } from '@/lib/theme/theme-context';
+import { haptics } from '@/lib/utils/haptics';
+import { router } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Platform, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function AdminSettings() {
-  const { colors, colorScheme } = useTheme();
+  const { colors, colorScheme, toggleTheme } = useTheme();
   const { settings, loading: settingsLoading } = usePlatformSettings();
   const { user } = useUser();
   const insets = useSafeAreaInsets();
-  const styles = createStyles(colors);
+  const lightBrown = '#A67C52';
+  const styles = createStyles(colors, insets, lightBrown);
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     commissionRate: '5',
@@ -59,10 +61,12 @@ export default function AdminSettings() {
 
   const handleSave = async () => {
     if (!validateForm()) {
+      haptics.error();
       Alert.alert('Validation Error', 'Please fix the errors before saving');
       return;
     }
 
+    haptics.medium();
     Alert.alert(
       'Confirm Changes',
       'Are you sure you want to update these platform settings? This will affect all sellers.',
@@ -83,6 +87,7 @@ export default function AdminSettings() {
                 autoReleaseDays: autoReleaseDaysNum,
               });
               setErrors({});
+              haptics.success();
               Alert.alert('Success', 'Platform settings updated successfully');
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Failed to update settings');
@@ -131,25 +136,41 @@ export default function AdminSettings() {
   }
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* Header with gradient */}
-      <LinearGradient
-        colors={colorScheme === 'light' 
-          ? [colors.primary, colors.accent] 
-          : [colors.gradientStart, colors.gradientEnd]}
-        style={[styles.header, { paddingTop: insets.top }]}>
-        <View style={styles.headerContent}>
-          <View>
-            <Text style={styles.title}>Platform Settings</Text>
-            <Text style={styles.subtitle}>
-              Manage global platform configuration
-            </Text>
-          </View>
-          <View style={[styles.iconContainer, { backgroundColor: colorScheme === 'light' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.2)' }]}>
-            <IconSymbol name="gearshape.fill" size={24} color="#FFFFFF" />
-          </View>
+    <View style={styles.container}>
+      <StatusBar barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'} />
+      
+      {/* Floating Island Header */}
+      <View style={styles.floatingHeaderContainer}>
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.light(); router.back(); }}
+          scaleValue={0.9}>
+          <IconSymbol name="chevron.left" size={20} color={colors.text} />
+        </AnimatedPressable>
+        
+        <View style={[styles.nameIsland, { backgroundColor: lightBrown }]}>
+          <Text style={styles.islandLabel}>PLATFORM SETTINGS</Text>
+          <Text style={styles.islandTitle} numberOfLines={1}>
+            Configuration
+          </Text>
         </View>
-      </LinearGradient>
+        
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.medium(); toggleTheme(); }}
+          scaleValue={0.9}>
+          <IconSymbol 
+            name={colorScheme === 'dark' ? "sun.max.fill" : "moon.fill"} 
+            size={20} 
+            color={lightBrown} 
+          />
+        </AnimatedPressable>
+      </View>
+
+      <ScrollView 
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}>
 
       <View style={styles.content}>
         {settingsConfig.map((setting, index) => (
@@ -201,17 +222,17 @@ export default function AdminSettings() {
           </View>
         ))}
 
-        <TouchableOpacity
-          style={[styles.saveButton, { backgroundColor: colors.primary, opacity: saving ? 0.6 : 1 }]}
+        <AnimatedPressable
+          style={[styles.saveButton, { backgroundColor: lightBrown, opacity: saving ? 0.6 : 1 }]}
           onPress={handleSave}
           disabled={saving}
-          activeOpacity={0.8}>
+          scaleValue={0.95}>
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <Text style={styles.saveButtonText}>Save Changes</Text>
           )}
-        </TouchableOpacity>
+        </AnimatedPressable>
 
         {settings?.updatedAt && (
           <Text style={[styles.lastUpdated, { color: colors.textSecondary }]}>
@@ -222,7 +243,7 @@ export default function AdminSettings() {
         {/* Admin Actions */}
         {user?.isAdmin && (
           <View style={[styles.adminActionsCard, { backgroundColor: colors.card }]}>
-            <Text style={[styles.sectionTitle, { color: colors.text, marginBottom: 16 }]}>Admin Actions</Text>
+            <Text style={[styles.adminSectionTitle, { color: colors.text, marginBottom: 16 }]}>Admin Actions</Text>
             <TouchableOpacity
               style={[styles.actionButton, { backgroundColor: colors.backgroundSecondary, borderColor: colors.cardBorder }]}
               onPress={() => router.push('/(tabs)/settings' as any)}
@@ -260,52 +281,87 @@ export default function AdminSettings() {
           </View>
         )}
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
-const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>) =>
+const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>, insets: any, lightBrown: string) =>
   StyleSheet.create({
     container: {
       flex: 1,
       backgroundColor: colors.background,
     },
-    header: {
-      paddingBottom: 24,
+    scrollView: {
+      flex: 1,
+    },
+    scrollContent: {
+      flexGrow: 1,
+      paddingTop: insets.top + 10 + 44 + 15 + 20,
+      paddingBottom: 20,
+    },
+    floatingHeaderContainer: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      zIndex: 1000,
+      paddingTop: insets.top + 10,
       paddingHorizontal: 20,
-      borderBottomLeftRadius: 24,
-      borderBottomRightRadius: 24,
-      ...premiumShadow,
-    },
-    headerContent: {
+      paddingBottom: 15,
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
+      backgroundColor: 'transparent',
+      gap: 8,
+      pointerEvents: 'box-none',
     },
-    iconContainer: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
+    nameIsland: {
+      flex: 1,
+      backgroundColor: lightBrown,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      borderRadius: 22,
+      ...Platform.select({
+        ios: { shadowColor: lightBrown, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 5 },
+        android: { elevation: 3 }
+      })
+    },
+    iconIsland: {
+      backgroundColor: colors.card,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: colors.border,
       justifyContent: 'center',
       alignItems: 'center',
+      ...premiumShadow,
     },
-    title: {
-      fontSize: 32,
-      fontWeight: 'bold',
-      color: '#FFFFFF',
-      marginBottom: 4,
+    islandLabel: {
+      color: 'rgba(255,255,255,0.7)',
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 0.8,
     },
-    subtitle: {
-      fontSize: 16,
-      color: 'rgba(255, 255, 255, 0.9)',
+    islandTitle: {
+      color: '#fff',
+      fontSize: 17,
+      fontWeight: '800',
     },
     content: {
       padding: 20,
     },
+    adminSectionTitle: {
+      fontSize: 20,
+      fontWeight: 'bold',
+      marginBottom: 16,
+    },
     settingCard: {
       padding: 20,
-      borderRadius: 16,
+      borderRadius: 20,
       marginBottom: 16,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     settingHeader: {
@@ -386,8 +442,10 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     },
     adminActionsCard: {
       padding: 20,
-      borderRadius: 16,
+      borderRadius: 20,
       marginTop: 24,
+      borderWidth: 1,
+      borderColor: colors.border,
       ...premiumShadow,
     },
     actionButton: {

@@ -3,6 +3,7 @@
 import { Timestamp } from 'firebase/firestore';
 
 export type UserRole = 'customer' | 'seller' | 'admin';
+export type SellerType = 'business' | 'street' | 'both';
 
 // User Collection - matches Firebase schema exactly
 export interface User {
@@ -55,6 +56,9 @@ export interface User {
   
   // Guest Users
   isGuest?: boolean;              // true if created from guest checkout
+  
+  // Seller Type (for Market Street)
+  sellerType?: SellerType;        // 'business' | 'street' | 'both' (optional for backward compatibility)
   
   // Timestamps
   createdAt?: Timestamp | Date;          // Account creation date
@@ -557,5 +561,64 @@ export interface Park {
   state: string;                   // State (e.g., "Kano")
   isActive: boolean;               // Whether park is active
   createdAt?: Timestamp | Date;
+  updatedAt?: Timestamp | Date;
+}
+
+// Market Street Types
+
+// Market Post Collection - separate from business products
+export interface MarketPost {
+  id?: string;
+  posterId: string;              // Firebase Auth UID
+  images: string[];              // 1-20 image URLs (required)
+  hashtags?: string[];           // Optional hashtags
+  price?: number;                // Optional price (NGN)
+  description?: string;          // Optional description
+  location?: {
+    state?: string;
+    city?: string;
+  };
+  contactMethod?: 'in-app' | 'whatsapp';
+  
+  // Engagement
+  likes: number;                 // Like count
+  views: number;                 // View count
+  comments: number;              // Comment count
+  likedBy?: string[];            // User IDs who liked
+  
+  // Status
+  status: 'active' | 'hidden' | 'deleted';
+  
+  // Timestamps
+  createdAt: Timestamp | Date;
+  updatedAt: Timestamp | Date;
+  expiresAt?: Timestamp | Date;  // Optional auto-hide
+}
+
+// Market Message Collection
+export interface MarketMessage {
+  id?: string;
+  chatId: string;                // Unique chat ID (buyerId_posterId_postId)
+  senderId: string;              // Sender Firebase UID
+  receiverId: string;            // Receiver Firebase UID
+  postId: string;                // Related Market Post ID
+  message: string;               // Message text
+  imageUrl?: string;             // Optional image in message
+  paymentLink?: string;          // Optional payment link
+  read: boolean;                 // Read status
+  
+  // Timestamps
+  createdAt: Timestamp | Date;
+}
+
+// Market Comment Collection
+export interface MarketComment {
+  id?: string;
+  postId: string;                // Market Post ID
+  userId: string;                // Commenter Firebase UID
+  comment: string;               // Comment text
+  
+  // Timestamps
+  createdAt: Timestamp | Date;
   updatedAt?: Timestamp | Date;
 }

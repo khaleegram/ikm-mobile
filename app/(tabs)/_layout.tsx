@@ -1,43 +1,25 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { Platform } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { HapticTab } from '@/components/haptic-tab';
+import { CustomTabBar } from '@/components/custom-tab-bar';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 
 export default function TabLayout() {
-  const { colors, colorScheme } = useTheme();
-  const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
 
   return (
     <Tabs
+      tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.textSecondary,
         headerShown: false,
-        tabBarShowLabel: false, // Remove tab labels
-        tabBarButton: HapticTab,
-        tabBarStyle: {
-          backgroundColor: colors.card,
-          borderTopColor: colors.cardBorder,
-          height: 60 + insets.bottom,
-          paddingBottom: insets.bottom,
-          paddingTop: 8,
-          elevation: 8,
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.1,
-          shadowRadius: 4,
-        },
       }}>
       <Tabs.Screen
         name="index"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol 
-              size={28} 
+              size={24} 
               name={focused ? "house.fill" : "house"} 
               color={focused ? colors.primary : colors.textSecondary} 
             />
@@ -49,7 +31,7 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol 
-              size={28} 
+              size={24} 
               name={focused ? "cube.box.fill" : "cube.box"} 
               color={focused ? colors.primary : colors.textSecondary} 
             />
@@ -59,13 +41,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="orders"
         options={{
-          tabBarIcon: ({ focused }) => (
-            <IconSymbol 
-              size={28} 
-              name={focused ? "bag.fill" : "bag"} 
-              color={focused ? colors.primary : colors.textSecondary} 
-            />
-          ),
+          href: null, // Hide from tab bar but still accessible
         }}
       />
       <Tabs.Screen
@@ -73,19 +49,20 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol 
-              size={28} 
+              size={24} 
               name={focused ? "chart.bar.fill" : "chart.bar"} 
               color={focused ? colors.primary : colors.textSecondary} 
             />
           ),
         }}
       />
+
       <Tabs.Screen
         name="settings"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol 
-              size={28} 
+              size={24} 
               name={focused ? "gearshape.fill" : "gearshape"} 
               color={focused ? colors.primary : colors.textSecondary} 
             />

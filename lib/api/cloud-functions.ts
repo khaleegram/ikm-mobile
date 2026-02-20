@@ -121,6 +121,16 @@ const SHARED_FUNCTIONS = {
   // Search Functions
   searchProducts: 'https://searchproducts-q3rjv54uka-uc.a.run.app',
   
+  // Market Street Functions
+  createMarketPost: 'https://createmarketpost-q3rjv54uka-uc.a.run.app',
+  likeMarketPost: 'https://likemarketpost-q3rjv54uka-uc.a.run.app',
+  deleteMarketPost: 'https://deletemarketpost-q3rjv54uka-uc.a.run.app',
+  incrementPostViews: 'https://incrementpostviews-q3rjv54uka-uc.a.run.app',
+  createMarketComment: 'https://createmarketcomment-q3rjv54uka-uc.a.run.app',
+  deleteMarketComment: 'https://deletemarketcomment-q3rjv54uka-uc.a.run.app',
+  createMarketChat: 'https://createmarketchat-q3rjv54uka-uc.a.run.app',
+  sendMarketMessage: 'https://sendmarketmessage-q3rjv54uka-uc.a.run.app',
+  
   // Test Function
   helloWorld: 'https://helloworld-q3rjv54uka-uc.a.run.app',
 };
@@ -1597,6 +1607,146 @@ class CloudFunctionsClient {
     return this.request(SHARED_FUNCTIONS.helloWorld, {
       method: 'GET',
       requiresAuth: false,
+    });
+  }
+
+  // ==================== MARKET STREET FUNCTIONS ====================
+
+  /**
+   * Create Market Post with image uploads
+   */
+  async createMarketPost(data: {
+    images: string[]; // Base64 encoded images
+    hashtags?: string[];
+    price?: number;
+    description?: string;
+    location?: {
+      state?: string;
+      city?: string;
+    };
+    contactMethod?: 'in-app' | 'whatsapp';
+  }): Promise<{
+    success: boolean;
+    post: any;
+    postId: string;
+  }> {
+    return this.request(SHARED_FUNCTIONS.createMarketPost, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Like/unlike a Market Post
+   */
+  async likeMarketPost(postId: string): Promise<{
+    success: boolean;
+    likes: number;
+    isLiked: boolean;
+  }> {
+    return this.request(SHARED_FUNCTIONS.likeMarketPost, {
+      method: 'POST',
+      body: { postId },
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Delete Market Post (poster only)
+   */
+  async deleteMarketPost(postId: string): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    return this.request(SHARED_FUNCTIONS.deleteMarketPost, {
+      method: 'POST',
+      body: { postId },
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Increment post view count (public, no auth required)
+   */
+  async incrementPostViews(postId: string): Promise<{
+    success: boolean;
+  }> {
+    return this.request(SHARED_FUNCTIONS.incrementPostViews, {
+      method: 'POST',
+      body: { postId },
+      requiresAuth: false,
+    });
+  }
+
+  /**
+   * Create Market Comment
+   */
+  async createMarketComment(data: {
+    postId: string;
+    comment: string;
+  }): Promise<{
+    success: boolean;
+    commentId: string;
+    message: string;
+  }> {
+    return this.request(SHARED_FUNCTIONS.createMarketComment, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Delete Market Comment
+   */
+  async deleteMarketComment(commentId: string): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    return this.request(SHARED_FUNCTIONS.deleteMarketComment, {
+      method: 'POST',
+      body: { commentId },
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Create Market Chat
+   */
+  async createMarketChat(data: {
+    buyerId: string;
+    posterId: string;
+    postId: string;
+  }): Promise<{
+    success: boolean;
+    chatId: string;
+    chat: any;
+  }> {
+    return this.request(SHARED_FUNCTIONS.createMarketChat, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Send Market Message
+   */
+  async sendMarketMessage(data: {
+    chatId: string;
+    message: string;
+    imageUrl?: string;
+    paymentLink?: string;
+  }): Promise<{
+    success: boolean;
+    messageId: string;
+    message: string;
+  }> {
+    return this.request(SHARED_FUNCTIONS.sendMarketMessage, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
     });
   }
 }

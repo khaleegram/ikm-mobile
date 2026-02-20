@@ -1,7 +1,7 @@
 // Fallback for using MaterialIcons on Android and web.
 
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { SymbolWeight, SymbolViewProps } from 'expo-symbols';
+import { SymbolWeight } from 'expo-symbols';
 import { ComponentProps } from 'react';
 import { OpaqueColorValue, type StyleProp, type TextStyle } from 'react-native';
 
@@ -87,7 +87,7 @@ const MAPPING = {
   'paperplane.fill': 'send',
   'paperplane': 'send',
   'message.fill': 'message',
-  'message': 'message-outline',
+  'message': 'message',
   
   // Status & Indicators
   'checkmark.circle.fill': 'check-circle',
@@ -109,7 +109,7 @@ const MAPPING = {
   'location.fill': 'location-on',
   'location': 'location-on',
   'map.fill': 'map',
-  'map': 'map-outline',
+  'map': 'map',
   
   // Time & Clock
   'clock.fill': 'access-time',
@@ -117,7 +117,7 @@ const MAPPING = {
   
   // Edit & Actions
   'pencil.fill': 'edit',
-  'pencil': 'edit-outline',
+  'pencil': 'edit',
   'trash.fill': 'delete',
   'trash': 'delete-outline',
   'arrow.up': 'arrow-upward',
@@ -131,9 +131,9 @@ const MAPPING = {
   'heart.fill': 'favorite',
   'heart': 'favorite-outline',
   'eye.fill': 'visibility',
-  'eye': 'visibility-outline',
+  'eye': 'visibility',
   'eye.slash.fill': 'visibility-off',
-  'eye.slash': 'visibility-off-outline',
+  'eye.slash': 'visibility-off',
   'megaphone.fill': 'campaign',
   'megaphone': 'campaign',
   'doc.text.fill': 'description',
@@ -150,13 +150,36 @@ const MAPPING = {
   'storefront': 'store',
   'link': 'link',
   
+  // Transportation
+  'bus': 'directions-bus',
+  'bus.fill': 'directions-bus',
+  
+  // Design & Customization
+  'paintpalette.fill': 'palette',
+  'paintpalette': 'palette',
+  
+  // Royalty & Premium
+  'crown.fill': 'workspace-premium',
+  'crown': 'workspace-premium',
+  
+  // Security & Lock
+  'lock.shield.fill': 'admin-panel-settings',
+  'lock.shield': 'admin-panel-settings',
+  
+  // Phone & Communication
+  'phone.fill': 'phone-enabled',
+  'phone': 'phone-enabled',
+  
+  // Navigation & Exit
+  'arrow.left.square.fill': 'logout',
+  'arrow.left.square': 'logout',
+  
   // Tags & Labels
   'tag.fill': 'local-offer',
   'tag': 'local-offer',
   
   // Close & Cancel
   'xmark': 'close',
-  'xmark.circle': 'cancel',
   
   // Media
   'video.fill': 'videocam',
@@ -165,7 +188,6 @@ const MAPPING = {
   
   // Checkmarks
   'checkmark': 'check',
-  'checkmark.circle': 'check-circle',
   
   // Grid & Layout
   'square.grid.2x2.fill': 'grid-view',

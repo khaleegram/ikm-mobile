@@ -1,5 +1,5 @@
 // Theme context for managing light/dark mode
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { useColorScheme as useSystemColorScheme } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ColorScheme, getColors } from './colors';
@@ -32,21 +32,27 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     });
   }, [systemScheme]);
 
-  const toggleTheme = () => {
-    const newScheme = colorScheme === 'light' ? 'dark' : 'light';
-    setColorScheme(newScheme);
-    AsyncStorage.setItem(THEME_STORAGE_KEY, newScheme);
-  };
+  const toggleTheme = useCallback(() => {
+    setColorScheme((prev: ColorScheme) => {
+      const next = prev === 'light' ? 'dark' : 'light';
+      AsyncStorage.setItem(THEME_STORAGE_KEY, next);
+      return next;
+    });
+  }, []);
 
-  const setTheme = (scheme: ColorScheme) => {
+  const setTheme = useCallback((scheme: ColorScheme) => {
     setColorScheme(scheme);
     AsyncStorage.setItem(THEME_STORAGE_KEY, scheme);
-  };
+  }, []);
 
-  const colors = getColors(colorScheme);
+  const colors = useMemo(() => getColors(colorScheme), [colorScheme]);
+
+  const value = useMemo(() => {
+    return { colorScheme, colors, toggleTheme, setTheme };
+  }, [colorScheme, colors, toggleTheme, setTheme]);
 
   return (
-    <ThemeContext.Provider value={{ colorScheme, colors, toggleTheme, setTheme }}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   );

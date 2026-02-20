@@ -20,6 +20,162 @@ service cloud.firestore {
       return email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
     }
     
+    // ==================== MARKET STREET COLLECTIONS ====================
+    
+    // Market Posts Collection
+    // - Public read access (guest browsing allowed)
+    // - Authenticated users can create posts
+    // - Only poster can delete their own posts
+    // - Admins have full access
+    match /marketPosts/{postId} {
+      // Public read access (guest browsing)
+      allow read: if true;
+      allow list: if true; // Allow listing with filters (status, hashtags, etc.)
+      
+      // Authenticated users can create posts
+      // Note: Creation happens via Cloud Functions, but rules validate structure
+      allow create: if isAuthenticated()
+        && request.resource.data.keys().hasAll(['posterId', 'images', 'status', 'likes', 'views', 'comments'])
+        && request.resource.data.posterId == request.auth.uid
+        && request.resource.data.images is list
+        && request.resource.data.images.size() >= 1
+        && request.resource.data.images.size() <= 20
+        && request.resource.data.status == 'active'
+        && request.resource.data.likes is number
+        && request.resource.data.views is number
+        && request.resource.data.comments is number;
+      
+      // Only poster or admin can update (for likes, views, comments counts)
+      // Note: Likes, views, and comments are updated via Cloud Functions
+      allow update: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.posterId == request.auth.uid
+          && request.resource.data.posterId == resource.data.posterId); // Prevent posterId changes
+      
+      // Only poster or admin can delete
+      allow delete: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.posterId == request.auth.uid);
+    }
+    
+    // Market Post Comments Collection
+    // - Public read access (anyone can view comments)
+    // - Authenticated users can create comments
+    // - Only commenter can delete their own comments
+    // - Admins have full access
+    match /marketPostComments/{commentId} {
+      // Public read access
+      allow read: if true;
+      allow list: if true; // Allow listing comments by postId
+      
+      // Authenticated users can create comments
+      allow create: if isAuthenticated()
+        && request.resource.data.keys().hasAll(['postId', 'userId', 'comment'])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() > 0
+        && request.resource.data.comment.size() <= 500;
+      
+      // Only commenter or admin can update
+      allow update: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.userId == resource.data.userId); // Prevent userId changes
+      
+      // Only commenter or admin can delete
+      allow delete: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.userId == request.auth.uid);
+    }
+    
+    // Market Chats Collection
+    // - Only chat participants can read their chats
+    // - Authenticated users can create chats
+    // - Admins have full access
+    match /marketChats/{chatId} {
+      // Only participants or admin can read
+      allow read: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.participants != null
+          && request.auth.uid in resource.data.participants);
+      
+      // Allow list queries for participants
+      allow list: if isAdmin()
+        || (isAuthenticated());
+      
+      // Authenticated users can create chats
+      allow create: if isAuthenticated()
+        && request.resource.data.keys().hasAll(['chatId', 'postId', 'participants'])
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2
+        && request.auth.uid in request.resource.data.participants;
+      
+      // Only participants or admin can update (for lastMessage, etc.)
+      allow update: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.participants != null
+          && request.auth.uid in resource.data.participants
+          && request.resource.data.participants == resource.data.participants); // Prevent participants changes
+      
+      // Only admin can delete chats
+      allow delete: if isAdmin();
+    }
+    
+    // Market Messages Collection
+    // - Only chat participants can read messages
+    // - Authenticated users can create messages
+    // - Only sender can update (for read status)
+    // - Admins have full access
+    match /marketMessages/{messageId} {
+      // Only chat participants or admin can read
+      allow read: if isAdmin()
+        || (isAuthenticated()
+          && (resource.data.senderId == request.auth.uid
+            || (resource.data.receiverId != null && resource.data.receiverId == request.auth.uid)
+            || (resource.data.chatId != null
+              && exists(/databases/$(database)/documents/marketChats/$(resource.data.chatId))
+              && get(/databases/$(database)/documents/marketChats/$(resource.data.chatId)).data.participants != null
+              && request.auth.uid in get(/databases/$(database)/documents/marketChats/$(resource.data.chatId)).data.participants)));
+      
+      // Allow list queries for chat messages
+      allow list: if isAdmin()
+        || (isAuthenticated());
+      
+      // Authenticated users can create messages
+      allow create: if isAuthenticated()
+        && request.resource.data.keys().hasAll(['chatId', 'senderId', 'receiverId', 'postId', 'message', 'read'])
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.message is string
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 1000
+        && request.resource.data.read is bool;
+      
+      // Only sender or admin can update (for marking as read)
+      allow update: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.senderId == request.auth.uid
+          && request.resource.data.senderId == resource.data.senderId); // Prevent senderId changes
+      
+      // Only admin can delete messages
+      allow delete: if isAdmin();
+    }
+    
+    // Trending Hashtags Collection
+    // - Public read access (anyone can view trending hashtags)
+    // - Only server-side (Cloud Functions) can write
+    match /trendingHashtags/{hashtagId} {
+      // Public read access
+      allow read: if true;
+      allow list: if true; // Allow listing with orderBy
+      
+      // Only server-side can create/update (via Cloud Functions)
+      allow create: if isAdmin(); // Cloud Functions run with admin privileges
+      allow update: if isAdmin(); // Cloud Functions run with admin privileges
+      allow delete: if isAdmin(); // Only admin can delete
+    }
+    
+    // ==================== EXISTING COLLECTIONS ====================
+    
     // Products Collection
     // - Public read access (anyone can view products)
     // - Only sellers can create/update their own products

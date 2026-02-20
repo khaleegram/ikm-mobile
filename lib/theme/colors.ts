@@ -1,4 +1,6 @@
 // Theme colors - Light and Dark mode
+export type ColorScheme = 'light' | 'dark';
+
 export function getColors(colorScheme: 'light' | 'dark' = 'light') {
   if (colorScheme === 'dark') {
     return {

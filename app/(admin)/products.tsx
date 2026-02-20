@@ -1,24 +1,26 @@
 // Admin products management
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, TextInput, Image, Alert } from 'react-native';
-import { useState, useMemo } from 'react';
-import { useTheme } from '@/lib/theme/theme-context';
-import { router } from 'expo-router';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { premiumShadow } from '@/lib/theme/styles';
-import { useAllProducts } from '@/lib/firebase/firestore/admin';
-import { Product } from '@/types';
-import { productApi } from '@/lib/api/products';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AnimatedPressable } from '@/components/animated-pressable';
 import { SafeImage } from '@/components/safe-image';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { productApi } from '@/lib/api/products';
+import { useAllProducts } from '@/lib/firebase/firestore/admin';
+import { premiumShadow } from '@/lib/theme/styles';
+import { useTheme } from '@/lib/theme/theme-context';
+import { haptics } from '@/lib/utils/haptics';
+import { Product } from '@/types';
+import { router } from 'expo-router';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Platform, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function AdminProducts() {
-  const { colors, colorScheme } = useTheme();
+  const { colors, colorScheme, toggleTheme } = useTheme();
   const { products, loading } = useAllProducts();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'draft' | 'inactive'>('all');
   const insets = useSafeAreaInsets();
-  const styles = createStyles(colors);
+  const lightBrown = '#A67C52';
+  const styles = createStyles(colors, insets, lightBrown);
 
   // Filter products
   const filteredProducts = useMemo(() => {
@@ -58,6 +60,7 @@ export default function AdminProducts() {
   };
 
   const handleDeleteProduct = async (product: Product) => {
+    haptics.medium();
     Alert.alert(
       'Delete Product',
       `Are you sure you want to delete "${product.name}"? This action cannot be undone.`,
@@ -69,8 +72,10 @@ export default function AdminProducts() {
           onPress: async () => {
             try {
               await productApi.delete(product.id!);
+              haptics.success();
               Alert.alert('Success', 'Product deleted successfully');
             } catch (error: any) {
+              haptics.error();
               Alert.alert('Error', error.message || 'Failed to delete product');
             }
           },
@@ -83,18 +88,11 @@ export default function AdminProducts() {
     // Handle price - check both price and initialPrice
     const price = item.price || (item as any).initialPrice || 0;
     
-    // Check if imageUrl or imageUrls is valid
-    const imageUrl = item.imageUrls?.[0] || item.imageUrl;
-    const hasValidImage = imageUrl && 
-      (imageUrl.startsWith('http://') || 
-       imageUrl.startsWith('https://') || 
-       imageUrl.startsWith('file://'));
-    
     return (
-      <TouchableOpacity
-        style={[styles.productCard, { backgroundColor: colors.card }]}
-        onPress={() => router.push(`/products/${item.id}` as any)}
-        activeOpacity={0.7}>
+      <AnimatedPressable
+        style={[styles.productCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+        onPress={() => { haptics.light(); router.push(`/products/${item.id}` as any); }}
+        scaleValue={0.98}>
         <View style={styles.productRow}>
           <SafeImage
             uri={item.imageUrls?.[0] || item.imageUrl || ''}
@@ -106,7 +104,7 @@ export default function AdminProducts() {
             <Text style={[styles.productName, { color: colors.text }]} numberOfLines={2}>
               {item.name}
             </Text>
-            <Text style={[styles.productPrice, { color: colors.primary }]}>
+            <Text style={[styles.productPrice, { color: lightBrown }]}>
               ₦{price.toLocaleString()}
             </Text>
             <View style={styles.productMeta}>
@@ -120,79 +118,104 @@ export default function AdminProducts() {
               </Text>
             </View>
           </View>
-          <TouchableOpacity
+          <AnimatedPressable
             style={[styles.deleteButton, { backgroundColor: colors.error + '20' }]}
-            onPress={() => handleDeleteProduct(item)}
-            activeOpacity={0.7}>
+            onPress={(e) => {
+              e.stopPropagation();
+              handleDeleteProduct(item);
+            }}
+            scaleValue={0.9}>
             <IconSymbol name="trash.fill" size={20} color={colors.error} />
-          </TouchableOpacity>
+          </AnimatedPressable>
         </View>
-      </TouchableOpacity>
+      </AnimatedPressable>
     );
   };
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <LinearGradient
-        colors={colorScheme === 'light' 
-          ? [colors.primary, colors.accent] 
-          : [colors.gradientStart, colors.gradientEnd]}
-        style={[styles.header, { paddingTop: insets.top }]}>
-        <View style={styles.headerContent}>
-          <View>
-            <Text style={styles.title}>All Products</Text>
-            <Text style={styles.subtitle}>{products.length} total products</Text>
-          </View>
-          <View style={[styles.iconContainer, { backgroundColor: colorScheme === 'light' ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.2)' }]}>
-            <IconSymbol name="cube.box.fill" size={24} color="#FFFFFF" />
-          </View>
+      <StatusBar barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'} />
+      
+      {/* Floating Island Header */}
+      <View style={styles.floatingHeaderContainer}>
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.light(); router.back(); }}
+          scaleValue={0.9}>
+          <IconSymbol name="chevron.left" size={20} color={colors.text} />
+        </AnimatedPressable>
+        
+        <View style={[styles.nameIsland, { backgroundColor: lightBrown }]}>
+          <Text style={styles.islandLabel}>PLATFORM PRODUCTS</Text>
+          <Text style={styles.islandTitle} numberOfLines={1}>
+            {products.length} Products
+          </Text>
         </View>
+        
+        <AnimatedPressable
+          style={styles.iconIsland}
+          onPress={() => { haptics.medium(); toggleTheme(); }}
+          scaleValue={0.9}>
+          <IconSymbol 
+            name={colorScheme === 'dark' ? "sun.max.fill" : "moon.fill"} 
+            size={20} 
+            color={lightBrown} 
+          />
+        </AnimatedPressable>
+      </View>
 
-        {/* Search */}
-        <View style={[styles.searchContainer, { backgroundColor: colorScheme === 'light' ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)' }]}>
-          <IconSymbol name="magnifyingglass" size={20} color="#FFFFFF" />
+      {/* Search Island */}
+      <View style={styles.searchContainer}>
+        <View style={[styles.searchIsland, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <IconSymbol name="magnifyingglass" size={18} color={colors.textSecondary} />
           <TextInput
-            style={[styles.searchInput, { color: '#FFFFFF' }]}
             placeholder="Search products..."
-            placeholderTextColor="rgba(255, 255, 255, 0.7)"
+            placeholderTextColor={colors.textSecondary}
+            style={[styles.searchInput, { color: colors.text }]}
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
         </View>
+      </View>
 
-        {/* Status Filter */}
-        <View style={styles.filterContainer}>
-          {statusOptions.map((status) => (
+      {/* Status Filter */}
+      <View style={styles.filterContainer}>
+        <FlatList
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          data={statusOptions}
+          keyExtractor={(item) => item}
+          contentContainerStyle={styles.filterContent}
+          renderItem={({ item: status }) => (
             <TouchableOpacity
-              key={status}
               style={[
                 styles.filterChip,
                 {
                   backgroundColor: statusFilter === status 
-                    ? 'rgba(255, 255, 255, 0.3)' 
-                    : 'rgba(255, 255, 255, 0.1)',
+                    ? lightBrown 
+                    : colors.backgroundSecondary,
+                  borderColor: statusFilter === status ? lightBrown : colors.border,
                 }
               ]}
-              onPress={() => setStatusFilter(status)}>
-              <Text style={styles.filterChipText}>
+              onPress={() => { haptics.light(); setStatusFilter(status); }}>
+              <Text style={[styles.filterChipText, { color: statusFilter === status ? '#fff' : colors.text }]}>
                 {status === 'all' ? 'All' : status.charAt(0).toUpperCase() + status.slice(1)}
               </Text>
               {status !== 'all' && (
-                <View style={styles.filterBadge}>
-                  <Text style={styles.filterBadgeText}>
+                <View style={[styles.filterBadge, { backgroundColor: statusFilter === status ? 'rgba(255,255,255,0.3)' : colors.cardBorder }]}>
+                  <Text style={[styles.filterBadgeText, { color: statusFilter === status ? '#fff' : colors.textSecondary }]}>
                     {products.filter(p => p.status === status).length}
                   </Text>
                 </View>
               )}
             </TouchableOpacity>
-          ))}
-        </View>
-      </LinearGradient>
+          )}
+        />
+      </View>
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={lightBrown} />
         </View>
       ) : (
         <>
@@ -224,85 +247,110 @@ export default function AdminProducts() {
   );
 }
 
-const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>) =>
+const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').getColors>, insets: any, lightBrown: string) =>
   StyleSheet.create({
     container: {
       flex: 1,
       backgroundColor: colors.background,
     },
-    header: {
-      paddingBottom: 20,
+    floatingHeaderContainer: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      zIndex: 1000,
+      paddingTop: insets.top + 10,
       paddingHorizontal: 20,
-      borderBottomLeftRadius: 24,
-      borderBottomRightRadius: 24,
-      ...premiumShadow,
-    },
-    headerContent: {
+      paddingBottom: 15,
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: 16,
+      backgroundColor: 'transparent',
+      gap: 8,
+      pointerEvents: 'box-none',
     },
-    title: {
-      fontSize: 32,
-      fontWeight: 'bold',
-      color: '#FFFFFF',
-      marginBottom: 4,
+    nameIsland: {
+      flex: 1,
+      backgroundColor: lightBrown,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      borderRadius: 22,
+      ...Platform.select({
+        ios: { shadowColor: lightBrown, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 5 },
+        android: { elevation: 3 }
+      })
     },
-    subtitle: {
-      fontSize: 16,
-      color: 'rgba(255, 255, 255, 0.9)',
-    },
-    iconContainer: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
+    iconIsland: {
+      backgroundColor: colors.card,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: colors.border,
       justifyContent: 'center',
       alignItems: 'center',
+      ...premiumShadow,
+    },
+    islandLabel: {
+      color: 'rgba(255,255,255,0.7)',
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 0.8,
+    },
+    islandTitle: {
+      color: '#fff',
+      fontSize: 17,
+      fontWeight: '800',
     },
     searchContainer: {
+      paddingTop: insets.top + 10 + 44 + 15 + 12,
+      paddingHorizontal: 20,
+      marginBottom: 12,
+    },
+    searchIsland: {
       flexDirection: 'row',
       alignItems: 'center',
       paddingHorizontal: 16,
-      paddingVertical: 12,
-      borderRadius: 12,
-      marginBottom: 12,
-      gap: 12,
+      height: 48,
+      borderRadius: 24,
+      borderWidth: 1,
+      gap: 10,
     },
     searchInput: {
       flex: 1,
-      fontSize: 16,
+      fontSize: 15,
+      fontWeight: '600',
     },
     filterContainer: {
-      flexDirection: 'row',
+      paddingHorizontal: 20,
+      marginBottom: 12,
+    },
+    filterContent: {
       gap: 8,
-      flexWrap: 'wrap',
+      paddingRight: 20,
     },
     filterChip: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingHorizontal: 12,
-      paddingVertical: 6,
-      borderRadius: 16,
-      gap: 6,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderRadius: 20,
+      borderWidth: 1,
+      gap: 8,
     },
     filterChipText: {
-      fontSize: 12,
+      fontSize: 14,
       fontWeight: '600',
-      color: '#FFFFFF',
     },
     filterBadge: {
-      backgroundColor: 'rgba(255, 255, 255, 0.3)',
-      paddingHorizontal: 6,
+      paddingHorizontal: 8,
       paddingVertical: 2,
-      borderRadius: 8,
-      minWidth: 20,
+      borderRadius: 10,
+      minWidth: 24,
       alignItems: 'center',
     },
     filterBadgeText: {
-      fontSize: 10,
+      fontSize: 12,
       fontWeight: '600',
-      color: '#FFFFFF',
     },
     statsBar: {
       paddingHorizontal: 20,
@@ -317,8 +365,9 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     },
     productCard: {
       padding: 16,
-      borderRadius: 16,
+      borderRadius: 20,
       marginBottom: 12,
+      borderWidth: 1,
       ...premiumShadow,
     },
     productRow: {

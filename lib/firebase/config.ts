@@ -1,11 +1,17 @@
 // Firebase configuration and initialization
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getAuth, Auth, initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import { getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import Constants from 'expo-constants';
-import { Platform } from 'react-native';
+
+// NOTE:
+// This project previously attempted to use:
+//   initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) })
+// via a deep import (`firebase/auth/react-native`).
+//
+// In this repo's current dependency/Metro setup, that module path isn't resolvable,
+// which breaks bundling for dev-client. We intentionally fall back to `getAuth()`
+// to keep the app booting reliably.
 
 // Firebase config - should be in environment variables
 // For now, using placeholder values - replace with actual config
@@ -26,31 +32,9 @@ let storage: FirebaseStorage;
 
 if (getApps().length === 0) {
   app = initializeApp(firebaseConfig);
-  
-  // Initialize Auth - use getAuth for compatibility with Expo Go and dev builds
-  // getAuth works in both environments and handles persistence automatically
-  // initializeAuth with getReactNativePersistence is optional and may not work in Expo Go
-  if (Platform.OS === 'web') {
-    auth = getAuth(app);
-  } else {
-    // For React Native, try initializeAuth first for better persistence support
-    // Fall back to getAuth if it fails (e.g., in Expo Go)
-    try {
-      auth = initializeAuth(app, {
-        persistence: getReactNativePersistence(AsyncStorage)
-      });
-    } catch (error: any) {
-      // If auth is already initialized or initializeAuth fails, use getAuth
-      if (error.code === 'auth/already-initialized' || error.message?.includes('already initialized')) {
-        auth = getAuth(app);
-      } else {
-        // Fallback to getAuth - works in Expo Go and dev builds
-        // Note: getAuth also persists auth state, just not explicitly configured
-        console.warn('initializeAuth failed, using getAuth (this is normal in Expo Go):', error.message);
-        auth = getAuth(app);
-      }
-    }
-  }
+
+  // Keep auth init simple and bundler-safe for Expo dev-client.
+  auth = getAuth(app);
   
   firestore = getFirestore(app);
   storage = getStorage(app);

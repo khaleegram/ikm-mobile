@@ -43,3 +43,24 @@ export function canManageResource(
   return user.uid === resourceOwnerId;
 }
 
+/**
+ * Check if user can access Market Street
+ * Returns true for guests (null user) or any logged-in user
+ */
+export function canAccessMarketStreet(user: AuthUser | null): boolean {
+  // Guests can browse Market Street
+  if (!user) return true;
+  // Any logged-in user can access Market Street
+  return true;
+}
+
+/**
+ * Check if user can post to Market Street
+ * Returns true if logged in (customer, street seller, or both)
+ */
+export function canPostToMarketStreet(user: AuthUser | null): boolean {
+  // Must be logged in to post
+  if (!user) return false;
+  // Any logged-in user can post (customer, street seller, or business seller)
+  return true;
+}

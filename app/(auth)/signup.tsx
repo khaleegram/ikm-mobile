@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { useState } from 'react';
+import { SellerType } from '@/types';
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +21,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { haptics } from '@/lib/utils/haptics';
+
+const lightBrown = '#A67C52';
 
 export default function SignupScreen() {
   const { colors, colorScheme } = useTheme();
@@ -31,6 +35,7 @@ export default function SignupScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [userType, setUserType] = useState<'customer' | 'street' | 'business'>('customer');
 
   const isValidName = displayName.trim().length >= 2;
   const isValidEmail = email.includes('@') && email.includes('.');
@@ -66,12 +71,20 @@ export default function SignupScreen() {
       // Update display name
       await updateProfile(user, { displayName });
 
-      // Create user document in Firestore with seller role
+      // Determine role and sellerType based on userType selection
+      const role = userType === 'customer' ? 'customer' : 'seller';
+      const sellerType: SellerType | undefined = 
+        userType === 'street' ? 'street' : 
+        userType === 'business' ? 'business' : 
+        undefined;
+
+      // Create user document in Firestore
       await setDoc(doc(firestore, 'users', user.uid), {
         id: user.uid,
         email,
         displayName,
-        role: 'seller',
+        role,
+        sellerType,
         isAdmin: false,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -217,6 +230,88 @@ export default function SignupScreen() {
                 {confirmPassword.length > 0 && !passwordsMatch && (
                   <Text style={[styles.errorText, { color: colors.error }]}>Passwords do not match</Text>
                 )}
+              </View>
+
+              {/* User Type Selection */}
+              <View style={styles.inputContainer}>
+                <Text style={[styles.inputLabel, { color: colors.text }]}>Account Type</Text>
+                <View style={styles.userTypeContainer}>
+                  <TouchableOpacity
+                    style={[
+                      styles.userTypeButton,
+                      {
+                        backgroundColor: userType === 'customer' ? lightBrown : colors.backgroundSecondary,
+                        borderColor: userType === 'customer' ? lightBrown : colors.border,
+                      },
+                    ]}
+                    onPress={() => {
+                      haptics.light();
+                      setUserType('customer');
+                    }}>
+                    <IconSymbol
+                      name="person.fill"
+                      size={20}
+                      color={userType === 'customer' ? '#FFFFFF' : colors.text}
+                    />
+                    <Text
+                      style={[
+                        styles.userTypeText,
+                        { color: userType === 'customer' ? '#FFFFFF' : colors.text },
+                      ]}>
+                      Customer
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.userTypeButton,
+                      {
+                        backgroundColor: userType === 'street' ? lightBrown : colors.backgroundSecondary,
+                        borderColor: userType === 'street' ? lightBrown : colors.border,
+                      },
+                    ]}
+                    onPress={() => {
+                      haptics.light();
+                      setUserType('street');
+                    }}>
+                    <IconSymbol
+                      name="photo.fill"
+                      size={20}
+                      color={userType === 'street' ? '#FFFFFF' : colors.text}
+                    />
+                    <Text
+                      style={[
+                        styles.userTypeText,
+                        { color: userType === 'street' ? '#FFFFFF' : colors.text },
+                      ]}>
+                      Street Seller
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.userTypeButton,
+                      {
+                        backgroundColor: userType === 'business' ? lightBrown : colors.backgroundSecondary,
+                        borderColor: userType === 'business' ? lightBrown : colors.border,
+                      },
+                    ]}
+                    onPress={() => {
+                      haptics.light();
+                      setUserType('business');
+                    }}>
+                    <IconSymbol
+                      name="storefront.fill"
+                      size={20}
+                      color={userType === 'business' ? '#FFFFFF' : colors.text}
+                    />
+                    <Text
+                      style={[
+                        styles.userTypeText,
+                        { color: userType === 'business' ? '#FFFFFF' : colors.text },
+                      ]}>
+                      Business Seller
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               {/* Sign Up Button */}
@@ -377,6 +472,24 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     signinLink: {
       fontSize: 14,
       fontWeight: 'bold',
+    },
+    userTypeContainer: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    userTypeButton: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      paddingVertical: 12,
+      borderRadius: 12,
+      borderWidth: 2,
+    },
+    userTypeText: {
+      fontSize: 14,
+      fontWeight: '600',
     },
     decorativeCircle1: {
       position: 'absolute',

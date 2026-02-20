@@ -1,14 +1,14 @@
 // Analytics and reporting screen
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useSellerOrders } from '@/lib/firebase/firestore/orders';
 import { useSellerProducts } from '@/lib/firebase/firestore/products';
-import { OrderStatus } from '@/types';
-import { useMemo } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View, Platform } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { premiumCard, premiumShadow, premiumShadowSmall } from '@/lib/theme/styles';
 import { useTheme } from '@/lib/theme/theme-context';
-import { premiumShadow, premiumCard, premiumShadowSmall } from '@/lib/theme/styles';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { OrderStatus } from '@/types';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useMemo } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function AnalyticsScreen() {
@@ -266,7 +266,10 @@ export default function AnalyticsScreen() {
   }
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
+    <ScrollView 
+      style={[styles.container, { backgroundColor: colors.background }]} 
+      contentContainerStyle={{ paddingBottom: 70 + insets.bottom + 20 }}
+      showsVerticalScrollIndicator={false}>
       {/* Premium Header with Gradient */}
       <LinearGradient
         colors={colorScheme === 'light' 

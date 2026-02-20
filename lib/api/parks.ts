@@ -1,7 +1,7 @@
 // Parks API client
 // Handles fetching parks for waybill deliveries
-import { cloudFunctions } from './cloud-functions';
 import { Park } from '@/types';
+import { cloudFunctions } from './cloud-functions';
 
 export const parksApi = {
   /**
@@ -45,7 +45,17 @@ export const parksApi = {
           isActive: park.isActive,
         }));
     } catch (error: any) {
-      console.error('Error fetching parks by state:', error);
+      // Silently handle 403/401 errors as parks API may not be configured
+      const status = error?.status || error?.response?.status || error?.code;
+      if (status === 403 || status === 401) {
+        // Parks API endpoint may not be configured or may require authentication
+        // Return empty array to gracefully degrade functionality
+        return [];
+      }
+      // Only log unexpected errors
+      if (error?.message && !error.message.includes('403') && !error.message.includes('Forbidden')) {
+        console.error('Error fetching parks by state:', error);
+      }
       throw new Error(error.message || 'Failed to fetch parks by state');
     }
   },

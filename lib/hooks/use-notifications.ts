@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import * as Notifications from 'expo-notifications';
 import { Platform, AppState } from 'react-native';
 import Constants from 'expo-constants';
-import { useUser } from '../firebase/auth/use-user';
 import { router } from 'expo-router';
+import { getAppVariant } from '../utils/app-variant';
 
 // Configure notification behavior with custom handling
 Notifications.setNotificationHandler({
@@ -83,14 +83,20 @@ function getNotificationConfig(type: NotificationData['type']): NotificationConf
 }
 
 export function useNotifications() {
-  const { user } = useUser();
   const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
   const [notification, setNotification] = useState<Notifications.Notification | null>(null);
   const notificationListener = useRef<Notifications.Subscription>();
   const responseListener = useRef<Notifications.Subscription>();
   const appState = useRef(AppState.currentState);
+  const variant = getAppVariant();
 
   useEffect(() => {
+    // Market app does not need seller/admin push navigation listeners at root startup.
+    // This avoids unnecessary navigation updates during initial mount.
+    if (variant === 'market') {
+      return;
+    }
+
     // Track app state to prevent operations when backgrounded
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       appState.current = nextAppState;
@@ -146,7 +152,7 @@ export function useNotifications() {
         console.error('Error removing notification listeners:', error);
       }
     };
-  }, []);
+  }, [variant]);
 
   return {
     expoPushToken,

@@ -2,24 +2,23 @@ import { auth } from '@/lib/firebase/config';
 import { router } from 'expo-router';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { useState } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
-import { firestore } from '@/lib/firebase/config';
+
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useTheme } from '@/lib/theme/theme-context';
+import { haptics } from '@/lib/utils/haptics';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
-  StatusBar,
 } from 'react-native';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useTheme } from '@/lib/theme/theme-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { haptics } from '@/lib/utils/haptics';
 
 export default function LoginScreen() {
   const { colors, colorScheme } = useTheme();
@@ -33,16 +32,16 @@ export default function LoginScreen() {
   
   const handleLogin = async () => {
     if (!email || !password) {
-      haptics.notificationError();
+      haptics.error();
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      haptics.notificationSuccess();
+      haptics.success();
     } catch (error: any) {
-      haptics.notificationError();
+      haptics.error();
       Alert.alert('Login Failed', error.message);
     } finally {
       setLoading(false);

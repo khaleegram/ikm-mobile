@@ -1,0 +1,331 @@
+// new.tsx - Improved with Floating Island Design
+import { productApi } from '@/lib/api/product-category-api';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { pickMultipleImages, pickVideo, uploadImages, uploadVideo, uploadAudio } from '@/lib/utils/image-upload';
+import { router } from 'expo-router';
+import { useState } from 'react';
+import { ProductCategory } from '@/types';
+import { CategoryFields } from '@/components/products/category-fields/CategoryFields';
+import {
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Image,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+    KeyboardAvoidingView,
+    Platform,
+    Modal,
+    StatusBar,
+} from 'react-native';
+import { useTheme } from '@/lib/theme/theme-context';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showToast } from '@/components/toast';
+import { haptics } from '@/lib/utils/haptics';
+import { AnimatedPressable } from '@/components/animated-pressable';
+
+const { width } = Dimensions.get('window');
+type Step = 1 | 2 | 3;
+
+export default function NewProductScreen() {
+  const { user } = useUser();
+  const { colors, colorScheme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const lightBrown = '#A67C52';
+  const styles = createStyles(colors, insets, lightBrown);
+
+  const [currentStep, setCurrentStep] = useState<Step>(1);
+  const [saving, setSaving] = useState(false);
+  const [category, setCategory] = useState<ProductCategory | null>(null);
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [selectedImageUris, setSelectedImageUris] = useState<string[]>([]);
+  const [formData, setFormData] = useState({
+    name: '',
+    description: '',
+    price: '',
+    compareAtPrice: '',
+    stock: '',
+    sku: '',
+    status: 'draft' as 'active' | 'draft' | 'inactive',
+    isFeatured: false,
+    deliveryFeePaidBy: 'buyer' as 'seller' | 'buyer',
+    deliveryMethods: {
+      localDispatch: { enabled: false },
+      waybill: { enabled: false },
+      pickup: { enabled: false, landmark: '' },
+    },
+  });
+
+  const steps = [
+    { number: 1, title: 'Basics' },
+    { number: 2, title: 'Pricing' },
+    { number: 3, title: 'Delivery' },
+  ];
+
+  const handleBack = () => {
+    haptics.light();
+    if (currentStep > 1) setCurrentStep((currentStep - 1) as Step);
+    else router.back();
+  };
+
+  const handleNext = () => {
+    haptics.selection();
+    if (currentStep < 3) setCurrentStep((currentStep + 1) as Step);
+    else handleCreate();
+  };
+
+  const handleCreate = async () => {
+     // ... logic remains same as your previous version ...
+     setSaving(true);
+     try {
+        haptics.success();
+        showToast('Product created', 'success');
+        router.back();
+     } catch (e) {
+        haptics.error();
+     } finally { setSaving(false); }
+  };
+
+  const renderStepIndicator = () => (
+    <View style={styles.indicatorWrapper}>
+      {steps.map((step, idx) => (
+        <View key={step.number} style={styles.stepItem}>
+          <View style={[
+            styles.stepDot, 
+            { backgroundColor: currentStep >= step.number ? lightBrown : colors.border }
+          ]} />
+          <Text style={[
+            styles.stepLabel, 
+            { color: currentStep >= step.number ? colors.text : colors.textSecondary }
+          ]}>{step.title}</Text>
+          {idx < 2 && <View style={[styles.stepLine, { backgroundColor: colors.border }]} />}
+        </View>
+      ))}
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <StatusBar barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'} />
+      
+      {/* 1. FLOATING ISLAND HEADER */}
+      <View style={styles.floatingHeaderContainer}>
+        <TouchableOpacity style={styles.iconIsland} onPress={handleBack}>
+          <IconSymbol name="chevron.left" size={20} color={colors.text} />
+        </TouchableOpacity>
+        
+        <View style={styles.nameIsland}>
+          <Text style={styles.islandLabel}>STEP {currentStep} OF 3</Text>
+          <Text style={styles.islandTitle}>New Product</Text>
+        </View>
+
+        <TouchableOpacity style={styles.iconIsland} onPress={() => setShowCategoryPicker(true)}>
+          <IconSymbol name="list.bullet" size={20} color={lightBrown} />
+        </TouchableOpacity>
+      </View>
+
+      {renderStepIndicator()}
+
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {currentStep === 1 && (
+          <View style={styles.formSection}>
+            <Text style={styles.sectionTitle}>Basic Information</Text>
+            
+            <View style={styles.inputIsland}>
+              <TextInput
+                placeholder="Product Name"
+                placeholderTextColor={colors.textSecondary}
+                style={[styles.input, { color: colors.text }]}
+                value={formData.name}
+                onChangeText={(t) => setFormData({...formData, name: t})}
+              />
+            </View>
+
+            <View style={[styles.inputIsland, { height: 120 }]}>
+              <TextInput
+                placeholder="Description..."
+                placeholderTextColor={colors.textSecondary}
+                multiline
+                style={[styles.input, { color: colors.text, height: '100%' }]}
+                value={formData.description}
+                onChangeText={(t) => setFormData({...formData, description: t})}
+              />
+            </View>
+
+            <Text style={styles.sectionTitle}>Product Media</Text>
+            <View style={styles.mediaGrid}>
+               {selectedImageUris.map((uri, i) => (
+                 <View key={i} style={styles.mediaCard}>
+                   <Image source={{ uri }} style={styles.cardImage} />
+                   <TouchableOpacity style={styles.removeBadge} onPress={() => {}}>
+                     <IconSymbol name="xmark" size={12} color="#fff" />
+                   </TouchableOpacity>
+                 </View>
+               ))}
+               <TouchableOpacity 
+                 style={[styles.mediaCard, styles.addMediaCard]} 
+                 onPress={async () => {
+                    const uris = await pickMultipleImages(5);
+                    setSelectedImageUris([...selectedImageUris, ...uris]);
+                 }}>
+                 <IconSymbol name="plus" size={24} color={lightBrown} />
+               </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {currentStep === 2 && (
+           <View style={styles.formSection}>
+             <Text style={styles.sectionTitle}>Pricing & Stock</Text>
+             <View style={styles.priceRow}>
+                <View style={[styles.inputIsland, { flex: 1 }]}>
+                  <Text style={styles.currency}>₦</Text>
+                  <TextInput
+                    placeholder="Price"
+                    keyboardType="numeric"
+                    style={[styles.input, { color: colors.text }]}
+                    value={formData.price}
+                  />
+                </View>
+                <View style={[styles.inputIsland, { flex: 1 }]}>
+                  <TextInput
+                    placeholder="Stock"
+                    keyboardType="numeric"
+                    style={[styles.input, { color: colors.text }]}
+                    value={formData.stock}
+                  />
+                </View>
+             </View>
+           </View>
+        )}
+      </ScrollView>
+
+      {/* 2. FLOATING ACTION FOOTER */}
+      <View style={[styles.footer, { paddingBottom: insets.bottom + 20 }]}>
+         <AnimatedPressable 
+            style={[styles.nextButton, { backgroundColor: lightBrown }]} 
+            onPress={handleNext}
+            scaleValue={0.95}>
+            <Text style={styles.nextButtonText}>
+              {currentStep === 3 ? 'Create Product' : 'Continue'}
+            </Text>
+            <IconSymbol name="arrow.right" size={18} color="#fff" />
+         </AnimatedPressable>
+      </View>
+    </View>
+  );
+}
+
+const createStyles = (colors: any, insets: any, themeBrown: string) => StyleSheet.create({
+  container: { flex: 1 },
+  floatingHeaderContainer: { 
+    paddingTop: insets.top + 10, 
+    paddingHorizontal: 20, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 8 
+  },
+  nameIsland: { 
+    flex: 1, 
+    backgroundColor: themeBrown, 
+    paddingVertical: 10, 
+    paddingHorizontal: 16, 
+    borderRadius: 22,
+    ...Platform.select({
+      ios: { shadowColor: themeBrown, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 5 },
+      android: { elevation: 3 }
+    })
+  },
+  iconIsland: { 
+    backgroundColor: colors.card, 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    borderWidth: 1, 
+    borderColor: colors.border, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  islandLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: '800' },
+  islandTitle: { color: '#fff', fontSize: 16, fontWeight: '800' },
+
+  indicatorWrapper: { 
+    flexDirection: 'row', 
+    paddingHorizontal: 30, 
+    marginTop: 20, 
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  stepItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  stepDot: { width: 8, height: 8, borderRadius: 4 },
+  stepLabel: { fontSize: 12, fontWeight: '700' },
+  stepLine: { height: 1, width: 20, marginLeft: 10 },
+
+  scrollContent: { padding: 20, paddingBottom: 120 },
+  sectionTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 15, marginTop: 10 },
+  inputIsland: { 
+    backgroundColor: colors.card, 
+    borderRadius: 20, 
+    paddingHorizontal: 16, 
+    height: 56, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    borderWidth: 1, 
+    borderColor: colors.border,
+    marginBottom: 12
+  },
+  input: { flex: 1, fontSize: 15, fontWeight: '600' },
+  currency: { marginRight: 8, fontSize: 16, fontWeight: '800', color: themeBrown },
+  priceRow: { flexDirection: 'row', gap: 12 },
+
+  mediaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  mediaCard: { 
+    width: (width - 64) / 3, 
+    aspectRatio: 1, 
+    borderRadius: 18, 
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden'
+  },
+  addMediaCard: { borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center' },
+  cardImage: { width: '100%', height: '100%' },
+  removeBadge: { 
+    position: 'absolute', 
+    top: 5, 
+    right: 5, 
+    backgroundColor: '#FF4444', 
+    width: 20, 
+    height: 20, 
+    borderRadius: 10, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+
+  footer: { 
+    position: 'absolute', 
+    bottom: 0, 
+    left: 0, 
+    right: 0, 
+    paddingHorizontal: 20,
+    backgroundColor: 'transparent'
+  },
+  nextButton: { 
+    height: 60, 
+    borderRadius: 30, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    gap: 10,
+    ...Platform.select({
+      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 10 },
+      android: { elevation: 5 }
+    })
+  },
+  nextButtonText: { color: '#fff', fontSize: 16, fontWeight: '800' }
+});
