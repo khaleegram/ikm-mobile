@@ -166,7 +166,7 @@ export default function CreatePostScreen() {
 
       haptics.success();
       showToast('Post created successfully!', 'success');
-      router.replace('/(market)/index');
+      router.replace('/(market)');
     } catch (error: any) {
       console.error('Error creating post:', error);
       haptics.error();

@@ -37,7 +37,7 @@ export default function ProfileScreen() {
             try {
               await signOutUser();
               haptics.success();
-              router.replace('/(market)/index');
+              router.replace('/(market)');
             } catch (error: any) {
               haptics.error();
               Alert.alert('Error', error.message || 'Failed to logout');

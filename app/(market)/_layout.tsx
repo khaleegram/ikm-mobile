@@ -1,44 +1,41 @@
 import { Tabs } from 'expo-router';
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 
 import { CustomTabBar } from '@/components/custom-tab-bar';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
-import { useRouter } from 'expo-router';
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { canPostToMarketStreet } from '@/lib/utils/auth-helpers';
 
 export default function MarketTabLayout() {
   const { colors } = useTheme();
-  const router = useRouter();
-  const { user } = useUser();
+
+  const renderTabBar = useCallback((props: any) => <CustomTabBar {...props} />, []);
+
+  const screenOptions = useMemo(() => {
+    return { headerShown: false as const };
+  }, []);
 
   return (
-    <Tabs
-      tabBar={(props) => <CustomTabBar {...props} />}
-      screenOptions={{
-        headerShown: false,
-      }}>
+    <Tabs tabBar={renderTabBar} screenOptions={screenOptions}>
       <Tabs.Screen
         name="index"
         options={{
           tabBarIcon: ({ focused }) => (
-            <IconSymbol 
-              size={24} 
-              name={focused ? "house.fill" : "house"} 
-              color={focused ? colors.primary : colors.textSecondary} 
+            <IconSymbol
+              size={24}
+              name={focused ? 'house.fill' : 'house'}
+              color={focused ? colors.primary : colors.textSecondary}
             />
           ),
         }}
       />
       <Tabs.Screen
-        name="search"
+        name="following"
         options={{
           tabBarIcon: ({ focused }) => (
-            <IconSymbol 
-              size={24} 
-              name="magnifyingglass" 
-              color={focused ? colors.primary : colors.textSecondary} 
+            <IconSymbol
+              size={24}
+              name={focused ? 'person.2.fill' : 'person.2'}
+              color={focused ? colors.primary : colors.textSecondary}
             />
           ),
         }}
@@ -46,23 +43,23 @@ export default function MarketTabLayout() {
       <Tabs.Screen
         name="create-post"
         options={{
-          href: null, // Hide from tab bar (handled by center button)
+          tabBarIcon: ({ focused }) => (
+            <IconSymbol
+              size={22}
+              name={focused ? 'plus.circle.fill' : 'plus.circle'}
+              color={focused ? '#FFFFFF' : colors.textSecondary}
+            />
+          ),
         }}
       />
       <Tabs.Screen
         name="messages"
         options={{
-          href: null, // Hide messages folder from tab bar
-        }}
-      />
-      <Tabs.Screen
-        name="messages/index"
-        options={{
           tabBarIcon: ({ focused }) => (
-            <IconSymbol 
-              size={24} 
-              name={focused ? "message.fill" : "message"} 
-              color={focused ? colors.primary : colors.textSecondary} 
+            <IconSymbol
+              size={24}
+              name={focused ? 'message.fill' : 'message'}
+              color={focused ? colors.primary : colors.textSecondary}
             />
           ),
         }}
@@ -71,17 +68,20 @@ export default function MarketTabLayout() {
         name="profile"
         options={{
           tabBarIcon: ({ focused }) => (
-            <IconSymbol 
-              size={24} 
-              name={focused ? "person.fill" : "person"} 
-              color={focused ? colors.primary : colors.textSecondary} 
+            <IconSymbol
+              size={24}
+              name={focused ? 'person.fill' : 'person'}
+              color={focused ? colors.primary : colors.textSecondary}
             />
           ),
         }}
       />
+
       {/* Hidden screens */}
       <Tabs.Screen name="settings" options={{ href: null }} />
-      <Tabs.Screen name="post" options={{ href: null }} />
+      <Tabs.Screen name="search" options={{ href: null }} />
+      <Tabs.Screen name="post/[id]" options={{ href: null }} />
+      <Tabs.Screen name="messages/[chatId]" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useRef, useCallback } from 'react';
 import {
   View,
   FlatList,
@@ -18,13 +18,12 @@ import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { router } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { showToast } from '@/components/toast';
 
-const { width, height } = Dimensions.get('window');
+const { height } = Dimensions.get('window');
 const lightBrown = '#A67C52';
 
 export default function MarketFeedScreen() {
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { posts, loading, error, loadMore, hasMore, refresh } = useMarketPosts();
   const [refreshing, setRefreshing] = React.useState(false);
@@ -65,10 +64,36 @@ export default function MarketFeedScreen() {
     []
   );
 
+  const renderHomeAppBar = () => (
+    <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 8 }]}>
+      <View style={styles.headerTopRow}>
+        <View style={styles.brandIsland}>
+          <View style={styles.brandLogoBadge}>
+            <IconSymbol name="storefront.fill" size={14} color="#FFFFFF" />
+          </View>
+          <View style={styles.brandTextWrap}>
+            <Text style={styles.headerLabel}>MARKET STREET</Text>
+            <Text style={styles.headerTitle}>Home</Text>
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={styles.searchButton}
+          onPress={() => {
+            haptics.light();
+            router.push('/(market)/search');
+          }}>
+          <IconSymbol name="magnifyingglass" size={18} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
   if (loading && posts.length === 0) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <StatusBar barStyle="light-content" />
+        {renderHomeAppBar()}
         <ActivityIndicator size="large" color={lightBrown} />
       </View>
     );
@@ -78,6 +103,7 @@ export default function MarketFeedScreen() {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <StatusBar barStyle="light-content" />
+        {renderHomeAppBar()}
         <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.error} />
         <Text style={[styles.errorText, { color: colors.error }]}>
           Error loading feed
@@ -102,6 +128,7 @@ export default function MarketFeedScreen() {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <StatusBar barStyle="light-content" />
+        {renderHomeAppBar()}
         <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
           No posts available
         </Text>
@@ -112,6 +139,7 @@ export default function MarketFeedScreen() {
   return (
     <View style={[styles.container, { backgroundColor: '#000' }]}>
       <StatusBar barStyle="light-content" translucent />
+
       <FlatList
         ref={flatListRef}
         data={posts}
@@ -145,6 +173,8 @@ export default function MarketFeedScreen() {
           ) : null
         }
       />
+
+      {renderHomeAppBar()}
     </View>
   );
 }
@@ -152,6 +182,61 @@ export default function MarketFeedScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  floatingHeaderContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    elevation: 50,
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  brandIsland: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: lightBrown,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  brandLogoBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  brandTextWrap: {
+    flex: 1,
+  },
+  headerLabel: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+  },
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  searchButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: lightBrown,
   },
   center: {
     flex: 1,
