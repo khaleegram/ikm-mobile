@@ -28,11 +28,11 @@ export default function AdminTabLayout() {
   }
 
   if (!user) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/(auth)/seller-login" />;
   }
 
   if (!hasAppAccess(user)) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/(auth)/seller-login" />;
   }
 
   if (!user.isAdmin) {

@@ -13,6 +13,14 @@ import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+function normalizeUserRole(role: unknown, isAdmin: boolean, hasStore: boolean): 'user' | 'seller' | 'admin' {
+  if (isAdmin) return 'admin';
+  if (role === 'admin' || role === 'seller' || role === 'user') return role;
+  if (role === 'customer') return 'user';
+  if (hasStore) return 'seller';
+  return 'user';
+}
+
 export default function AdminUsers() {
   const { colors, colorScheme, toggleTheme } = useTheme();
   const { user: currentUser } = useUser();
@@ -37,7 +45,7 @@ export default function AdminUsers() {
     );
   }, [users, searchQuery]);
 
-  const handleUpdateRole = async (userId: string, newRole: 'customer' | 'seller' | 'admin') => {
+  const handleUpdateRole = async (userId: string, newRole: 'user' | 'seller' | 'admin') => {
     if (userId === currentUser?.uid) {
       haptics.error();
       Alert.alert('Error', 'You cannot change your own role');
@@ -80,7 +88,7 @@ export default function AdminUsers() {
   };
 
   const renderUser = ({ item }: { item: typeof filteredUsers[0] }) => {
-    const role = (item as any).role || (item.isAdmin ? 'admin' : (item.storeName ? 'seller' : 'customer'));
+    const role = normalizeUserRole((item as any).role, item.isAdmin === true, !!item.storeName);
     const displayName = item.displayName || item.email || 'Unknown';
     
     return (
@@ -215,9 +223,9 @@ export default function AdminUsers() {
                 <View style={[styles.detailCard, { backgroundColor: colors.backgroundSecondary }]}>
                   <Text style={[styles.detailSectionTitle, { color: colors.text }]}>Role Management</Text>
                   <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Current Role</Text>
-                  <View style={[styles.currentRoleBadge, { backgroundColor: `${getRoleColor((selectedUser as any).role || (selectedUser.isAdmin ? 'admin' : (selectedUser.storeName ? 'seller' : 'customer')))}20` }]}>
-                    <Text style={[styles.currentRoleText, { color: getRoleColor((selectedUser as any).role || (selectedUser.isAdmin ? 'admin' : (selectedUser.storeName ? 'seller' : 'customer'))) }]}>
-                      {((selectedUser as any).role || (selectedUser.isAdmin ? 'admin' : (selectedUser.storeName ? 'seller' : 'customer'))).toUpperCase()}
+                  <View style={[styles.currentRoleBadge, { backgroundColor: `${getRoleColor(normalizeUserRole((selectedUser as any).role, selectedUser.isAdmin === true, !!selectedUser.storeName))}20` }]}>
+                    <Text style={[styles.currentRoleText, { color: getRoleColor(normalizeUserRole((selectedUser as any).role, selectedUser.isAdmin === true, !!selectedUser.storeName)) }]}>
+                      {normalizeUserRole((selectedUser as any).role, selectedUser.isAdmin === true, !!selectedUser.storeName).toUpperCase()}
                     </Text>
                   </View>
 
@@ -225,8 +233,8 @@ export default function AdminUsers() {
                     <>
                       <Text style={[styles.detailLabel, { color: colors.textSecondary, marginTop: 16 }]}>Change Role</Text>
                       <View style={styles.roleButtons}>
-                        {(['customer', 'seller', 'admin'] as const).map((role) => {
-                          const currentRole = (selectedUser as any).role || (selectedUser.isAdmin ? 'admin' : (selectedUser.storeName ? 'seller' : 'customer'));
+                        {(['user', 'seller', 'admin'] as const).map((role) => {
+                          const currentRole = normalizeUserRole((selectedUser as any).role, selectedUser.isAdmin === true, !!selectedUser.storeName);
                           const isSelected = role === currentRole;
                           return (
                             <TouchableOpacity
@@ -315,7 +323,7 @@ function getRoleColor(role: string) {
       return '#FF3B30';
     case 'seller':
       return '#007AFF';
-    case 'customer':
+    case 'user':
       return '#34C759';
     default:
       return '#8E8E93';

@@ -11,6 +11,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '@/lib/firebase/auth/use-user';
 
+function normalizeUserRole(role: unknown, isAdmin: boolean, hasStore: boolean): 'user' | 'seller' | 'admin' {
+  if (isAdmin) return 'admin';
+  if (role === 'admin' || role === 'seller' || role === 'user') return role;
+  if (role === 'customer') return 'user';
+  if (hasStore) return 'seller';
+  return 'user';
+}
+
 export default function AdminUserDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { colors, colorScheme } = useTheme();
@@ -20,7 +28,7 @@ export default function AdminUserDetail() {
   const insets = useSafeAreaInsets();
   const styles = createStyles(colors);
 
-  const handleUpdateRole = async (newRole: 'customer' | 'seller' | 'admin') => {
+  const handleUpdateRole = async (newRole: 'user' | 'seller' | 'admin') => {
     if (!user || !user.id) return;
 
     if (user.id === currentUser?.uid) {
@@ -70,7 +78,7 @@ export default function AdminUserDetail() {
     );
   }
 
-  const currentRole = (user as any).role || (user.isAdmin ? 'admin' : (user.storeName ? 'seller' : 'customer'));
+  const currentRole = normalizeUserRole((user as any).role, user.isAdmin === true, !!user.storeName);
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -120,7 +128,7 @@ export default function AdminUserDetail() {
                 Change Role
               </Text>
               <View style={styles.roleButtons}>
-                {(['customer', 'seller', 'admin'] as const).map((role) => {
+                {(['user', 'seller', 'admin'] as const).map((role) => {
                   const isSelected = role === currentRole;
                   return (
                     <TouchableOpacity
@@ -215,7 +223,7 @@ function getRoleColor(role: string) {
       return '#FF3B30';
     case 'seller':
       return '#007AFF';
-    case 'customer':
+    case 'user':
       return '#34C759';
     default:
       return '#8E8E93';

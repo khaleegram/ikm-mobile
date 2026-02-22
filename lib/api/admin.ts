@@ -8,7 +8,7 @@ import { cloudFunctions } from './cloud-functions';
 import { User, Order, OrderStatus } from '@/types';
 
 export interface UpdateUserRoleData {
-  role?: 'customer' | 'seller' | 'admin';
+  role?: 'user' | 'customer' | 'seller' | 'admin';
   isAdmin?: boolean;
 }
 
@@ -25,7 +25,7 @@ export const adminApi = {
   getAllUsers: async (data?: {
     limit?: number;
     startAfter?: string;
-    role?: 'customer' | 'seller' | 'admin';
+    role?: 'user' | 'customer' | 'seller' | 'admin';
   }): Promise<{
     users: User[];
     hasMore: boolean;
@@ -47,7 +47,7 @@ export const adminApi = {
       await cloudFunctions.revokeAdminRole(userId);
     }
     
-    // For role changes (seller/customer), we might need a separate Cloud Function
+    // For role changes (seller/user), we might need a separate Cloud Function
     // For now, if you have a Cloud Function for this, add it here
     // Otherwise, return a placeholder - the role change will be reflected in Firestore
     

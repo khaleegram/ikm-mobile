@@ -13,6 +13,14 @@ import {
 import { firestore } from '../config';
 import { User, Order, Product } from '@/types';
 
+function normalizeUserRole(role: unknown, isAdmin: boolean, hasStore: boolean): 'user' | 'seller' | 'admin' {
+  if (isAdmin) return 'admin';
+  if (role === 'admin' || role === 'seller' || role === 'user') return role;
+  if (role === 'customer') return 'user';
+  if (hasStore) return 'seller';
+  return 'user';
+}
+
 // Get all users for admin
 export function useAllUsers() {
   const [users, setUsers] = useState<User[]>([]);
@@ -49,7 +57,7 @@ export function useAllUsers() {
             payoutDetails: data.payoutDetails,
             onboardingCompleted: data.onboardingCompleted,
             isGuest: data.isGuest,
-            role: data.role || (data.isAdmin ? 'admin' : 'customer'), // Include role field
+            role: normalizeUserRole(data.role, data.isAdmin === true, !!data.storeName), // Include role field
             createdAt: data.createdAt?.toDate() || new Date(),
             updatedAt: data.updatedAt?.toDate() || new Date(),
           } as User & { role?: string });
@@ -170,7 +178,7 @@ export function usePlatformStats() {
   const stats = {
     totalUsers: users.length,
     totalSellers: users.filter(u => u.role === 'seller').length,
-    totalCustomers: users.filter(u => u.role === 'customer' || !u.role).length,
+    totalCustomers: users.filter(u => u.role === 'user' || u.role === 'customer' || !u.role).length,
     totalOrders: orders.length,
     totalProducts: products.length,
     totalRevenue: orders
