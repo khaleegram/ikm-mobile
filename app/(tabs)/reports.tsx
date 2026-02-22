@@ -8,7 +8,7 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { useSellerOrders } from '@/lib/firebase/firestore/orders';
 import { useSellerProducts } from '@/lib/firebase/firestore/products';
 import { useSellerCustomers } from '@/lib/firebase/firestore/customers';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 
 export default function ReportsScreen() {

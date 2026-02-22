@@ -137,7 +137,7 @@ export default function NotificationsScreen() {
           </View>
           <Text style={[styles.emptyTitle, { color: colors.text }]}>No notifications yet</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            You'll see order updates, payment alerts, and system notifications here
+            You&apos;ll see order updates, payment alerts, and system notifications here
           </Text>
         </View>
       ) : (
