@@ -2,7 +2,7 @@
 
 import { Timestamp } from 'firebase/firestore';
 
-export type UserRole = 'customer' | 'seller' | 'admin';
+export type UserRole = 'user' | 'customer' | 'seller' | 'admin';
 export type SellerType = 'business' | 'street' | 'both';
 
 // User Collection - matches Firebase schema exactly
@@ -573,6 +573,7 @@ export interface MarketPost {
   images: string[];              // 1-20 image URLs (required)
   hashtags?: string[];           // Optional hashtags
   price?: number;                // Optional price (NGN)
+  isNegotiable?: boolean;        // Show DM action when priced posts are negotiable
   description?: string;          // Optional description
   location?: {
     state?: string;
@@ -598,13 +599,20 @@ export interface MarketPost {
 // Market Message Collection
 export interface MarketMessage {
   id?: string;
-  chatId: string;                // Unique chat ID (buyerId_posterId_postId)
+  chatId: string;                // Conversation ID (direct_{minUid}_{maxUid})
   senderId: string;              // Sender Firebase UID
   receiverId: string;            // Receiver Firebase UID
   postId: string;                // Related Market Post ID
   message: string;               // Message text
+  clientMessageId?: string;      // Client-generated ID for deduplication
+  type?: 'text' | 'media' | 'quote';
   imageUrl?: string;             // Optional image in message
   paymentLink?: string;          // Optional payment link
+  quoteCard?: {
+    postId: string;
+    previewText: string;
+    previewImage?: string;
+  };
   read: boolean;                 // Read status
   
   // Timestamps

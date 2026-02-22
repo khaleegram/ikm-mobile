@@ -1,77 +1,309 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  TextInput,
-  TouchableOpacity,
-  KeyboardAvoidingView,
-  Platform,
   ActivityIndicator,
   Alert,
+  FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { showToast } from '@/components/toast';
+import { marketMessagesApi } from '@/lib/api/market-messages';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useTheme } from '@/lib/theme/theme-context';
-import { useMarketChat } from '@/lib/firebase/firestore/market-messages';
-import { MessageBubble } from '@/components/market/message-bubble';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { AnimatedPressable } from '@/components/animated-pressable';
-import { marketMessagesApi } from '@/lib/api/market-messages';
-import { showToast } from '@/components/toast';
+import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
-import * as ImagePicker from 'expo-image-picker';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
+import { buildMarketOfferLink } from '@/lib/utils/market-offer-link';
+import { MarketMessage } from '@/types';
 
-const lightBrown = '#A67C52';
+import { ChatComposer } from './chat-detail/chat-composer';
+import { ChatHeader } from './chat-detail/chat-header';
+import { ChatList } from './chat-detail/chat-list';
+import { OfferModal } from './chat-detail/offer-modal';
+import { styles } from './chat-detail/styles';
+import { useChatHeader } from './chat-detail/use-chat-header';
+import { useChatMessages } from './chat-detail/use-chat-messages';
+import { useChatRoute } from './chat-detail/use-chat-route';
+import { useOfferLogic } from './chat-detail/use-offer-logic';
+import { buildClientMessageId, lightBrown } from './chat-detail/utils';
 
 export default function ChatDetailScreen() {
-  const { chatId } = useLocalSearchParams<{ chatId: string }>();
+  const { user } = useUser();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { user } = useUser();
-  const { messages, loading } = useMarketChat(chatId as string);
+  const marketLoginRoute = getLoginRouteForVariant('market');
+  const userId = user?.uid || null;
+
+  const {
+    activeChatId,
+    directConversationId,
+    legacyChatId,
+    resolvedPeerId,
+    setActiveChatId,
+    goBackToInbox,
+    syncRouteChatId,
+  } = useChatRoute(userId);
+
+  const {
+    contextPostId,
+    displayMessages,
+    error,
+    legacyChat,
+    legacySellerId,
+    loading,
+    renderedMessages,
+    setPendingMessages,
+    unreadCount,
+    unreadDividerMessageId,
+  } = useChatMessages({
+    activeChatId,
+    legacyChatId,
+    resolvedPeerId,
+    userId,
+  });
+
+  const { headerAvatarUri, headerName } = useChatHeader({
+    legacyChat,
+    resolvedPeerId,
+    userId,
+  });
+
+  const { canSendOffer, sellerId, showInlineOfferCta } = useOfferLogic({
+    contextPostId,
+    displayMessages,
+    legacySellerId,
+    userId,
+  });
+
+  const flatListRef = useRef<FlatList<MarketMessage>>(null);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
-  const flatListRef = useRef<FlatList>(null);
+  const [offerVisible, setOfferVisible] = useState(false);
+  const [offerAmount, setOfferAmount] = useState('');
+  const [offerNote, setOfferNote] = useState('');
+  const [sendingOffer, setSendingOffer] = useState(false);
 
-  // Auto-scroll to bottom when new messages arrive
+  const scrollToLatest = useCallback((animated: boolean = true) => {
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToOffset({ offset: 0, animated });
+    });
+  }, []);
+
   useEffect(() => {
-    if (messages.length > 0) {
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-    }
-  }, [messages.length]);
+    if (renderedMessages.length === 0) return undefined;
+    const timeout = setTimeout(() => scrollToLatest(false), 40);
+    return () => clearTimeout(timeout);
+  }, [renderedMessages.length, scrollToLatest]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => {
+      setKeyboardVisible(true);
+      scrollToLatest(false);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardVisible(false);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [scrollToLatest]);
+
+  const applyResolvedChatId = useCallback(
+    (chatId: string) => {
+      const normalized = String(chatId || '').trim();
+      if (!normalized || normalized === activeChatId) return;
+      setActiveChatId(normalized);
+      syncRouteChatId(normalized);
+    },
+    [activeChatId, setActiveChatId, syncRouteChatId]
+  );
+
+  const buildSendTargets = useCallback(() => {
+    const primary = directConversationId || activeChatId;
+    const fallbacks = [activeChatId, directConversationId]
+      .map((id) => String(id || '').trim())
+      .filter((id, index, arr) => Boolean(id) && id !== primary && arr.indexOf(id) === index);
+    return { primary, fallbacks };
+  }, [activeChatId, directConversationId]);
+
+  const attemptSend = useCallback(
+    async (
+      text: string,
+      imageUrl?: string,
+      paymentLink?: string,
+      options?: { clientMessageId?: string }
+    ) => {
+      const { primary, fallbacks } = buildSendTargets();
+      if (!primary) {
+        throw new Error('Unable to resolve chat id for this conversation.');
+      }
+
+      try {
+        const sendResult = await marketMessagesApi.sendMessage(
+          primary,
+          text,
+          imageUrl,
+          paymentLink,
+          options
+        );
+        return { chatId: primary, queued: Boolean(sendResult.queued) };
+      } catch (primaryError) {
+        for (const fallbackId of fallbacks) {
+          try {
+            const sendResult = await marketMessagesApi.sendMessage(
+              fallbackId,
+              text,
+              imageUrl,
+              paymentLink,
+              options
+            );
+            return { chatId: fallbackId, queued: Boolean(sendResult.queued) };
+          } catch {
+            // Try next fallback id.
+          }
+        }
+        throw primaryError;
+      }
+    },
+    [buildSendTargets]
+  );
+
+  const handleOpenOffer = useCallback(
+    (offer: { postId: string; sellerId: string; price: number; chatId?: string }) => {
+      const targetChatId = offer.chatId || activeChatId || '';
+      router.push(
+        `/(market)/buy/${offer.postId}?offerPrice=${offer.price}&chatId=${targetChatId}&sellerId=${offer.sellerId}` as any
+      );
+    },
+    [activeChatId]
+  );
 
   const handleSend = async () => {
     if (!user) {
       Alert.alert('Login Required', 'Please log in to send messages', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Login', onPress: () => router.push('/(auth)/login') },
+        { text: 'Login', onPress: () => router.push(marketLoginRoute as any) },
       ]);
       return;
     }
 
-    if (!messageText.trim()) {
+    const trimmedMessage = messageText.trim();
+    if (!trimmedMessage) return;
+
+    const { primary } = buildSendTargets();
+    if (!primary) {
+      showToast('Unable to open this conversation right now.', 'error');
       return;
     }
 
-    setSending(true);
+    const optimisticMessageId = buildClientMessageId();
+    const optimisticMessage: MarketMessage = {
+      id: optimisticMessageId,
+      chatId: primary,
+      senderId: user.uid,
+      receiverId: '',
+      postId: contextPostId || '',
+      message: trimmedMessage,
+      clientMessageId: optimisticMessageId,
+      read: false,
+      createdAt: new Date(),
+    };
+
+    setPendingMessages((previous) => [...previous, optimisticMessage]);
+    setMessageText('');
+    scrollToLatest();
     haptics.medium();
 
     try {
-      await marketMessagesApi.sendMessage(chatId as string, messageText);
-      setMessageText('');
-      haptics.success();
-    } catch (error: any) {
-      console.error('Error sending message:', error);
+      const result = await attemptSend(trimmedMessage, undefined, undefined, {
+        clientMessageId: optimisticMessageId,
+      });
+      applyResolvedChatId(result.chatId);
+
+      if (result.queued) {
+        showToast('No network. Message queued and will send when online.', 'info');
+      } else {
+        haptics.success();
+        setTimeout(() => {
+          setPendingMessages((previous) =>
+            previous.filter((pendingMessage) => pendingMessage.id !== optimisticMessageId)
+          );
+        }, 20000);
+      }
+      scrollToLatest();
+    } catch (sendError: any) {
+      setPendingMessages((previous) =>
+        previous.filter((pendingMessage) => pendingMessage.id !== optimisticMessageId)
+      );
+      setMessageText((current) => current || trimmedMessage);
+      console.error('Error sending message:', sendError);
       haptics.error();
-      showToast(error.message || 'Failed to send message', 'error');
+      showToast(sendError?.message || 'Failed to send message', 'error');
+    }
+  };
+
+  const handleSendOffer = async () => {
+    if (!user || !contextPostId || !sellerId) return;
+
+    const numericAmount = Number(offerAmount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      showToast('Enter a valid offer amount.', 'error');
+      return;
+    }
+
+    try {
+      setSendingOffer(true);
+      haptics.medium();
+
+      const { primary } = buildSendTargets();
+      if (!primary) throw new Error('Unable to resolve chat id.');
+
+      const offerLink = buildMarketOfferLink({
+        postId: contextPostId,
+        sellerId,
+        price: numericAmount,
+        chatId: primary,
+      });
+      const formattedAmount = `NGN ${numericAmount.toLocaleString()}`;
+      const note = offerNote.trim();
+      const offerText = note
+        ? `Final offer: ${formattedAmount}\n${note}`
+        : `Final offer: ${formattedAmount}. Tap Buy Offer to pay into escrow.`;
+      const offerClientMessageId = buildClientMessageId();
+
+      const result = await attemptSend(offerText, undefined, offerLink, {
+        clientMessageId: offerClientMessageId,
+      });
+      applyResolvedChatId(result.chatId);
+
+      if (result.queued) {
+        showToast('No network. Offer queued and will send when online.', 'info');
+      } else {
+        showToast('Offer sent to buyer.', 'success');
+      }
+
+      setOfferVisible(false);
+      setOfferAmount('');
+      setOfferNote('');
+      haptics.success();
+      scrollToLatest();
+    } catch (offerError: any) {
+      console.error('Error sending offer:', offerError);
+      haptics.error();
+      showToast(offerError?.message || 'Unable to send offer right now.', 'error');
     } finally {
-      setSending(false);
+      setSendingOffer(false);
     }
   };
 
@@ -79,7 +311,7 @@ export default function ChatDetailScreen() {
     if (!user) {
       Alert.alert('Login Required', 'Please log in to send images', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Login', onPress: () => router.push('/(auth)/login') },
+        { text: 'Login', onPress: () => router.push(marketLoginRoute as any) },
       ]);
       return;
     }
@@ -97,20 +329,22 @@ export default function ChatDetailScreen() {
         quality: 0.8,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        setSending(true);
-        haptics.medium();
+      if (result.canceled || !result.assets[0]) return;
 
-        // Convert to base64 and upload
-        const base64 = await convertImageToBase64(result.assets[0].uri);
-        // For now, we'll send the base64 as imageUrl (backend should handle upload)
-        await marketMessagesApi.sendMessage(chatId as string, '', base64);
-        haptics.success();
-      }
-    } catch (error: any) {
-      console.error('Error picking image:', error);
+      setSending(true);
+      haptics.medium();
+      const base64 = await convertImageToBase64(result.assets[0].uri);
+      const mediaClientMessageId = buildClientMessageId();
+      const sendResult = await attemptSend('', base64, undefined, {
+        clientMessageId: mediaClientMessageId,
+      });
+      applyResolvedChatId(sendResult.chatId);
+      haptics.success();
+      scrollToLatest();
+    } catch (pickError: any) {
+      console.error('Error picking image:', pickError);
       haptics.error();
-      showToast('Failed to send image', 'error');
+      showToast(pickError?.message || 'Failed to send image', 'error');
     } finally {
       setSending(false);
     }
@@ -122,7 +356,7 @@ export default function ChatDetailScreen() {
         <Text style={[styles.text, { color: colors.text }]}>Please log in to view chat</Text>
         <TouchableOpacity
           style={[styles.button, { backgroundColor: lightBrown }]}
-          onPress={() => router.push('/(auth)/login')}>
+          onPress={() => router.push(marketLoginRoute as any)}>
           <Text style={styles.buttonText}>Login</Text>
         </TouchableOpacity>
       </View>
@@ -133,191 +367,86 @@ export default function ChatDetailScreen() {
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={insets.top}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          {
-            backgroundColor: colors.card,
-            paddingTop: insets.top + 12,
-            borderBottomColor: colors.border,
-          },
-        ]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
-          <IconSymbol name="arrow.left" size={24} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Messages</Text>
-        <View style={styles.headerButton} />
-      </View>
-
-      {/* Messages List */}
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={lightBrown} />
-        </View>
-      ) : messages.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <IconSymbol name="message" size={64} color={colors.textSecondary} />
-          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            No messages yet. Start the conversation!
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          ref={flatListRef}
-          data={messages}
-          keyExtractor={(item) => item.id || Math.random().toString()}
-          contentContainerStyle={styles.messagesContent}
-          renderItem={({ item }) => <MessageBubble message={item} />}
-          onContentSizeChange={() => {
-            flatListRef.current?.scrollToEnd({ animated: true });
+      keyboardVerticalOffset={0}>
+      <View style={styles.container}>
+        <ChatHeader
+          canSendOffer={canSendOffer}
+          colors={colors}
+          headerAvatarUri={headerAvatarUri}
+          headerName={headerName}
+          insetTop={insets.top}
+          onBack={goBackToInbox}
+          onOpenOffer={() => {
+            haptics.light();
+            setOfferVisible(true);
           }}
         />
-      )}
 
-      {/* Input */}
-      <View
-        style={[
-          styles.inputContainer,
-          {
-            backgroundColor: colors.card,
-            borderTopColor: colors.border,
-            paddingBottom: insets.bottom + 12,
-          },
-        ]}>
-        <AnimatedPressable
-          style={[styles.imageButton, { backgroundColor: colors.backgroundSecondary }]}
-          onPress={handlePickImage}
-          scaleValue={0.9}>
-          <IconSymbol name="photo" size={24} color={colors.text} />
-        </AnimatedPressable>
-        <View
-          style={[
-            styles.inputWrapper,
-            {
-              backgroundColor: colors.backgroundSecondary,
-              borderColor: colors.border,
-            },
-          ]}>
-          <TextInput
-            style={[styles.input, { color: colors.text }]}
-            placeholder="Type a message..."
-            placeholderTextColor={colors.textSecondary}
-            value={messageText}
-            onChangeText={setMessageText}
-            multiline
-            maxLength={1000}
+        {loading && displayMessages.length === 0 ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={lightBrown} />
+          </View>
+        ) : error && displayMessages.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.error} />
+            <Text style={[styles.emptyText, { color: colors.error }]}>Unable to load chat</Text>
+            <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
+              Please open this conversation again.
+            </Text>
+          </View>
+        ) : displayMessages.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <IconSymbol name="message" size={64} color={colors.textSecondary} />
+            <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+              No messages yet. Start the conversation!
+            </Text>
+          </View>
+        ) : (
+          <ChatList
+            activeChatId={activeChatId}
+            colors={colors}
+            currentUserId={userId}
+            flatListRef={flatListRef}
+            insetsBottom={insets.bottom}
+            keyboardVisible={keyboardVisible}
+            messages={renderedMessages}
+            onOpenOffer={handleOpenOffer}
+            onScrollToLatest={scrollToLatest}
+            peerAvatarUri={headerAvatarUri}
+            unreadCount={unreadCount}
+            unreadDividerMessageId={unreadDividerMessageId}
           />
-        </View>
-        <AnimatedPressable
-          style={[
-            styles.sendButton,
-            {
-              backgroundColor: messageText.trim() ? lightBrown : colors.backgroundSecondary,
-              opacity: messageText.trim() ? 1 : 0.5,
-            },
-          ]}
-          onPress={handleSend}
-          disabled={!messageText.trim() || sending}
-          scaleValue={0.9}>
-          {sending ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <IconSymbol name="arrow.up.circle.fill" size={28} color="#FFFFFF" />
-          )}
-        </AnimatedPressable>
+        )}
+
+        <ChatComposer
+          colors={colors}
+          keyboardVisible={keyboardVisible}
+          messageText={messageText}
+          onChangeMessageText={setMessageText}
+          onFocusInput={() => scrollToLatest(false)}
+          onOpenOffer={() => {
+            haptics.light();
+            setOfferVisible(true);
+          }}
+          onPickImage={handlePickImage}
+          onSend={handleSend}
+          sending={sending}
+          showInlineOfferCta={showInlineOfferCta}
+          insetBottom={insets.bottom}
+        />
       </View>
+
+      <OfferModal
+        colors={colors}
+        offerAmount={offerAmount}
+        offerNote={offerNote}
+        onChangeOfferAmount={setOfferAmount}
+        onChangeOfferNote={setOfferNote}
+        onClose={() => setOfferVisible(false)}
+        onSendOffer={handleSendOffer}
+        sendingOffer={sendingOffer}
+        visible={offerVisible}
+      />
     </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-  },
-  headerButton: {
-    width: 60,
-    alignItems: 'flex-start',
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    flex: 1,
-    textAlign: 'center',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-  },
-  emptyText: {
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  messagesContent: {
-    paddingVertical: 16,
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    gap: 8,
-  },
-  imageButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  inputWrapper: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    maxHeight: 100,
-  },
-  input: {
-    fontSize: 16,
-    maxHeight: 80,
-  },
-  sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  text: {
-    fontSize: 18,
-  },
-  button: {
-    marginTop: 20,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-  },
-  buttonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-});
