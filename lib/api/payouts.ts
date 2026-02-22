@@ -17,7 +17,7 @@ export interface ResolveAccountResponse {
 
 export const payoutsApi = {
   // Get list of Nigerian banks (uses Cloud Function)
-  getBanksList: async (): Promise<Array<{ name: string; code: string; [key: string]: any }>> => {
+  getBanksList: async (): Promise<{ name: string; code: string; [key: string]: any }[]> => {
     const response = await cloudFunctions.getBanksList();
     return response.banks || [];
   },
@@ -37,8 +37,11 @@ export const payoutsApi = {
 
   // Request payout (if you have a Cloud Function for this, we can add it)
   requestPayout: async (sellerId: string, amount: number): Promise<Payout> => {
-    // If you have a requestPayout Cloud Function, let me know and I'll add it
-    throw new Error('Request payout Cloud Function not found. If you have one, please provide the URL.');
+    const response = await cloudFunctions.requestPayout({
+      amount,
+      sellerId,
+    });
+    return response as Payout;
   },
 };
 

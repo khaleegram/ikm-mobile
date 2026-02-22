@@ -238,7 +238,8 @@ export default function OrderDetailScreen() {
       <Modal visible={showChatModal} transparent animationType="fade">
         <Pressable style={styles.overlay} onPress={() => setShowChatModal(false)}>
           <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'} 
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={insets.top}
             style={styles.modalCenteredView}
           >
             <Pressable style={[styles.midModal, { backgroundColor: colors.card }]} onPress={(e) => e.stopPropagation()}>
@@ -250,7 +251,12 @@ export default function OrderDetailScreen() {
                 </TouchableOpacity>
               </View>
               
-              <ScrollView ref={chatScrollRef} style={styles.chatScroll} showsVerticalScrollIndicator={false}>
+              <ScrollView
+                ref={chatScrollRef}
+                style={styles.chatScroll}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="always"
+                keyboardDismissMode="none">
                 {messagesLoading ? (
                   <View style={styles.parksLoading}>
                     <ActivityIndicator size="small" color="#A67C52" />
@@ -353,51 +359,56 @@ export default function OrderDetailScreen() {
       {/* NOT AVAILABLE DIALOG */}
       <Modal visible={showNotAvailableDialog} transparent animationType="fade">
         <Pressable style={styles.overlay} onPress={() => { haptics.light(); setShowNotAvailableDialog(false); }}>
-          <Pressable style={[styles.midModal, { backgroundColor: colors.card }]} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.modalHandle} />
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>Mark as Not Available</Text>
-              <TouchableOpacity onPress={() => { haptics.light(); setShowNotAvailableDialog(false); }}>
-                <IconSymbol name="xmark.circle.fill" size={24} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-            
-            <View style={styles.dialogContent}>
-              <Text style={[styles.dialogLabel, { color: colors.text }]}>Reason (optional)</Text>
-              <TextInput
-                style={[styles.dialogInput, { backgroundColor: colors.backgroundSecondary, color: colors.text }]}
-                placeholder="Enter reason..."
-                placeholderTextColor={colors.textSecondary}
-                value={notAvailableReason}
-                onChangeText={setNotAvailableReason}
-                multiline
-              />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={insets.top}
+            style={styles.modalCenteredView}>
+            <Pressable style={[styles.midModal, { backgroundColor: colors.card }]} onPress={(e) => e.stopPropagation()}>
+              <View style={styles.modalHandle} />
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>Mark as Not Available</Text>
+                <TouchableOpacity onPress={() => { haptics.light(); setShowNotAvailableDialog(false); }}>
+                  <IconSymbol name="xmark.circle.fill" size={24} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
               
-              <Text style={[styles.dialogLabel, { color: colors.text, marginTop: 16 }]}>Wait Time (days, optional)</Text>
-              <TextInput
-                style={[styles.dialogInput, { backgroundColor: colors.backgroundSecondary, color: colors.text }]}
-                placeholder="Enter days..."
-                placeholderTextColor={colors.textSecondary}
-                value={waitTimeDays}
-                onChangeText={setWaitTimeDays}
-                keyboardType="numeric"
-              />
-              
-              <TouchableOpacity
-                onPress={() => {
-                  haptics.medium();
-                  performStatusUpdate('AvailabilityCheck', null, null);
-                }}
-                disabled={updating}
-                style={[styles.dialogButton, { backgroundColor: '#F97316', opacity: updating ? 0.5 : 1 }]}>
-                {updating ? (
-                  <ActivityIndicator size="small" color="#FFF" />
-                ) : (
-                  <Text style={styles.dialogButtonText}>Submit</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </Pressable>
+              <View style={styles.dialogContent}>
+                <Text style={[styles.dialogLabel, { color: colors.text }]}>Reason (optional)</Text>
+                <TextInput
+                  style={[styles.dialogInput, { backgroundColor: colors.backgroundSecondary, color: colors.text }]}
+                  placeholder="Enter reason..."
+                  placeholderTextColor={colors.textSecondary}
+                  value={notAvailableReason}
+                  onChangeText={setNotAvailableReason}
+                  multiline
+                />
+                
+                <Text style={[styles.dialogLabel, { color: colors.text, marginTop: 16 }]}>Wait Time (days, optional)</Text>
+                <TextInput
+                  style={[styles.dialogInput, { backgroundColor: colors.backgroundSecondary, color: colors.text }]}
+                  placeholder="Enter days..."
+                  placeholderTextColor={colors.textSecondary}
+                  value={waitTimeDays}
+                  onChangeText={setWaitTimeDays}
+                  keyboardType="numeric"
+                />
+                
+                <TouchableOpacity
+                  onPress={() => {
+                    haptics.medium();
+                    performStatusUpdate('AvailabilityCheck', null, null);
+                  }}
+                  disabled={updating}
+                  style={[styles.dialogButton, { backgroundColor: '#F97316', opacity: updating ? 0.5 : 1 }]}>
+                  {updating ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <Text style={styles.dialogButtonText}>Submit</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </KeyboardAvoidingView>
         </Pressable>
       </Modal>
 

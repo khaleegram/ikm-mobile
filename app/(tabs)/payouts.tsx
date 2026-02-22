@@ -172,9 +172,7 @@ export default function PayoutsScreen() {
 
     setRequestingPayout(true);
     try {
-      // TODO: If you have a requestPayout Cloud Function, add it to cloud-functions.ts
-      // For now, this would need to be handled via your backend API or Cloud Function
-      throw new Error('Request payout functionality needs a Cloud Function. Please provide the URL if you have one.');
+      await payoutsApi.requestPayout(user.uid, amount);
       Alert.alert('Success', 'Payout request submitted successfully');
       setPayoutModalVisible(false);
       setPayoutAmount('');
