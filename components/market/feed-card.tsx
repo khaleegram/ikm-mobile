@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -11,24 +11,26 @@ import { MarketPost } from '@/types';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPostLikes } from '@/lib/firebase/firestore/market-posts';
 import { marketPostsApi } from '@/lib/api/market-posts';
+import { haptics } from '@/lib/utils/haptics';
 import { PostOverlay } from './post-overlay';
 
 const { width, height } = Dimensions.get('window');
-const lightBrown = '#A67C52';
-
+const viewedPostIds = new Set<string>();
 interface FeedCardProps {
   post: MarketPost;
+  itemHeight?: number;
   onComment?: () => void;
   onShare?: () => void;
 }
 
-export const FeedCard = React.memo(function FeedCard({ post, onComment, onShare }: FeedCardProps) {
+export const FeedCard = React.memo(function FeedCard({ post, itemHeight, onComment, onShare }: FeedCardProps) {
   const { user } = useUser();
   const { likes, isLiked } = useMarketPostLikes(post.id || null, user?.uid || null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const scrollViewRef = useRef<ScrollView>(null);
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const [isLiking, setIsLiking] = useState(false);
+  const cardHeight = itemHeight ?? height;
 
   const handleLike = useCallback(async () => {
     if (!user) {
@@ -88,20 +90,23 @@ export const FeedCard = React.memo(function FeedCard({ post, onComment, onShare 
 
   // Increment views when card is displayed (only once)
   React.useEffect(() => {
-    if (post.id) {
-      const timer = setTimeout(() => {
-        marketPostsApi.incrementViews(post.id!).catch((error) => {
-          // Silently fail for view increments
-          console.warn('Failed to increment views:', error);
-        });
-      }, 1000); // Delay to avoid spamming on fast scrolling
+    if (!post.id) return;
+    if (viewedPostIds.has(post.id)) return;
 
-      return () => clearTimeout(timer);
-    }
+    const timer = setTimeout(() => {
+      if (viewedPostIds.has(post.id!)) return;
+      viewedPostIds.add(post.id!);
+      marketPostsApi.incrementViews(post.id!).catch((error) => {
+        // Silently fail for view increments
+        console.warn('Failed to increment views:', error);
+      });
+    }, 1000); // Delay to avoid spamming on fast scrolling
+
+    return () => clearTimeout(timer);
   }, [post.id]);
 
   return (
-    <View style={[styles.container, { width, height }]}>
+    <View style={[styles.container, { width, height: cardHeight }]}>
       {/* Image Gallery */}
       <ScrollView
         ref={scrollViewRef}
@@ -114,7 +119,7 @@ export const FeedCard = React.memo(function FeedCard({ post, onComment, onShare 
           <Image
             key={`${post.id}-${index}`}
             source={{ uri: imageUri }}
-            style={styles.image}
+            style={[styles.image, { height: cardHeight }]}
             contentFit="cover"
             transition={200}
             placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
@@ -160,6 +165,7 @@ export const FeedCard = React.memo(function FeedCard({ post, onComment, onShare 
   // Custom comparison for memoization
   return (
     prevProps.post.id === nextProps.post.id &&
+    prevProps.itemHeight === nextProps.itemHeight &&
     prevProps.post.likes === nextProps.post.likes &&
     prevProps.post.comments === nextProps.post.comments &&
     prevProps.post.images.length === nextProps.post.images.length
@@ -176,7 +182,6 @@ const styles = StyleSheet.create({
   },
   image: {
     width,
-    height,
     resizeMode: 'cover',
   },
   paginationContainer: {

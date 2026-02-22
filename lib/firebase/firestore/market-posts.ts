@@ -15,6 +15,20 @@ import {
 import { firestore } from '../config';
 import { MarketPost } from '@/types';
 import { doc } from 'firebase/firestore';
+import { cacheData, getCachedData } from '@/lib/utils/offline';
+
+const MARKET_POSTS_CACHE_TTL_MS = 30 * 60 * 1000;
+const MARKET_POST_CACHE_TTL_MS = 15 * 60 * 1000;
+
+function asDate(value: any): Date {
+  if (value instanceof Date) return value;
+  if (value && typeof value.toDate === 'function') return value.toDate();
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return new Date();
+}
 
 // Get Market Posts with pagination and real-time updates
 export function useMarketPosts() {
@@ -26,6 +40,22 @@ export function useMarketPosts() {
   const PAGE_SIZE = 15;
 
   useEffect(() => {
+    let isMounted = true;
+    const cacheKey = 'market_posts_feed';
+
+    (async () => {
+      const cached = await getCachedData<MarketPost[]>(cacheKey);
+      if (!isMounted || !cached || cached.length === 0) return;
+      const normalizedCached = cached.map((item) => ({
+        ...item,
+        createdAt: asDate((item as any).createdAt),
+        updatedAt: asDate((item as any).updatedAt),
+        expiresAt: (item as any).expiresAt ? asDate((item as any).expiresAt) : undefined,
+      }));
+      setPosts(normalizedCached);
+      setLoading(false);
+    })();
+
     const q = query(
       collection(firestore, 'marketPosts'),
       where('status', '==', 'active'),
@@ -48,6 +78,7 @@ export function useMarketPosts() {
             description: data.description,
             location: data.location,
             contactMethod: data.contactMethod || 'in-app',
+            isNegotiable: Boolean(data.isNegotiable),
             likes: typeof data.likes === 'number' ? data.likes : 0,
             views: typeof data.views === 'number' ? data.views : 0,
             comments: typeof data.comments === 'number' ? data.comments : 0,
@@ -69,6 +100,7 @@ export function useMarketPosts() {
         }
         
         setPosts(postsList);
+        cacheData(cacheKey, postsList, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
         setLoading(false);
         setError(null);
       },
@@ -79,7 +111,10 @@ export function useMarketPosts() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, []);
 
   const loadMore = () => {
@@ -109,6 +144,7 @@ export function useMarketPosts() {
             description: data.description,
             location: data.location,
             contactMethod: data.contactMethod || 'in-app',
+            isNegotiable: Boolean(data.isNegotiable),
             likes: typeof data.likes === 'number' ? data.likes : 0,
             views: typeof data.views === 'number' ? data.views : 0,
             comments: typeof data.comments === 'number' ? data.comments : 0,
@@ -164,6 +200,22 @@ export function useUserMarketPosts(userId: string | null) {
       return;
     }
 
+    let isMounted = true;
+    const cacheKey = `market_posts_user_${userId}`;
+
+    (async () => {
+      const cached = await getCachedData<MarketPost[]>(cacheKey);
+      if (!isMounted || !cached || cached.length === 0) return;
+      const normalizedCached = cached.map((item) => ({
+        ...item,
+        createdAt: asDate((item as any).createdAt),
+        updatedAt: asDate((item as any).updatedAt),
+        expiresAt: (item as any).expiresAt ? asDate((item as any).expiresAt) : undefined,
+      }));
+      setPosts(normalizedCached);
+      setLoading(false);
+    })();
+
     const q = query(
       collection(firestore, 'marketPosts'),
       where('posterId', '==', userId),
@@ -186,6 +238,7 @@ export function useUserMarketPosts(userId: string | null) {
             description: data.description,
             location: data.location,
             contactMethod: data.contactMethod || 'in-app',
+            isNegotiable: Boolean(data.isNegotiable),
             likes: typeof data.likes === 'number' ? data.likes : 0,
             views: typeof data.views === 'number' ? data.views : 0,
             comments: typeof data.comments === 'number' ? data.comments : 0,
@@ -198,6 +251,7 @@ export function useUserMarketPosts(userId: string | null) {
           postsList.push(post);
         });
         setPosts(postsList);
+        cacheData(cacheKey, postsList, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
         setLoading(false);
         setError(null);
       },
@@ -208,7 +262,10 @@ export function useUserMarketPosts(userId: string | null) {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [userId]);
 
   return { posts, loading, error };
@@ -263,6 +320,21 @@ export function useMarketPost(postId: string | null) {
       return;
     }
 
+    let isMounted = true;
+    const cacheKey = `market_post_${postId}`;
+
+    (async () => {
+      const cached = await getCachedData<MarketPost>(cacheKey);
+      if (!isMounted || !cached) return;
+      setPost({
+        ...cached,
+        createdAt: asDate((cached as any).createdAt),
+        updatedAt: asDate((cached as any).updatedAt),
+        expiresAt: (cached as any).expiresAt ? asDate((cached as any).expiresAt) : undefined,
+      });
+      setLoading(false);
+    })();
+
     const unsubscribe: Unsubscribe = onSnapshot(
       doc(firestore, 'marketPosts', postId),
       (snapshot) => {
@@ -277,6 +349,7 @@ export function useMarketPost(postId: string | null) {
             description: data.description,
             location: data.location,
             contactMethod: data.contactMethod || 'in-app',
+            isNegotiable: Boolean(data.isNegotiable),
             likes: typeof data.likes === 'number' ? data.likes : 0,
             views: typeof data.views === 'number' ? data.views : 0,
             comments: typeof data.comments === 'number' ? data.comments : 0,
@@ -287,6 +360,7 @@ export function useMarketPost(postId: string | null) {
             expiresAt: data.expiresAt?.toDate(),
           };
           setPost(marketPost);
+          cacheData(cacheKey, marketPost, MARKET_POST_CACHE_TTL_MS).catch(() => {});
         } else {
           setPost(null);
         }
@@ -300,7 +374,10 @@ export function useMarketPost(postId: string | null) {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [postId]);
 
   return { post, loading, error };
@@ -389,6 +466,7 @@ export function useMarketPostsSearch(searchQuery: string | null) {
               description: data.description,
               location: data.location,
               contactMethod: data.contactMethod || 'in-app',
+            isNegotiable: Boolean(data.isNegotiable),
               likes: typeof data.likes === 'number' ? data.likes : 0,
               views: typeof data.views === 'number' ? data.views : 0,
               comments: typeof data.comments === 'number' ? data.comments : 0,
@@ -455,6 +533,7 @@ export function useMarketPostsSearch(searchQuery: string | null) {
                 description: data.description,
                 location: data.location,
                 contactMethod: data.contactMethod || 'in-app',
+            isNegotiable: Boolean(data.isNegotiable),
                 likes: typeof data.likes === 'number' ? data.likes : 0,
                 views: typeof data.views === 'number' ? data.views : 0,
                 comments: typeof data.comments === 'number' ? data.comments : 0,
@@ -485,3 +564,4 @@ export function useMarketPostsSearch(searchQuery: string | null) {
 
   return { posts, loading, error };
 }
+

@@ -1,90 +1,268 @@
-import React, { useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  TouchableOpacity,
-  KeyboardAvoidingView,
-  Platform,
   ActivityIndicator,
   Alert,
-  Dimensions,
+  FlatList,
+  KeyboardAvoidingView,
   Modal,
-  Animated,
+  Platform,
+  Pressable,
+  ScrollView,
+  Switch,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { useTheme } from '@/lib/theme/theme-context';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { AnimatedPressable } from '@/components/animated-pressable';
-import { marketPostsApi } from '@/lib/api/market-posts';
-import { showToast } from '@/components/toast';
-import { haptics } from '@/lib/utils/haptics';
-import { canPostToMarketStreet } from '@/lib/utils/auth-helpers';
-import { HashtagInput } from '@/components/market/hashtag-input';
-import { LinearGradient } from 'expo-linear-gradient';
+import { collection, endAt, limit, onSnapshot, orderBy, query, startAt } from 'firebase/firestore';
 
-const { width, height } = Dimensions.get('window');
-const lightBrown = '#A67C52';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { showToast } from '@/components/toast';
+import { marketPostsApi } from '@/lib/api/market-posts';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { NIGERIA_LOCATION_OPTIONS, type NigeriaLocationOption } from '@/lib/constants/nigeria-locations';
+import { firestore } from '@/lib/firebase/config';
+import { useTheme } from '@/lib/theme/theme-context';
+import { canPostToMarketStreet } from '@/lib/utils/auth-helpers';
+import { getLoginRoute } from '@/lib/utils/auth-routes';
+import { haptics } from '@/lib/utils/haptics';
+import KeyboardScreen from '@/components/layout/KeyboardScreen';
+
 const MAX_IMAGES = 20;
 const MIN_IMAGES = 1;
+const MAX_HASHTAGS = 10;
+const lightBrown = '#A67C52';
+const HASHTAG_REGEX = /(^|\s)#([a-zA-Z0-9_]+)/g;
+const MENTION_REGEX = /(^|\s)@([a-zA-Z0-9._]+)/g;
+
+interface TrendingHashtag {
+  id: string;
+  tag: string;
+  count: number;
+}
+
+interface ActiveHashtagContext {
+  query: string;
+  start: number;
+  end: number;
+}
+
+function normalizeCreatePostError(error: unknown): string {
+  const raw = (error as any)?.message || 'Unable to publish post. Please try again.';
+  const lower = String(raw).toLowerCase();
+
+  if (lower.includes('daily') || lower.includes('20 post') || lower.includes('post limit')) {
+    return 'Posting is temporarily unavailable. Please try again shortly.';
+  }
+  if (lower.includes('at least one image')) {
+    return 'Please add at least one photo.';
+  }
+  if (lower.includes('maximum') && lower.includes('image')) {
+    return 'You reached the photo limit for one post.';
+  }
+  return String(raw);
+}
+
+function extractTokens(text: string, regex: RegExp, limitCount: number): string[] {
+  const found: string[] = [];
+  regex.lastIndex = 0;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const token = (match[2] || '').toLowerCase().trim();
+    if (token && !found.includes(token)) {
+      found.push(token);
+      if (found.length >= limitCount) {
+        break;
+      }
+    }
+  }
+
+  return found;
+}
+
+function getActiveHashtagContext(text: string, cursorIndex: number): ActiveHashtagContext | null {
+  const safeCursorIndex = Math.max(0, Math.min(cursorIndex, text.length));
+
+  let start = safeCursorIndex;
+  while (start > 0 && !/\s/.test(text[start - 1])) {
+    start -= 1;
+  }
+
+  let end = safeCursorIndex;
+  while (end < text.length && !/\s/.test(text[end])) {
+    end += 1;
+  }
+
+  const token = text.slice(start, end);
+  if (!/^#[a-zA-Z0-9_]*$/.test(token)) return null;
+
+  return {
+    query: token.slice(1).toLowerCase(),
+    start,
+    end,
+  };
+}
 
 export default function CreatePostScreen() {
-  const { colors, colorScheme } = useTheme();
-  const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const [loading, setLoading] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
-  const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const scrollViewRef = useRef<ScrollView>(null);
-  const slideAnim = useRef(new Animated.Value(0)).current;
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
-  // Form state
   const [images, setImages] = useState<string[]>([]);
-  const [hashtags, setHashtags] = useState<string[]>([]);
-  const [price, setPrice] = useState('');
   const [description, setDescription] = useState('');
+  const [price, setPrice] = useState('');
+  const [isNegotiable, setIsNegotiable] = useState(false);
   const [location, setLocation] = useState({ state: '', city: '' });
-  const [contactMethod, setContactMethod] = useState<'in-app' | 'whatsapp'>('in-app');
+  const [locationPickerVisible, setLocationPickerVisible] = useState(false);
+  const [locationSearch, setLocationSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [captionSelection, setCaptionSelection] = useState({ start: 0, end: 0 });
+  const [captionInputHeight, setCaptionInputHeight] = useState(96);
+  const [trendingHashtags, setTrendingHashtags] = useState<TrendingHashtag[]>([]);
+  const [liveHashtagSuggestions, setLiveHashtagSuggestions] = useState<TrendingHashtag[]>([]);
+  const hashtags = useMemo(() => extractTokens(description, HASHTAG_REGEX, MAX_HASHTAGS), [description]);
+  const mentions = useMemo(() => extractTokens(description, MENTION_REGEX, 20), [description]);
+  const activeHashtagContext = useMemo(
+    () => getActiveHashtagContext(description, captionSelection.start),
+    [description, captionSelection.start]
+  );
+  const activeHashtagQuery = activeHashtagContext?.query ?? null;
+  const hashtagSuggestions = useMemo(() => {
+    if (activeHashtagQuery === null) return [];
+    if (!activeHashtagQuery.trim()) return trendingHashtags.slice(0, 8);
+    return liveHashtagSuggestions.length > 0
+      ? liveHashtagSuggestions
+      : trendingHashtags
+          .filter((item) => item.tag.toLowerCase().startsWith(activeHashtagQuery))
+          .slice(0, 8);
+  }, [activeHashtagQuery, liveHashtagSuggestions, trendingHashtags]);
+  const cursorLineIndex = useMemo(() => {
+    const charsPerLineEstimate = 28;
+    const beforeCursor = description.slice(0, captionSelection.start);
+    const lines = beforeCursor.split('\n');
+    const explicitLineCount = Math.max(0, lines.length - 1);
+    const tailLine = lines[lines.length - 1] || '';
+    const wrappedTailLines = Math.floor(tailLine.length / charsPerLineEstimate);
+    return explicitLineCount + wrappedTailLines;
+  }, [description, captionSelection.start]);
+  const hashtagSuggestionsTop = useMemo(() => {
+    const lineHeight = 20;
+    const baseTop = 28;
+    const desired = baseTop + (cursorLineIndex + 1) * lineHeight + 4;
+    const maxTop = Math.max(baseTop, captionInputHeight - 132);
+    return Math.min(desired, maxTop);
+  }, [captionInputHeight, cursorLineIndex]);
+  const locationSuggestions = useMemo(() => {
+    const queryValue = locationSearch.trim().toLowerCase();
+    const results = !queryValue
+      ? NIGERIA_LOCATION_OPTIONS
+      : NIGERIA_LOCATION_OPTIONS.filter((option) => {
+          return (
+            option.city.toLowerCase().includes(queryValue) ||
+            option.state.toLowerCase().includes(queryValue) ||
+            option.label.toLowerCase().includes(queryValue)
+          );
+        });
+    return results.slice(0, 80);
+  }, [locationSearch]);
+  const selectedLocationLabel = useMemo(() => {
+    if (!location.city && !location.state) return '';
+    if (location.city && location.state) return `${location.city}, ${location.state}`;
+    return location.city || location.state;
+  }, [location.city, location.state]);
 
-  // Redirect if not logged in
-  React.useEffect(() => {
-    if (!user) {
-      Alert.alert('Login Required', 'Please log in to create posts', [
-        { text: 'Cancel', onPress: () => router.back() },
-        { text: 'Login', onPress: () => router.push('/(auth)/login') },
-      ]);
-    }
-  }, [user]);
+  const canPublish = useMemo(() => images.length >= MIN_IMAGES && !loading, [images.length, loading]);
 
-  React.useEffect(() => {
-    if (images.length > 0 && !showDetails) {
-      // Auto-show details after selecting images
-      setTimeout(() => {
-        setShowDetails(true);
-        Animated.spring(slideAnim, {
-          toValue: 1,
-          useNativeDriver: true,
-          tension: 50,
-          friction: 8,
-        }).start();
-      }, 300);
+  useEffect(() => {
+    const trendingQuery = query(
+      collection(firestore, 'trendingHashtags'),
+      orderBy('count', 'desc'),
+      limit(100)
+    );
+
+    const unsubscribe = onSnapshot(
+      trendingQuery,
+      (snapshot) => {
+        const items: TrendingHashtag[] = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (typeof data.tag === 'string' && data.tag.trim()) {
+            items.push({
+              id: doc.id,
+              tag: data.tag.toLowerCase(),
+              count: typeof data.count === 'number' ? data.count : 0,
+            });
+          }
+        });
+        setTrendingHashtags(items);
+      },
+      () => {
+        // Keep compose flow usable even if suggestions fail.
+        setTrendingHashtags([]);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (activeHashtagQuery === null) {
+      setLiveHashtagSuggestions([]);
+      return;
     }
-  }, [images.length]);
+
+    const trimmed = activeHashtagQuery.trim();
+    if (!trimmed) {
+      setLiveHashtagSuggestions(trendingHashtags.slice(0, 8));
+      return;
+    }
+
+    const liveQuery = query(
+      collection(firestore, 'trendingHashtags'),
+      orderBy('tag'),
+      startAt(trimmed),
+      endAt(`${trimmed}\uf8ff`),
+      limit(8)
+    );
+
+    const unsubscribe = onSnapshot(
+      liveQuery,
+      (snapshot) => {
+        const items: TrendingHashtag[] = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (typeof data.tag === 'string' && data.tag.trim()) {
+            items.push({
+              id: doc.id,
+              tag: data.tag.toLowerCase(),
+              count: typeof data.count === 'number' ? data.count : 0,
+            });
+          }
+        });
+        setLiveHashtagSuggestions(items);
+      },
+      () => {
+        setLiveHashtagSuggestions(
+          trendingHashtags
+            .filter((item) => item.tag.toLowerCase().startsWith(trimmed))
+            .slice(0, 8)
+        );
+      }
+    );
+
+    return () => unsubscribe();
+  }, [activeHashtagQuery, trendingHashtags]);
 
   const requestPermissions = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert(
-        'Permission Required',
-        'We need access to your photos to select images.',
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Permission Required', 'Allow photo access to create a post.');
       return false;
     }
     return true;
@@ -96,7 +274,7 @@ export default function CreatePostScreen() {
 
     const remainingSlots = MAX_IMAGES - images.length;
     if (remainingSlots <= 0) {
-      Alert.alert('Maximum Reached', `You can only select up to ${MAX_IMAGES} images.`);
+      Alert.alert('Limit Reached', 'You reached the photo limit for one post.');
       return;
     }
 
@@ -107,70 +285,105 @@ export default function CreatePostScreen() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
         allowsEditing: false,
-        quality: 0.8,
+        quality: 0.85,
         selectionLimit: remainingSlots,
       });
 
       if (!result.canceled && result.assets.length > 0) {
-        const newImages = result.assets.map((asset) => asset.uri);
-        const updatedImages = [...images, ...newImages].slice(0, MAX_IMAGES);
-        setImages(updatedImages);
-        haptics.success();
+        const selected = result.assets.map((asset) => asset.uri);
+        setImages((prev) => [...prev, ...selected].slice(0, MAX_IMAGES));
       }
-    } catch (error: any) {
-      console.error('Error picking images:', error);
-      Alert.alert('Error', 'Failed to pick images. Please try again.');
+    } catch {
+      showToast('Could not pick images. Please try again.', 'error');
     }
   };
 
   const removeImage = (index: number) => {
     haptics.light();
-    const updatedImages = images.filter((_, i) => i !== index);
-    setImages(updatedImages);
-    if (updatedImages.length === 0) {
-      setShowDetails(false);
-      Animated.spring(slideAnim, {
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
-    }
+    setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleImageScroll = (event: any) => {
-    const contentOffsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(contentOffsetX / width);
-    setCurrentImageIndex(index);
+  const appendToken = (token: '#' | '@') => {
+    haptics.light();
+    setDescription((prev) => {
+      const trimmedRight = prev.replace(/\s+$/, '');
+      if (!trimmedRight) {
+        return token;
+      }
+      return `${trimmedRight} ${token}`;
+    });
   };
 
-  const handleSubmit = async () => {
-    if (images.length < MIN_IMAGES) {
-      haptics.error();
-      showToast('Please select at least 1 image', 'error');
-      return;
-    }
+  const applyHashtagSuggestion = (tag: string) => {
+    haptics.light();
+    setDescription((prev) => {
+      const normalizedTag = tag.toLowerCase().replace(/^#/, '');
+      if (!normalizedTag) return prev;
+
+      const context = getActiveHashtagContext(prev, captionSelection.start);
+      if (context) {
+        const before = prev.slice(0, context.start);
+        const after = prev.slice(context.end).replace(/^\s+/, '');
+        const spacer = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+        return `${before}${spacer}#${normalizedTag} ${after}`.trimEnd();
+      }
+
+      const trimmedRight = prev.replace(/\s+$/, '');
+      return `${trimmedRight}${trimmedRight ? ' ' : ''}#${normalizedTag} `;
+    });
+  };
+
+  const handleLocationPick = (option: NigeriaLocationOption) => {
+    haptics.light();
+    setLocation({ state: option.state, city: option.city });
+    setLocationPickerVisible(false);
+    setLocationSearch('');
+  };
+
+  const clearLocation = () => {
+    haptics.light();
+    setLocation({ state: '', city: '' });
+  };
+
+  const resetCreatePostForm = useCallback(() => {
+    setImages([]);
+    setDescription('');
+    setPrice('');
+    setIsNegotiable(false);
+    setLocation({ state: '', city: '' });
+    setLocationPickerVisible(false);
+    setLocationSearch('');
+    setCaptionSelection({ start: 0, end: 0 });
+    setCaptionInputHeight(96);
+    setLiveHashtagSuggestions([]);
+  }, []);
+
+  const handlePublish = async () => {
+    if (!canPublish) return;
 
     setLoading(true);
     haptics.medium();
 
     try {
-      const priceNumber = price ? parseFloat(price.replace(/[^0-9.]/g, '')) : undefined;
+      const parsedPrice = price ? parseFloat(price.replace(/[^0-9.]/g, '')) : undefined;
 
       await marketPostsApi.create({
         images,
         hashtags: hashtags.length > 0 ? hashtags : undefined,
-        price: priceNumber,
         description: description.trim() || undefined,
+        price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
+        isNegotiable: Number.isFinite(parsedPrice) ? isNegotiable : false,
         location: location.state || location.city ? location : undefined,
-        contactMethod,
+        contactMethod: 'in-app',
       });
 
       haptics.success();
-      showToast('Post created successfully!', 'success');
-      router.replace('/(market)');
-    } catch (error: any) {
-      console.error('Error creating post:', error);
+      showToast('Post published.', 'success');
+      resetCreatePostForm();
+      router.replace('/(market)' as any);
+    } catch (error) {
       haptics.error();
-      showToast(error.message || 'Failed to create post. Please try again.', 'error');
+      showToast(normalizeCreatePostError(error), 'error');
     } finally {
       setLoading(false);
     }
@@ -178,250 +391,287 @@ export default function CreatePostScreen() {
 
   if (!user || !canPostToMarketStreet(user)) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <Text style={[styles.text, { color: colors.text }]}>Please log in to create posts</Text>
+      <View style={[styles.centeredContainer, { backgroundColor: colors.background }]}>
+        <Text style={[styles.loginTitle, { color: colors.text }]}>Sign in to create a post</Text>
         <TouchableOpacity
-          style={[styles.button, { backgroundColor: lightBrown }]}
-          onPress={() => router.push('/(auth)/login')}>
-          <Text style={styles.buttonText}>Login</Text>
+          style={[styles.loginButton, { backgroundColor: lightBrown }]}
+          onPress={() => router.push(getLoginRoute() as any)}>
+          <Text style={styles.loginButtonText}>Go to Login</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  const detailsSheetTranslateY = slideAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [400, 0],
-  });
-
   return (
-    <View style={[styles.container, { backgroundColor: '#000' }]}>
-      {/* Header - TikTok Style */}
-      <View
-        style={[
-          styles.header,
-          {
-            paddingTop: insets.top + 8,
-            backgroundColor: 'rgba(0,0,0,0.5)',
-          },
-        ]}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.headerButton}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          <IconSymbol name="xmark" size={24} color="#FFFFFF" />
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: colors.border }]}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.headerIconButton}>
+          <IconSymbol name="xmark" size={22} color={colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>New Post</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Create Post</Text>
         <TouchableOpacity
-          onPress={handleSubmit}
-          disabled={loading || images.length < MIN_IMAGES}
-          style={[
-            styles.headerButton,
-            { opacity: loading || images.length < MIN_IMAGES ? 0.5 : 1 },
-          ]}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-          {loading ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <Text style={[styles.postButton, { opacity: images.length < MIN_IMAGES ? 0.5 : 1 }]}>
-              Post
-            </Text>
-          )}
+          onPress={handlePublish}
+          style={[styles.publishChip, { backgroundColor: canPublish ? lightBrown : colors.backgroundSecondary }]}
+          disabled={!canPublish}>
+          {loading ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.publishText}>Publish</Text>}
         </TouchableOpacity>
       </View>
 
-      {/* Full Screen Image Preview - TikTok Style */}
-      {images.length > 0 ? (
-        <View style={styles.imagePreviewContainer}>
-          <ScrollView
-            ref={scrollViewRef}
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={handleImageScroll}
-            style={styles.imageScrollView}>
-            {images.map((uri, index) => (
-              <View key={index} style={styles.imageWrapper}>
-                <Image
-                  source={{ uri }}
-                  style={styles.previewImage}
-                  contentFit="cover"
-                  transition={200}
-                  cachePolicy="memory"
-                />
-                {/* Remove button overlay */}
-                <TouchableOpacity
-                  style={styles.removeImageButton}
-                  onPress={() => removeImage(index)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                  <View style={styles.removeButtonCircle}>
-                    <IconSymbol name="xmark" size={16} color="#FFFFFF" />
-                  </View>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </ScrollView>
+      <KeyboardScreen
+        style={styles.scroll}
+        keyboardVerticalOffset={insets.top}
+        extraScrollHeight={32}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 72 }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Photos</Text>
+            <Text style={[styles.cardHint, { color: colors.textSecondary }]}>Add clear photos of your item.</Text>
 
-          {/* Image Pagination Dots */}
-          {images.length > 1 && (
-            <View style={styles.paginationContainer}>
-              {images.map((_, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.paginationDot,
-                    {
-                      backgroundColor:
-                        index === currentImageIndex
-                          ? '#FFFFFF'
-                          : 'rgba(255, 255, 255, 0.4)',
-                    },
-                  ]}
-                />
-              ))}
-            </View>
-          )}
-        </View>
-      ) : (
-        /* Empty State - TikTok Style */
-        <View style={styles.emptyState}>
-          <View style={styles.emptyStateContent}>
-            <View style={[styles.emptyIconCircle, { backgroundColor: 'rgba(255,255,255,0.1)' }]}>
-              <IconSymbol name="photo.fill" size={64} color="#FFFFFF" />
-            </View>
-            <Text style={styles.emptyTitle}>Select Photos</Text>
-            <Text style={styles.emptySubtitle}>Choose 1-20 photos to share</Text>
-            <AnimatedPressable
-              style={[styles.selectButton, { backgroundColor: lightBrown }]}
-              onPress={pickImages}
-              scaleValue={0.95}>
-              <IconSymbol name="photo.on.rectangle" size={24} color="#FFFFFF" />
-              <Text style={styles.selectButtonText}>Select from Library</Text>
-            </AnimatedPressable>
-          </View>
-        </View>
-      )}
-
-      {/* Bottom Details Sheet - TikTok Style */}
-      <Animated.View
-        style={[
-          styles.detailsSheet,
-          {
-            backgroundColor: colors.background,
-            paddingBottom: insets.bottom + 20,
-            transform: [{ translateY: detailsSheetTranslateY }],
-          },
-        ]}>
-        <View style={styles.detailsSheetHandle}>
-          <View style={[styles.handleBar, { backgroundColor: colors.textSecondary }]} />
-        </View>
-
-        <ScrollView
-          style={styles.detailsScrollView}
-          contentContainerStyle={styles.detailsContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled">
-          {/* Caption */}
-          <View style={styles.detailsSection}>
-            <Text style={[styles.detailsLabel, { color: colors.text }]}>Caption</Text>
-            <TextInput
-              style={[
-                styles.captionInput,
-                {
-                  backgroundColor: colors.backgroundSecondary,
-                  color: colors.text,
-                  borderColor: colors.border,
-                },
-              ]}
-              placeholder="What are you selling?"
-              placeholderTextColor={colors.textSecondary}
-              value={description}
-              onChangeText={setDescription}
-              multiline
-              maxLength={500}
-            />
-            <Text style={[styles.charCount, { color: colors.textSecondary }]}>
-              {description.length}/500
-            </Text>
+            {images.length === 0 ? (
+              <TouchableOpacity
+                style={[styles.emptyImagePicker, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
+                onPress={pickImages}>
+                <IconSymbol name="photo.fill" size={28} color={lightBrown} />
+                <Text style={[styles.emptyImageText, { color: colors.text }]}>Add Photos</Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <Image source={{ uri: images[0] }} style={styles.mainPreview} contentFit="cover" />
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.thumbRow}>
+                  {images.map((uri, index) => (
+                    <View key={`${uri}-${index}`} style={styles.thumbWrap}>
+                      <Image source={{ uri }} style={styles.thumbImage} contentFit="cover" />
+                      <TouchableOpacity style={styles.thumbRemove} onPress={() => removeImage(index)}>
+                        <IconSymbol name="xmark" size={12} color="#FFFFFF" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  {images.length < MAX_IMAGES && (
+                    <TouchableOpacity
+                      style={[styles.addThumb, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
+                      onPress={pickImages}>
+                      <IconSymbol name="plus" size={20} color={lightBrown} />
+                    </TouchableOpacity>
+                  )}
+                </ScrollView>
+              </>
+            )}
           </View>
 
-          {/* Price */}
-          <View style={styles.detailsSection}>
-            <Text style={[styles.detailsLabel, { color: colors.text }]}>Price</Text>
-            <View
-              style={[
-                styles.priceRow,
-                {
-                  backgroundColor: colors.backgroundSecondary,
-                  borderColor: colors.border,
-                },
-              ]}>
-              <Text style={[styles.currencySymbol, { color: colors.textSecondary }]}>₦</Text>
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Caption</Text>
+            <View style={styles.captionInputContainer}>
               <TextInput
-                style={[styles.priceInput, { color: colors.text }]}
-                placeholder="0.00"
+                value={description}
+                onChangeText={setDescription}
+                placeholder="Describe your post... Use #hashtags and @tag someone"
                 placeholderTextColor={colors.textSecondary}
+                multiline
+                maxLength={500}
+                onSelectionChange={(event) => setCaptionSelection(event.nativeEvent.selection)}
+                onContentSizeChange={(event) => {
+                  const nextHeight = Math.max(96, event.nativeEvent.contentSize.height + 20);
+                  setCaptionInputHeight(nextHeight);
+                }}
+                style={[
+                  styles.captionInput,
+                  {
+                    color: colors.text,
+                    borderColor: colors.border,
+                    backgroundColor: colors.backgroundSecondary,
+                    height: captionInputHeight,
+                  },
+                ]}
+              />
+              {activeHashtagQuery !== null && hashtagSuggestions.length > 0 && (
+                <View
+                  style={[
+                    styles.cursorSuggestionsWrap,
+                    {
+                      top: hashtagSuggestionsTop,
+                      backgroundColor: colors.card,
+                      borderColor: colors.border,
+                    },
+                  ]}>
+                  <ScrollView
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                    contentContainerStyle={styles.cursorSuggestionsList}>
+                    {hashtagSuggestions.map((item) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[styles.cursorSuggestionRow, { borderBottomColor: colors.border }]}
+                        onPress={() => applyHashtagSuggestion(item.tag)}>
+                        <Text style={[styles.cursorSuggestionTag, { color: colors.text }]}>#{item.tag}</Text>
+                        <Text style={[styles.cursorSuggestionCount, { color: colors.textSecondary }]}>
+                          {item.count} {item.count === 1 ? 'post' : 'posts'}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+            <View style={styles.captionActions}>
+              <TouchableOpacity
+                style={[styles.captionActionChip, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}
+                onPress={() => appendToken('#')}>
+                <IconSymbol name="tag" size={13} color={lightBrown} />
+                <Text style={[styles.captionActionText, { color: colors.text }]}>Hashtag</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.captionActionChip, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}
+                onPress={() => appendToken('@')}>
+                <IconSymbol name="person.fill" size={13} color={lightBrown} />
+                <Text style={[styles.captionActionText, { color: colors.text }]}>Tag</Text>
+              </TouchableOpacity>
+            </View>
+            {(hashtags.length > 0 || mentions.length > 0) && (
+              <View style={styles.detectedWrap}>
+                {hashtags.length > 0 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.detectedChipsRow}>
+                    {hashtags.map((tag) => (
+                      <View key={tag} style={[styles.detectedChip, { backgroundColor: colors.backgroundSecondary }]}>
+                        <Text style={[styles.detectedChipText, { color: colors.text }]}>#{tag}</Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+                {mentions.length > 0 && (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.detectedChipsRow}>
+                    {mentions.map((mention) => (
+                      <View key={mention} style={[styles.detectedChip, { backgroundColor: colors.backgroundSecondary }]}>
+                        <Text style={[styles.detectedChipText, { color: colors.text }]}>@{mention}</Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+              </View>
+            )}
+            <Text style={[styles.counterText, { color: colors.textSecondary }]}>{description.length}/500</Text>
+          </View>
+
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Price (Optional)</Text>
+            <View style={[styles.priceInputWrap, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}>
+              <Text style={[styles.pricePrefix, { color: colors.textSecondary }]}>NGN</Text>
+              <TextInput
                 value={price}
                 onChangeText={setPrice}
                 keyboardType="numeric"
+                placeholder="0.00"
+                placeholderTextColor={colors.textSecondary}
+                style={[styles.priceInput, { color: colors.text }]}
               />
             </View>
-            <Text style={[styles.hint, { color: colors.textSecondary }]}>
-              Leave empty to show "Ask for Price"
-            </Text>
-          </View>
-
-          {/* Hashtags */}
-          <View style={styles.detailsSection}>
-            <HashtagInput hashtags={hashtags} onHashtagsChange={setHashtags} />
-          </View>
-
-          {/* Location */}
-          <View style={styles.detailsSection}>
-            <Text style={[styles.detailsLabel, { color: colors.text }]}>Location (Optional)</Text>
-            <View style={styles.locationRow}>
-              <TextInput
-                style={[
-                  styles.locationInput,
-                  {
-                    backgroundColor: colors.backgroundSecondary,
-                    color: colors.text,
-                    borderColor: colors.border,
-                  },
-                ]}
-                placeholder="State"
-                placeholderTextColor={colors.textSecondary}
-                value={location.state}
-                onChangeText={(text) => setLocation({ ...location, state: text })}
-              />
-              <TextInput
-                style={[
-                  styles.locationInput,
-                  {
-                    backgroundColor: colors.backgroundSecondary,
-                    color: colors.text,
-                    borderColor: colors.border,
-                  },
-                ]}
-                placeholder="City"
-                placeholderTextColor={colors.textSecondary}
-                value={location.city}
-                onChangeText={(text) => setLocation({ ...location, city: text })}
+            <View style={styles.negotiableRow}>
+              <View style={styles.negotiableTextWrap}>
+                <Text style={[styles.negotiableTitle, { color: colors.text }]}>Price is negotiable</Text>
+                <Text style={[styles.negotiableHint, { color: colors.textSecondary }]}>
+                  Show a DM button next to Buy on your post.
+                </Text>
+              </View>
+              <Switch
+                value={isNegotiable}
+                onValueChange={(value) => {
+                  haptics.light();
+                  setIsNegotiable(value);
+                }}
+                thumbColor={Platform.OS === 'android' ? '#FFFFFF' : undefined}
+                trackColor={{ false: '#9CA3AF', true: lightBrown }}
               />
             </View>
           </View>
-        </ScrollView>
-      </Animated.View>
 
-      {/* Add More Images Button - Floating */}
-      {images.length > 0 && images.length < MAX_IMAGES && (
-        <TouchableOpacity
-          style={[styles.addMoreButton, { backgroundColor: lightBrown }]}
-          onPress={pickImages}>
-          <IconSymbol name="plus" size={20} color="#FFFFFF" />
-          <Text style={styles.addMoreText}>Add Photos</Text>
-        </TouchableOpacity>
-      )}
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Location (Optional)</Text>
+            <TouchableOpacity
+              style={[styles.locationPicker, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
+              onPress={() => setLocationPickerVisible(true)}>
+              <IconSymbol name="location.fill" size={16} color={lightBrown} />
+              <Text
+                style={[
+                  styles.locationPickerText,
+                  { color: selectedLocationLabel ? colors.text : colors.textSecondary },
+                ]}
+                numberOfLines={1}>
+                {selectedLocationLabel || 'Search and select location'}
+              </Text>
+              <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
+            </TouchableOpacity>
+            {!!selectedLocationLabel && (
+              <TouchableOpacity style={styles.clearLocationButton} onPress={clearLocation}>
+                <Text style={[styles.clearLocationText, { color: lightBrown }]}>Clear location</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+      </KeyboardScreen>
+
+      <Modal
+        visible={locationPickerVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setLocationPickerVisible(false)}>
+        <Pressable style={styles.locationModalBackdrop} onPress={() => setLocationPickerVisible(false)}>
+          {/* Keep FlatList out of ScrollView wrappers to avoid nested VirtualizedList warnings. */}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={insets.top}
+            style={styles.locationModalKeyboardWrap}>
+            <Pressable
+              style={[
+                styles.locationModalSheet,
+                {
+                  backgroundColor: colors.card,
+                  borderTopColor: colors.border,
+                  paddingBottom: insets.bottom + 12,
+                },
+              ]}
+              onPress={(e) => e.stopPropagation()}>
+              <View style={styles.locationModalHeader}>
+                <Text style={[styles.locationModalTitle, { color: colors.text }]}>Pick Location</Text>
+                <TouchableOpacity onPress={() => setLocationPickerVisible(false)} style={styles.locationModalCloseButton}>
+                  <IconSymbol name="xmark" size={18} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+              <View style={[styles.locationSearchWrap, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}>
+                <IconSymbol name="magnifyingglass" size={16} color={colors.textSecondary} />
+                <TextInput
+                  value={locationSearch}
+                  onChangeText={setLocationSearch}
+                  placeholder="Search city or state"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  style={[styles.locationSearchInput, { color: colors.text }]}
+                />
+              </View>
+              <FlatList
+                data={locationSuggestions}
+                keyExtractor={(item) => `${item.state}-${item.city}`}
+                keyboardShouldPersistTaps="always"
+                keyboardDismissMode="none"
+                contentContainerStyle={styles.locationListContent}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={[styles.locationRowItem, { borderBottomColor: colors.border }]}
+                    onPress={() => handleLocationPick(item)}>
+                    <Text style={[styles.locationRowMain, { color: colors.text }]}>{item.city}</Text>
+                    <Text style={[styles.locationRowSub, { color: colors.textSecondary }]}>{item.state}</Text>
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={
+                  <View style={styles.emptyLocationWrap}>
+                    <Text style={[styles.emptyLocationText, { color: colors.textSecondary }]}>No location found</Text>
+                  </View>
+                }
+              />
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -430,239 +680,346 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  centeredContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  loginTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  loginButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+  },
+  loginButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
   header: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 100,
+    borderBottomWidth: 1,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
   },
-  headerButton: {
-    width: 44,
-    height: 44,
+  headerIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
   },
-  postButton: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  imagePreviewContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  imageScrollView: {
-    flex: 1,
-  },
-  imageWrapper: {
-    width,
-    height: '100%',
-    position: 'relative',
-  },
-  previewImage: {
-    width,
-    height: '100%',
-  },
-  removeImageButton: {
-    position: 'absolute',
-    top: 60,
-    right: 16,
-    zIndex: 10,
-  },
-  removeButtonCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+  publishChip: {
+    minWidth: 84,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  paginationContainer: {
-    position: 'absolute',
-    top: 100,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 6,
-    zIndex: 10,
-  },
-  paginationDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#000',
-  },
-  emptyStateContent: {
-    alignItems: 'center',
-    paddingHorizontal: 32,
-  },
-  emptyIconCircle: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 24,
-  },
-  emptyTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  emptySubtitle: {
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.7)',
-    marginBottom: 32,
-    textAlign: 'center',
-  },
-  selectButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    borderRadius: 30,
-  },
-  selectButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  detailsSheet: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: height * 0.6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 20,
-  },
-  detailsSheetHandle: {
-    alignItems: 'center',
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  handleBar: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    opacity: 0.3,
-  },
-  detailsScrollView: {
-    flex: 1,
-  },
-  detailsContent: {
-    padding: 20,
-    gap: 20,
-  },
-  detailsSection: {
-    gap: 8,
-  },
-  detailsLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  captionInput: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 100,
-    textAlignVertical: 'top',
-  },
-  charCount: {
-    fontSize: 12,
-    textAlign: 'right',
-  },
-  priceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: 12,
     paddingHorizontal: 12,
   },
-  currencySymbol: {
-    fontSize: 18,
-    fontWeight: '600',
+  publishText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 14,
+    gap: 12,
+    paddingTop: 12,
+  },
+  card: {
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 12,
+  },
+  cardTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  cardHint: {
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  emptyImagePicker: {
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 14,
+    minHeight: 130,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  emptyImageText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  mainPreview: {
+    width: '100%',
+    height: 240,
+    borderRadius: 14,
+    backgroundColor: '#101010',
+  },
+  thumbRow: {
+    paddingTop: 10,
+    gap: 10,
+  },
+  thumbWrap: {
+    width: 74,
+    height: 74,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  thumbImage: {
+    width: '100%',
+    height: '100%',
+  },
+  thumbRemove: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+  },
+  addThumb: {
+    width: 74,
+    height: 74,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  captionInput: {
+    minHeight: 96,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    fontSize: 14,
+    textAlignVertical: 'top',
+  },
+  captionInputContainer: {
+    position: 'relative',
+  },
+  counterText: {
+    fontSize: 12,
+    marginTop: 6,
+    textAlign: 'right',
+  },
+  captionActions: {
+    marginTop: 10,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  captionActionChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    minHeight: 32,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  captionActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  detectedWrap: {
+    marginTop: 10,
+    gap: 8,
+  },
+  detectedChipsRow: {
+    gap: 8,
+  },
+  detectedChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    minHeight: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detectedChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cursorSuggestionsWrap: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    zIndex: 20,
+    borderWidth: 1,
+    borderRadius: 12,
+    maxHeight: 170,
+    overflow: 'hidden',
+  },
+  cursorSuggestionsList: {
+    paddingVertical: 2,
+  },
+  cursorSuggestionRow: {
+    minHeight: 38,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  cursorSuggestionTag: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  cursorSuggestionCount: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  priceInputWrap: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 46,
+  },
+  pricePrefix: {
+    fontSize: 13,
+    fontWeight: '700',
     marginRight: 8,
   },
   priceInput: {
     flex: 1,
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '600',
-    paddingVertical: 12,
+    paddingVertical: 8,
   },
-  hint: {
-    fontSize: 12,
-  },
-  locationRow: {
+  negotiableRow: {
+    marginTop: 10,
     flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 12,
   },
-  locationInput: {
+  negotiableTextWrap: {
     flex: 1,
+  },
+  negotiableTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  negotiableHint: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  locationPicker: {
+    minHeight: 48,
     borderWidth: 1,
     borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-  },
-  addMoreButton: {
-    position: 'absolute',
-    bottom: 200,
-    right: 16,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    paddingHorizontal: 10,
   },
-  addMoreText: {
-    color: '#FFFFFF',
+  locationPickerText: {
+    flex: 1,
+    fontSize: 14,
+  },
+  clearLocationButton: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    paddingVertical: 2,
+  },
+  clearLocationText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  locationModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  locationModalKeyboardWrap: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  locationModalSheet: {
+    maxHeight: '75%',
+    borderTopWidth: 1,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+  },
+  locationModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  locationModalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  locationModalCloseButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locationSearchWrap: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+  },
+  locationSearchInput: {
+    flex: 1,
+    fontSize: 14,
+  },
+  locationListContent: {
+    paddingBottom: 6,
+  },
+  locationRowItem: {
+    minHeight: 48,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'center',
+    gap: 2,
+  },
+  locationRowMain: {
     fontSize: 14,
     fontWeight: '700',
   },
-  text: {
-    fontSize: 18,
+  locationRowSub: {
+    fontSize: 12,
+    fontWeight: '500',
   },
-  button: {
-    marginTop: 20,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
+  emptyLocationWrap: {
+    paddingVertical: 20,
+    alignItems: 'center',
   },
-  buttonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
+  emptyLocationText: {
+    fontSize: 13,
   },
 });

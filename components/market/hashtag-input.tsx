@@ -6,7 +6,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  FlatList,
 } from 'react-native';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -149,7 +148,7 @@ export function HashtagInput({
 
       {/* Input */}
       <View style={[styles.inputContainer, { borderColor: colors.border }]}>
-        <IconSymbol name="number" size={20} color={colors.textSecondary} />
+        <IconSymbol name="tag" size={20} color={colors.textSecondary} />
         <TextInput
           style={[styles.input, { color: colors.text }]}
           placeholder="Add hashtags (e.g., #fashion #vintage)"

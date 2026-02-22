@@ -1,194 +1,470 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
-import { useTheme } from '@/lib/theme/theme-context';
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
-import { useUserMarketPosts, useUserLikesCount } from '@/lib/firebase/firestore/market-posts';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { AnimatedPressable } from '@/components/animated-pressable';
+import React, { useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { signOut } from 'firebase/auth';
-import { auth } from '@/lib/firebase/config';
-import { Alert } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+
+import { PostManageSheet } from '@/components/market/post-manage-sheet';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { showToast } from '@/components/toast';
+import { marketPostsApi } from '@/lib/api/market-posts';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { firestore } from '@/lib/firebase/config';
+import { useUserLikesCount, useUserMarketPosts } from '@/lib/firebase/firestore/market-posts';
+import { useSellerOrders } from '@/lib/firebase/firestore/orders';
+import { useUserProfile } from '@/lib/firebase/firestore/users';
+import { useTheme } from '@/lib/theme/theme-context';
+import { getLoginRouteForVariant, getSignupRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
+import { uploadImage } from '@/lib/utils/image-upload';
+import { shareMarketPost } from '@/lib/utils/market-post-share';
+import { MarketPost } from '@/types';
 
 const lightBrown = '#A67C52';
 
-export default function ProfileScreen() {
-  const { colors, colorScheme } = useTheme();
-  const insets = useSafeAreaInsets();
-  const { user, signOut: signOutUser } = useUser();
-  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid || null);
-  const { posts, loading: postsLoading } = useUserMarketPosts(user?.uid || null);
-  const { likesCount, loading: likesLoading } = useUserLikesCount(user?.uid || null);
+function getInitials(value: string): string {
+  return value
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase())
+    .join('')
+    .slice(0, 2);
+}
 
-  const handleLogout = () => {
-    haptics.medium();
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to logout?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Logout',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await signOutUser();
-              haptics.success();
-              router.replace('/(market)');
-            } catch (error: any) {
-              haptics.error();
-              Alert.alert('Error', error.message || 'Failed to logout');
-            }
-          },
+function formatJoinedDate(value: unknown): string {
+  if (!value) return 'Recently';
+  const date =
+    value instanceof Date ? value : typeof (value as { toDate?: () => Date }).toDate === 'function'
+      ? (value as { toDate: () => Date }).toDate()
+      : null;
+  if (!date || Number.isNaN(date.getTime())) return 'Recently';
+  return date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+}
+
+function formatPostDate(value: unknown): string {
+  if (!value) return 'Just now';
+  const date =
+    value instanceof Date ? value : typeof (value as { toDate?: () => Date }).toDate === 'function'
+      ? (value as { toDate: () => Date }).toDate()
+      : null;
+  if (!date || Number.isNaN(date.getTime())) return 'Just now';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatAmount(value: number): string {
+  return `NGN ${value.toLocaleString()}`;
+}
+
+export default function ProfileScreen() {
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { user } = useUser();
+  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid ?? null);
+  const { posts, loading: postsLoading } = useUserMarketPosts(user?.uid ?? null);
+  const { likesCount, loading: likesLoading } = useUserLikesCount(user?.uid ?? null);
+  const { orders, loading: ordersLoading } = useSellerOrders(user?.uid ?? null);
+
+  const [managedPost, setManagedPost] = useState<MarketPost | null>(null);
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
+  const [updatingProfilePhoto, setUpdatingProfilePhoto] = useState(false);
+
+  const displayName = useMemo(
+    () => profile?.displayName || user?.displayName || user?.email || 'Market User',
+    [profile?.displayName, user?.displayName, user?.email]
+  );
+  const profilePhotoUrl = useMemo(() => String(profile?.storeLogoUrl || '').trim(), [profile?.storeLogoUrl]);
+  const initials = useMemo(() => getInitials(displayName), [displayName]);
+  const joinedLabel = useMemo(() => formatJoinedDate(profile?.createdAt), [profile?.createdAt]);
+  const roleLabel = useMemo(() => {
+    if (user?.isAdmin) return 'Administrator';
+    if (user?.isSeller || profile?.storeName) return 'Seller and Buyer';
+    return 'Market User';
+  }, [profile?.storeName, user?.isAdmin, user?.isSeller]);
+  const totalSales = useMemo(() => {
+    return orders.reduce((sum, order) => {
+      const status = String(order.status || '').toLowerCase();
+      const isCounted = status === 'completed' || status === 'received';
+      const amount = typeof order.total === 'number' ? order.total : 0;
+      return isCounted ? sum + amount : sum;
+    }, 0);
+  }, [orders]);
+
+  const handleRoutePress = (path: string) => {
+    haptics.light();
+    router.push(path as any);
+  };
+
+  const persistProfilePhoto = async (nextUrl: string | null) => {
+    if (!user?.uid) return;
+    await updateDoc(doc(firestore, 'users', user.uid), {
+      storeLogoUrl: nextUrl,
+      updatedAt: serverTimestamp(),
+    });
+  };
+
+  const handleSetNewProfilePic = async () => {
+    if (!user?.uid || updatingProfilePhoto) return;
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Please allow photo access to update your profile picture.');
+      return;
+    }
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.82,
+      });
+
+      if (result.canceled || !result.assets[0]?.uri) return;
+
+      setUpdatingProfilePhoto(true);
+      haptics.medium();
+
+      const uploadPath = `profile_pictures/${user.uid}/avatar_${Date.now()}.jpg`;
+      const uploaded = await uploadImage(result.assets[0].uri, uploadPath);
+      await persistProfilePhoto(uploaded.url);
+
+      haptics.success();
+      showToast('Profile picture updated.', 'success');
+    } catch (error: any) {
+      haptics.error();
+      showToast(error?.message || 'Failed to update profile picture.', 'error');
+    } finally {
+      setUpdatingProfilePhoto(false);
+    }
+  };
+
+  const handleRemoveProfilePic = async () => {
+    if (!user?.uid || updatingProfilePhoto) return;
+    try {
+      setUpdatingProfilePhoto(true);
+      haptics.light();
+      await persistProfilePhoto(null);
+      showToast('Profile picture removed.', 'success');
+    } catch (error: any) {
+      haptics.error();
+      showToast(error?.message || 'Failed to remove profile picture.', 'error');
+    } finally {
+      setUpdatingProfilePhoto(false);
+    }
+  };
+
+  const openProfilePhotoOptions = () => {
+    haptics.light();
+    const buttons: { text: string; style?: 'cancel' | 'destructive' | 'default'; onPress?: () => void }[] = [
+      { text: 'Set New Profile Pic', onPress: () => void handleSetNewProfilePic() },
+    ];
+
+    if (profilePhotoUrl) {
+      buttons.push({
+        text: 'Remove Profile Pic',
+        style: 'destructive',
+        onPress: () =>
+          Alert.alert('Remove Profile Picture', 'Do you want to remove your profile picture?', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Remove', style: 'destructive', onPress: () => void handleRemoveProfilePic() },
+          ]),
+      });
+    }
+
+    buttons.push({ text: 'Cancel', style: 'cancel' });
+
+    Alert.alert('Profile Picture', 'Choose an action', buttons);
+  };
+
+  const openManageSheet = (post: MarketPost) => {
+    haptics.light();
+    setManagedPost(post);
+  };
+
+  const closeManageSheet = () => {
+    setManagedPost(null);
+  };
+
+  const handleEditPost = () => {
+    if (!managedPost?.id) return;
+    closeManageSheet();
+    router.push(`/(market)/post-edit/${managedPost.id}` as any);
+  };
+
+  const handleSharePost = async () => {
+    if (!managedPost) return;
+    try {
+      await shareMarketPost(managedPost);
+    } catch {
+      showToast('Unable to open share options right now.', 'error');
+    } finally {
+      closeManageSheet();
+    }
+  };
+
+  const confirmDeletePost = () => {
+    if (!managedPost?.id || deletingPostId) return;
+
+    Alert.alert('Delete Post', 'This will permanently remove this post from Market Street.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setDeletingPostId(managedPost.id!);
+            await marketPostsApi.delete(managedPost.id!);
+            haptics.success();
+            showToast('Post deleted successfully.', 'success');
+          } catch (error: any) {
+            haptics.error();
+            showToast(error?.message || 'Failed to delete post.', 'error');
+          } finally {
+            setDeletingPostId(null);
+            closeManageSheet();
+          }
         },
-      ]
+      },
+    ]);
+  };
+
+  const renderGuestState = () => {
+    return (
+      <View style={[styles.guestContainer, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 96 }]}>
+        <View style={[styles.headerIsland, { backgroundColor: lightBrown }]}>
+          <Text style={styles.headerLabel}>MARKET STREET</Text>
+          <Text style={styles.headerTitle}>Profile</Text>
+        </View>
+
+        <View style={[styles.guestCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={[styles.guestAvatar, { backgroundColor: `${lightBrown}1E` }]}>
+            <IconSymbol name="person.circle.fill" size={72} color={lightBrown} />
+          </View>
+          <Text style={[styles.guestTitle, { color: colors.text }]}>Create your account</Text>
+          <Text style={[styles.guestSubtitle, { color: colors.textSecondary }]}>
+            Sign in to post items, manage listings, and talk with buyers.
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.primaryButton, { backgroundColor: lightBrown }]}
+            onPress={() => handleRoutePress(getLoginRouteForVariant('market'))}>
+            <Text style={styles.primaryButtonText}>Sign In</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.secondaryButton, { borderColor: lightBrown }]}
+            onPress={() => handleRoutePress(getSignupRouteForVariant('market'))}>
+            <Text style={[styles.secondaryButtonText, { color: lightBrown }]}>Create Account</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderHeader = () => (
+    <View style={styles.headerWrapper}>
+      <View style={styles.headerRow}>
+        <View style={[styles.headerIsland, { backgroundColor: lightBrown }]}>
+          <Text style={styles.headerLabel}>MARKET STREET</Text>
+          <Text style={styles.headerTitle}>Profile</Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.settingsButton, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => handleRoutePress('/(market)/settings')}>
+          <IconSymbol name="gearshape.fill" size={20} color={colors.text} />
+        </TouchableOpacity>
+      </View>
+
+        <View style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View style={styles.profileTopRow}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={openProfilePhotoOptions}
+            disabled={updatingProfilePhoto}
+            style={[styles.avatar, { backgroundColor: `${lightBrown}1E` }]}>
+            {profilePhotoUrl ? (
+              <Image source={{ uri: profilePhotoUrl }} style={styles.avatarImage} contentFit="cover" />
+            ) : (
+              <Text style={[styles.avatarText, { color: lightBrown }]}>{initials || 'MU'}</Text>
+            )}
+            <View style={styles.avatarBadge}>
+              <IconSymbol name="photo.fill" size={12} color="#FFFFFF" />
+            </View>
+            {updatingProfilePhoto ? (
+              <View style={styles.avatarOverlay}>
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              </View>
+            ) : null}
+          </TouchableOpacity>
+          <View style={styles.profileMeta}>
+            <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
+              {displayName}
+            </Text>
+            <Text style={[styles.profileEmail, { color: colors.textSecondary }]} numberOfLines={1}>
+              {user?.email || 'No email'}
+            </Text>
+            <View style={[styles.roleChip, { backgroundColor: `${lightBrown}20` }]}>
+              <IconSymbol name="checkmark.circle.fill" size={14} color={lightBrown} />
+              <Text style={[styles.roleChipText, { color: lightBrown }]}>{roleLabel}</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.statsRow}>
+        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.statValue, { color: colors.text }]}>{postsLoading ? '...' : posts.length}</Text>
+          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Posts</Text>
+        </View>
+        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.statValue, { color: colors.text }]}>{likesLoading ? '...' : likesCount}</Text>
+          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Likes</Text>
+        </View>
+        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.statDateValue, { color: colors.text }]}>{joinedLabel}</Text>
+          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Joined</Text>
+        </View>
+      </View>
+
+      <View style={[styles.salesCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View style={styles.salesRow}>
+          <View style={styles.salesLeft}>
+            <IconSymbol name="dollarsign.circle.fill" size={22} color={lightBrown} />
+            <Text style={[styles.salesLabel, { color: colors.textSecondary }]}>Total Sales</Text>
+          </View>
+          <Text style={[styles.salesValue, { color: colors.text }]}>
+            {ordersLoading ? '...' : formatAmount(totalSales)}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.postsSectionHeader}>
+        <Text style={[styles.postsSectionTitle, { color: colors.text }]}>Your Posts</Text>
+        <Text style={[styles.postsSectionHint, { color: colors.textSecondary }]}>
+          Tap a post to open comments. Use the 3 dots to manage.
+        </Text>
+      </View>
+    </View>
+  );
+
+  const renderPostItem = ({ item }: { item: MarketPost }) => {
+    const priceLabel = item.price && item.price > 0 ? formatAmount(item.price) : 'Ask for price';
+    const descriptionLabel = item.description?.trim() || 'No caption yet';
+    const imageUri = item.images?.[0] || '';
+
+    return (
+      <TouchableOpacity
+        activeOpacity={0.9}
+        style={[styles.postCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+        onPress={() => {
+          if (!item.id) return;
+          router.push(`/(market)/post/${item.id}` as any);
+        }}>
+        <Image source={{ uri: imageUri }} style={styles.postImage} contentFit="cover" />
+
+        <View style={styles.postContent}>
+          <View style={styles.postTopRow}>
+            <Text style={[styles.postPrice, { color: colors.text }]} numberOfLines={1}>
+              {priceLabel}
+            </Text>
+            <TouchableOpacity
+              style={[styles.manageButton, { backgroundColor: colors.backgroundSecondary }]}
+              onPress={() => openManageSheet(item)}>
+              <IconSymbol name="ellipsis" size={18} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={[styles.postDescription, { color: colors.textSecondary }]} numberOfLines={2}>
+            {descriptionLabel}
+          </Text>
+
+          <View style={styles.postMetaRow}>
+            <View style={styles.metaItem}>
+              <IconSymbol name="heart.fill" size={13} color={lightBrown} />
+              <Text style={[styles.metaText, { color: colors.textSecondary }]}>{item.likes || 0}</Text>
+            </View>
+            <View style={styles.metaItem}>
+              <IconSymbol name="message.fill" size={13} color={lightBrown} />
+              <Text style={[styles.metaText, { color: colors.textSecondary }]}>{item.comments || 0}</Text>
+            </View>
+            <View style={styles.metaItem}>
+              <IconSymbol name="eye.fill" size={13} color={lightBrown} />
+              <Text style={[styles.metaText, { color: colors.textSecondary }]}>{item.views || 0}</Text>
+            </View>
+            <Text style={[styles.postDate, { color: colors.textSecondary }]}>
+              {formatPostDate(item.createdAt)}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
     );
   };
 
   if (!user) {
-    // Guest state
     return (
-      <ScrollView
-        style={[styles.container, { backgroundColor: colors.background }]}
-        contentContainerStyle={[styles.contentContainer, { paddingTop: insets.top + 20 }]}>
-        <View style={styles.guestContainer}>
-          <View style={[styles.guestIconContainer, { backgroundColor: colors.backgroundSecondary }]}>
-            <IconSymbol name="person.circle" size={80} color={lightBrown} />
-          </View>
-          <Text style={[styles.welcomeText, { color: colors.text }]}>
-            Welcome to Market Street
-          </Text>
-          <Text style={[styles.infoText, { color: colors.textSecondary }]}>
-            Log in to post, like, comment, and message sellers
-          </Text>
-
-          <TouchableOpacity
-            style={[styles.button, { backgroundColor: lightBrown }]}
-            onPress={() => {
-              haptics.medium();
-              router.push('/(auth)/login');
-            }}>
-            <Text style={styles.buttonText}>Login</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.button, styles.outlineButton, { borderColor: lightBrown }]}
-            onPress={() => {
-              haptics.medium();
-              router.push('/(auth)/signup');
-            }}>
-            <Text style={[styles.buttonText, { color: lightBrown }]}>Sign Up</Text>
-          </TouchableOpacity>
-
-          {/* Info Cards */}
-          <View style={styles.infoCardsContainer}>
-            <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-              <IconSymbol name="photo.fill" size={24} color={lightBrown} />
-              <Text style={[styles.infoCardTitle, { color: colors.text }]}>Post Products</Text>
-              <Text style={[styles.infoCardText, { color: colors.textSecondary }]}>
-                Share up to 20 images per post
-              </Text>
-            </View>
-            <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-              <IconSymbol name="heart.fill" size={24} color={lightBrown} />
-              <Text style={[styles.infoCardTitle, { color: colors.text }]}>Engage</Text>
-              <Text style={[styles.infoCardText, { color: colors.textSecondary }]}>
-                Like, comment, and message sellers
-              </Text>
-            </View>
-          </View>
-        </View>
-      </ScrollView>
+      <View style={[styles.container, { backgroundColor: colors.background, paddingHorizontal: 20 }]}>
+        {renderGuestState()}
+      </View>
     );
   }
 
-  // Logged-in state
-  const displayName = profile?.displayName || user.displayName || user.email || 'User';
-  const initials = displayName
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+  if (profileLoading) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={lightBrown} />
+      </View>
+    );
+  }
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={[styles.contentContainer, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 100 }]}
-      showsVerticalScrollIndicator={false}>
-      {/* Floating Island Header */}
-      <View style={styles.floatingHeaderContainer}>
-        <View style={[styles.nameIsland, { backgroundColor: lightBrown }]}>
-          <Text style={styles.islandLabel}>MARKET STREET</Text>
-          <Text style={styles.islandTitle}>Profile</Text>
-        </View>
-      </View>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <FlatList
+        data={posts}
+        renderItem={renderPostItem}
+        keyExtractor={(item, index) => item.id || `post-${index}`}
+        ListHeaderComponent={renderHeader}
+        ListEmptyComponent={
+          postsLoading ? (
+            <View style={styles.emptyState}>
+              <ActivityIndicator size="small" color={lightBrown} />
+            </View>
+          ) : (
+            <View style={styles.emptyState}>
+              <IconSymbol name="photo.fill" size={26} color={lightBrown} />
+              <Text style={[styles.emptyTitle, { color: colors.text }]}>No posts yet</Text>
+              <Text style={[styles.emptyHint, { color: colors.textSecondary }]}>
+                Your published posts will appear here.
+              </Text>
+            </View>
+          )
+        }
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 110, paddingHorizontal: 20 },
+        ]}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        showsVerticalScrollIndicator={false}
+      />
 
-      {/* Profile Card */}
-      <View style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <View style={styles.profileHeader}>
-          <View style={[styles.avatar, { backgroundColor: lightBrown + '20' }]}>
-            {profile?.storeLogoUrl ? (
-              <Text style={[styles.avatarText, { color: lightBrown }]}>{initials}</Text>
-            ) : (
-              <Text style={[styles.avatarText, { color: lightBrown }]}>{initials}</Text>
-            )}
-          </View>
-          <View style={styles.profileInfo}>
-            <Text style={[styles.userName, { color: colors.text }]}>{displayName}</Text>
-            <Text style={[styles.userEmail, { color: colors.textSecondary }]}>{user.email}</Text>
-            {profile?.storeName && (
-              <Text style={[styles.storeName, { color: lightBrown }]}>{profile.storeName}</Text>
-            )}
-          </View>
-        </View>
-      </View>
-
-      {/* Stats Row */}
-      <View style={styles.statsRow}>
-        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.statValue, { color: colors.text }]}>
-            {postsLoading ? '...' : posts.length}
-          </Text>
-          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Posts</Text>
-        </View>
-        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.statValue, { color: colors.text }]}>
-            {likesLoading ? '...' : likesCount}
-          </Text>
-          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Likes</Text>
-        </View>
-      </View>
-
-      {/* Actions */}
-      <View style={[styles.actionsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <AnimatedPressable
-          style={[styles.actionButton, { borderBottomColor: colors.border }]}
-          onPress={() => {
-            haptics.light();
-            router.push('/(market)/settings');
-          }}
-          scaleValue={0.98}>
-          <View style={styles.actionLeft}>
-            <IconSymbol name="gearshape.fill" size={20} color={colors.text} />
-            <Text style={[styles.actionText, { color: colors.text }]}>Settings</Text>
-          </View>
-          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
-        </AnimatedPressable>
-        <AnimatedPressable
-          style={styles.actionButton}
-          onPress={handleLogout}
-          scaleValue={0.98}>
-          <View style={styles.actionLeft}>
-            <IconSymbol name="arrow.left.square.fill" size={20} color="#FF4444" />
-            <Text style={[styles.actionText, { color: '#FF4444' }]}>Logout</Text>
-          </View>
-        </AnimatedPressable>
-      </View>
-    </ScrollView>
+      <PostManageSheet
+        visible={managedPost != null}
+        onClose={closeManageSheet}
+        onEdit={handleEditPost}
+        onShare={handleSharePost}
+        onDelete={confirmDeletePost}
+        deleting={Boolean(deletingPostId && deletingPostId === managedPost?.id)}
+      />
+    </View>
   );
 }
 
@@ -196,179 +472,310 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  contentContainer: {
-    paddingHorizontal: 20,
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  floatingHeaderContainer: {
+  listContent: {
+    flexGrow: 1,
+  },
+  headerWrapper: {
+    marginBottom: 12,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 14,
+  },
+  headerIsland: {
+    flex: 1,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+  },
+  headerLabel: {
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  settingsButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 12,
+  },
+  profileTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+  },
+  avatar: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarText: {
+    fontSize: 27,
+    fontWeight: '800',
+  },
+  avatarBadge: {
+    position: 'absolute',
+    right: 3,
+    bottom: 3,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: lightBrown,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileMeta: {
+    flex: 1,
+  },
+  profileName: {
+    fontSize: 21,
+    fontWeight: '800',
+  },
+  profileEmail: {
+    marginTop: 2,
+    fontSize: 13,
+  },
+  roleChip: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  roleChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  statCard: {
+    flex: 1,
+    minHeight: 84,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  statDateValue: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  statLabel: {
+    marginTop: 4,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  salesCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 16,
+  },
+  salesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  salesLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 20,
   },
-  nameIsland: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 22,
-  },
-  islandLabel: {
-    fontSize: 10,
+  salesLabel: {
+    fontSize: 13,
     fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: 1,
-    marginBottom: 2,
   },
-  islandTitle: {
-    fontSize: 20,
+  salesValue: {
+    fontSize: 18,
     fontWeight: '800',
-    color: '#FFFFFF',
   },
-  guestContainer: {
+  postsSectionHeader: {
+    marginBottom: 10,
+  },
+  postsSectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  postsSectionHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  postCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 10,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  postImage: {
+    width: 98,
+    height: 98,
+    borderRadius: 11,
+  },
+  postContent: {
+    flex: 1,
+  },
+  postTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  postPrice: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  manageButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 40,
   },
-  guestIconContainer: {
+  postDescription: {
+    marginTop: 5,
+    fontSize: 12,
+    lineHeight: 18,
+    minHeight: 36,
+  },
+  postMetaRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  metaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metaText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  postDate: {
+    marginLeft: 'auto',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  emptyState: {
+    borderRadius: 16,
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  emptyTitle: {
+    marginTop: 10,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  emptyHint: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  guestContainer: {
+    flex: 1,
+    gap: 14,
+  },
+  guestCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    padding: 22,
+    alignItems: 'center',
+  },
+  guestAvatar: {
     width: 120,
     height: 120,
     borderRadius: 60,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 20,
-  },
-  welcomeText: {
-    fontSize: 28,
-    fontWeight: '700',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  infoText: {
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 40,
-    paddingHorizontal: 20,
-    lineHeight: 22,
-  },
-  button: {
-    width: '100%',
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  outlineButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 2,
-  },
-  buttonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  infoCardsContainer: {
-    width: '100%',
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 30,
-  },
-  infoCard: {
-    flex: 1,
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-    gap: 8,
-  },
-  infoCardTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  infoCardText: {
-    fontSize: 12,
-    textAlign: 'center',
-    lineHeight: 16,
-  },
-  profileCard: {
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: 20,
     marginBottom: 16,
   },
-  profileHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    fontSize: 28,
-    fontWeight: '700',
-  },
-  profileInfo: {
-    flex: 1,
-  },
-  userName: {
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  userEmail: {
-    fontSize: 14,
-    marginBottom: 4,
-  },
-  storeName: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
-  },
-  statCard: {
-    flex: 1,
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 20,
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 28,
+  guestTitle: {
+    fontSize: 24,
     fontWeight: '800',
-    marginBottom: 4,
+    textAlign: 'center',
   },
-  statLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+  guestSubtitle: {
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: 'center',
+    marginBottom: 22,
   },
-  actionsCard: {
-    borderRadius: 20,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  actionButton: {
-    flexDirection: 'row',
+  primaryButton: {
+    width: '100%',
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderBottomWidth: 1,
+    marginBottom: 10,
   },
-  actionLeft: {
-    flexDirection: 'row',
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  secondaryButton: {
+    width: '100%',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    paddingVertical: 14,
     alignItems: 'center',
-    gap: 12,
   },
-  actionText: {
-    fontSize: 16,
-    fontWeight: '600',
+  secondaryButtonText: {
+    fontSize: 15,
+    fontWeight: '800',
   },
 });

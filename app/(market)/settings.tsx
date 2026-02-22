@@ -19,11 +19,8 @@ import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
-import { signOut } from 'firebase/auth';
-import { auth } from '@/lib/firebase/config';
 import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
-import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { showToast } from '@/components/toast';
 
 const lightBrown = '#A67C52';
@@ -113,7 +110,7 @@ export default function SettingsScreen() {
         // await userApi.updateProfile({ profilePicture: base64 });
         showToast('Profile picture updated', 'success');
       }
-    } catch (error: any) {
+    } catch {
       haptics.error();
       showToast('Failed to update profile picture', 'error');
     }
@@ -356,6 +353,35 @@ export default function SettingsScreen() {
             thumbColor={lightBrown}
           />
         </View>
+      </View>
+
+      {/* Selling & Escrow */}
+      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Selling & Escrow</Text>
+      <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <TouchableOpacity
+          style={[styles.settingRow, { borderBottomColor: colors.border }]}
+          onPress={() => {
+            haptics.light();
+            router.push('/(market)/orders' as any);
+          }}>
+          <View style={styles.settingLeft}>
+            <IconSymbol name="shippingbox.fill" size={20} color={colors.text} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Market Orders</Text>
+          </View>
+          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.settingRow}
+          onPress={() => {
+            haptics.light();
+            router.push('/(market)/payouts' as any);
+          }}>
+          <View style={styles.settingLeft}>
+            <IconSymbol name="dollarsign.circle.fill" size={20} color={colors.text} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Payouts</Text>
+          </View>
+          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
       </View>
 
       {/* About */}

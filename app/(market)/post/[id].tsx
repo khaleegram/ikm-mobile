@@ -1,35 +1,31 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
-  Alert,
-  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { useTheme } from '@/lib/theme/theme-context';
-import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
-import { useMarketPostComments } from '@/lib/firebase/firestore/market-comments';
-import { CommentItem } from '@/components/market/comment-item';
-import { FeedCard } from '@/components/market/feed-card';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { AnimatedPressable } from '@/components/animated-pressable';
-import { marketPostsApi } from '@/lib/api/market-posts';
-import { marketCommentsApi } from '@/lib/api/market-comments';
-import { showToast } from '@/components/toast';
-import { haptics } from '@/lib/utils/haptics';
-import { SafeImage } from '@/components/safe-image';
-import { LinearGradient } from 'expo-linear-gradient';
 
-const { width, height } = Dimensions.get('window');
+import { CommentItem } from '@/components/market/comment-item';
+import { AnimatedPressable } from '@/components/animated-pressable';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { showToast } from '@/components/toast';
+import { marketCommentsApi } from '@/lib/api/market-comments';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { useMarketPostComments } from '@/lib/firebase/firestore/market-comments';
+import { useTheme } from '@/lib/theme/theme-context';
+import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
+import { haptics } from '@/lib/utils/haptics';
+import type { MarketComment } from '@/types';
+
 const lightBrown = '#A67C52';
 
 export default function PostDetailScreen() {
@@ -37,37 +33,48 @@ export default function PostDetailScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { post, loading: postLoading } = useMarketPost(id as string);
   const { comments, loading: commentsLoading } = useMarketPostComments(id as string);
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
-  const scrollViewRef = useRef<ScrollView>(null);
+  const commentsListRef = useRef<FlatList<MarketComment>>(null);
+  const marketLoginRoute = getLoginRouteForVariant('market');
+
+  const orderedComments = useMemo(() => [...comments].reverse(), [comments]);
+
+  const scrollToLatestComment = () => {
+    requestAnimationFrame(() => {
+      commentsListRef.current?.scrollToEnd({ animated: true });
+    });
+  };
+
+  useEffect(() => {
+    if (orderedComments.length > 0) {
+      scrollToLatestComment();
+    }
+  }, [orderedComments.length]);
 
   const handleComment = async () => {
+    if (!id) return;
+
     if (!user) {
       Alert.alert('Login Required', 'Please log in to comment', [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Login', onPress: () => router.push('/(auth)/login') },
+        { text: 'Login', onPress: () => router.push(marketLoginRoute as any) },
       ]);
       return;
     }
 
-    if (!commentText.trim()) {
-      return;
-    }
+    if (!commentText.trim()) return;
 
     setSubmittingComment(true);
     haptics.medium();
 
     try {
-      await marketCommentsApi.create(id as string, commentText);
+      await marketCommentsApi.create(id, commentText);
       setCommentText('');
       haptics.success();
       showToast('Comment added', 'success');
-      // Scroll to top of comments
-      setTimeout(() => {
-        scrollViewRef.current?.scrollTo({ y: height, animated: true });
-      }, 100);
+      scrollToLatestComment();
     } catch (error: any) {
       console.error('Error adding comment:', error);
       haptics.error();
@@ -77,51 +84,7 @@ export default function PostDetailScreen() {
     }
   };
 
-  const handleLike = async () => {
-    if (!user) {
-      Alert.alert('Login Required', 'Please log in to like posts', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Login', onPress: () => router.push('/(auth)/login') },
-      ]);
-      return;
-    }
-
-    try {
-      haptics.light();
-      await marketPostsApi.like(id as string);
-    } catch (error: any) {
-      console.error('Error liking post:', error);
-    }
-  };
-
-  const handleShare = () => {
-    haptics.medium();
-    // TODO: Implement share functionality
-    showToast('Share feature coming soon', 'info');
-  };
-
-  const handleAskForPrice = () => {
-    if (!user) {
-      Alert.alert('Login Required', 'Please log in to message sellers', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Login', onPress: () => router.push('/(auth)/login') },
-      ]);
-      return;
-    }
-
-    haptics.medium();
-    router.push(`/(market)/messages/${post?.posterId}_${id}` as any);
-  };
-
-  if (postLoading) {
-    return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={lightBrown} />
-      </View>
-    );
-  }
-
-  if (!post) {
+  if (!id) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <Text style={[styles.errorText, { color: colors.error }]}>Post not found</Text>
@@ -137,9 +100,8 @@ export default function PostDetailScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={insets.top}>
-      {/* Header */}
       <View
         style={[
           styles.header,
@@ -152,48 +114,41 @@ export default function PostDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
           <IconSymbol name="arrow.left" size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Post Details</Text>
+        {/* Comments-only screen: no post actions/likes/count overlay here. */}
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Comments</Text>
         <View style={styles.headerButton} />
       </View>
 
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}>
-        {/* Post Display */}
-        <View style={styles.postContainer}>
-          <FeedCard post={post} />
-        </View>
-
-        {/* Comments Section */}
-        <View style={[styles.commentsSection, { backgroundColor: colors.background }]}>
-          <View style={[styles.commentsHeader, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.commentsTitle, { color: colors.text }]}>
-              Comments ({comments.length})
-            </Text>
-          </View>
-
-          {commentsLoading ? (
+      <FlatList
+        ref={commentsListRef}
+        data={orderedComments}
+        keyExtractor={(item) => item.id || Math.random().toString()}
+        renderItem={({ item }) => <CommentItem comment={item} />}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.commentsListContent,
+          {
+            paddingBottom: insets.bottom + 88,
+          },
+        ]}
+        ListEmptyComponent={
+          commentsLoading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="small" color={lightBrown} />
             </View>
-          ) : comments.length === 0 ? (
+          ) : (
             <View style={styles.emptyComments}>
               <IconSymbol name="message" size={48} color={colors.textSecondary} />
               <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
                 No comments yet. Be the first to comment!
               </Text>
             </View>
-          ) : (
-            comments.map((comment) => (
-              <CommentItem key={comment.id} comment={comment} />
-            ))
-          )}
-        </View>
-      </ScrollView>
+          )
+        }
+      />
 
-      {/* Comment Input */}
       <View
         style={[
           styles.inputContainer,
@@ -217,6 +172,7 @@ export default function PostDetailScreen() {
             placeholderTextColor={colors.textSecondary}
             value={commentText}
             onChangeText={setCommentText}
+            onFocus={scrollToLatestComment}
             editable={!!user}
             multiline
             maxLength={500}
@@ -225,8 +181,8 @@ export default function PostDetailScreen() {
             style={[
               styles.sendButton,
               {
-                backgroundColor: commentText.trim() && user ? lightBrown : colors.backgroundSecondary,
-                opacity: commentText.trim() && user ? 1 : 0.5,
+                backgroundColor: commentText.trim() && user ? lightBrown : colors.border,
+                opacity: commentText.trim() && user ? 1 : 0.72,
               },
             ]}
             onPress={handleComment}
@@ -235,7 +191,7 @@ export default function PostDetailScreen() {
             {submittingComment ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
-              <IconSymbol name="arrow.up.circle.fill" size={24} color="#FFFFFF" />
+              <IconSymbol name="paperplane.fill" size={18} color="#FFFFFF" />
             )}
           </AnimatedPressable>
         </View>
@@ -271,34 +227,19 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
   },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 20,
-  },
-  postContainer: {
-    height: height * 0.6,
-    marginBottom: 20,
-  },
-  commentsSection: {
+  commentsListContent: {
+    flexGrow: 1,
     paddingHorizontal: 16,
-  },
-  commentsHeader: {
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    marginBottom: 12,
-  },
-  commentsTitle: {
-    fontSize: 18,
-    fontWeight: '700',
+    paddingTop: 10,
   },
   loadingContainer: {
     paddingVertical: 40,
     alignItems: 'center',
   },
   emptyComments: {
-    paddingVertical: 60,
+    flex: 1,
+    minHeight: 220,
+    justifyContent: 'center',
     alignItems: 'center',
     gap: 12,
   },
@@ -315,21 +256,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     borderWidth: 1,
-    borderRadius: 24,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: 18,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingVertical: 6,
+    minHeight: 52,
     gap: 8,
   },
   input: {
     flex: 1,
-    fontSize: 16,
-    maxHeight: 100,
-    paddingVertical: 4,
+    fontSize: 15,
+    lineHeight: 20,
+    maxHeight: 110,
+    paddingVertical: 10,
   },
   sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },

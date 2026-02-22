@@ -4,10 +4,8 @@ import {
   Text,
   StyleSheet,
   TextInput,
-  FlatList,
   TouchableOpacity,
   ActivityIndicator,
-  ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -20,7 +18,8 @@ import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { firestore } from '@/lib/firebase/config';
-import { MarketPost } from '@/types';
+import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import KeyboardFlatList from '@/components/layout/KeyboardFlatList';
 
 const lightBrown = '#A67C52';
 const RECENT_SEARCHES_KEY = '@market_street_recent_searches';
@@ -33,7 +32,7 @@ interface TrendingHashtag {
 }
 
 export default function SearchScreen() {
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [searchQuery, setSearchQuery] = useState('');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
@@ -90,21 +89,24 @@ export default function SearchScreen() {
     return () => unsubscribe();
   }, []);
 
-  const saveRecentSearch = async (query: string) => {
-    if (!query.trim()) return;
+  const saveRecentSearch = useCallback(
+    async (query: string) => {
+      if (!query.trim()) return;
 
-    try {
-      const updated = [
-        query.trim(),
-        ...recentSearches.filter((s) => s.toLowerCase() !== query.trim().toLowerCase()),
-      ].slice(0, MAX_RECENT_SEARCHES);
+      try {
+        const updated = [
+          query.trim(),
+          ...recentSearches.filter((s) => s.toLowerCase() !== query.trim().toLowerCase()),
+        ].slice(0, MAX_RECENT_SEARCHES);
 
-      await AsyncStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(updated));
-      setRecentSearches(updated);
-    } catch (error) {
-      console.error('Error saving recent search:', error);
-    }
-  };
+        await AsyncStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(updated));
+        setRecentSearches(updated);
+      } catch (error) {
+        console.error('Error saving recent search:', error);
+      }
+    },
+    [recentSearches]
+  );
 
   const handleSearch = useCallback(() => {
     const query = searchQuery.trim();
@@ -118,7 +120,7 @@ export default function SearchScreen() {
     setIsSearching(true);
     setSelectedHashtag(null);
     saveRecentSearch(query);
-  }, [searchQuery]);
+  }, [saveRecentSearch, searchQuery]);
 
   const handleHashtagPress = useCallback((hashtag: string) => {
     haptics.light();
@@ -126,7 +128,7 @@ export default function SearchScreen() {
     setIsSearching(true);
     setSearchQuery(`#${hashtag}`);
     saveRecentSearch(`#${hashtag}`);
-  }, []);
+  }, [saveRecentSearch]);
 
   const handleRecentSearchPress = useCallback((query: string) => {
     haptics.light();
@@ -195,11 +197,22 @@ export default function SearchScreen() {
     }
 
     return (
-      <FlatList
+      <KeyboardFlatList
         data={posts}
-        renderItem={({ item }) => <FeedCard post={item} onComment={handleComment} />}
+        renderItem={({ item }) => (
+          <FeedCard
+            post={item}
+            onComment={() => {
+              if (item.id) {
+                handleComment(item.id);
+              }
+            }}
+          />
+        )}
         keyExtractor={(item) => item.id || Math.random().toString()}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
         contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
       />
     );
@@ -211,8 +224,10 @@ export default function SearchScreen() {
     }
 
     return (
-      <ScrollView
+      <KeyboardScreen
         style={styles.scrollView}
+        keyboardVerticalOffset={insets.top}
+        extraScrollHeight={32}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         showsVerticalScrollIndicator={false}>
         {/* Trending Hashtags */}
@@ -280,7 +295,7 @@ export default function SearchScreen() {
             </Text>
           </View>
         )}
-      </ScrollView>
+      </KeyboardScreen>
     );
   };
 

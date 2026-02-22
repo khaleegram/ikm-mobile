@@ -27,6 +27,7 @@ export default function MarketFeedScreen() {
   const insets = useSafeAreaInsets();
   const { posts, loading, error, loadMore, hasMore, refresh } = useMarketPosts();
   const [refreshing, setRefreshing] = React.useState(false);
+  const [viewportHeight, setViewportHeight] = React.useState(height);
   const flatListRef = useRef<FlatList>(null);
 
   const onRefresh = async () => {
@@ -48,20 +49,20 @@ export default function MarketFeedScreen() {
 
   const renderItem = useCallback(
     ({ item }: { item: MarketPost }) => (
-      <FeedCard post={item} onComment={() => handleComment(item.id!)} />
+      <FeedCard post={item} itemHeight={viewportHeight} onComment={() => handleComment(item.id!)} />
     ),
-    [handleComment]
+    [handleComment, viewportHeight]
   );
 
   const keyExtractor = useCallback((item: MarketPost) => item.id || Math.random().toString(), []);
 
   const getItemLayout = useCallback(
     (_: any, index: number) => ({
-      length: height,
-      offset: height * index,
+      length: viewportHeight,
+      offset: viewportHeight * index,
       index,
     }),
-    []
+    [viewportHeight]
   );
 
   const renderHomeAppBar = () => (
@@ -137,7 +138,14 @@ export default function MarketFeedScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: '#000' }]}>
+    <View
+      style={[styles.container, { backgroundColor: '#000' }]}
+      onLayout={(event) => {
+        const nextHeight = Math.round(event.nativeEvent.layout.height);
+        if (nextHeight > 0 && nextHeight !== viewportHeight) {
+          setViewportHeight(nextHeight);
+        }
+      }}>
       <StatusBar barStyle="light-content" translucent />
 
       <FlatList
@@ -146,7 +154,7 @@ export default function MarketFeedScreen() {
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         pagingEnabled={true}
-        snapToInterval={height}
+        snapToInterval={viewportHeight}
         decelerationRate="fast"
         showsVerticalScrollIndicator={false}
         onEndReached={handleEndReached}
@@ -167,7 +175,7 @@ export default function MarketFeedScreen() {
         updateCellsBatchingPeriod={50}
         ListFooterComponent={
           loading && posts.length > 0 ? (
-            <View style={styles.footerLoader}>
+            <View style={[styles.footerLoader, { height: viewportHeight }]}>
               <ActivityIndicator size="small" color="#FFFFFF" />
             </View>
           ) : null

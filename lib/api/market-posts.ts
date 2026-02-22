@@ -7,6 +7,7 @@ export interface CreateMarketPostData {
   images: string[]; // 1-20 image URIs (will be converted to base64)
   hashtags?: string[];
   price?: number;
+  isNegotiable?: boolean;
   description?: string;
   location?: {
     state?: string;
@@ -49,6 +50,7 @@ export const marketPostsApi = {
       images: imageBase64Array,
       hashtags: data.hashtags || [],
       price: data.price,
+      isNegotiable: Boolean(data.isNegotiable),
       description: data.description,
       location: data.location,
       contactMethod: data.contactMethod || 'in-app',
