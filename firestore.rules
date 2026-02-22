@@ -15,6 +15,22 @@ service cloud.firestore {
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
+
+    function isConversationParticipant(conversationId) {
+      return isAuthenticated()
+        && exists(/databases/$(database)/documents/conversations/$(conversationId))
+        && get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds != null
+        && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+    }
+
+    function isDirectConversationForUser(conversationId) {
+      return isAuthenticated()
+        && conversationId.matches('^direct_[A-Za-z0-9]+_[A-Za-z0-9]+$')
+        && (
+          conversationId.matches('^direct_' + request.auth.uid + '_[A-Za-z0-9]+$')
+          || conversationId.matches('^direct_[A-Za-z0-9]+_' + request.auth.uid + '$')
+        );
+    }
     
     function isValidEmail(email) {
       return email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
@@ -158,6 +174,72 @@ service cloud.firestore {
       
       // Only admin can delete messages
       allow delete: if isAdmin();
+    }
+
+    // Conversations Collection (Conversation-first messaging architecture)
+    // - One persistent direct conversation per user pair
+    // - Participants can read/update their own conversation metadata
+    // - Participants can create messages in subcollection
+    match /conversations/{conversationId} {
+      // Participants or admin can read conversation metadata
+      allow read: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.participantIds != null
+          && request.auth.uid in resource.data.participantIds)
+        || isDirectConversationForUser(conversationId);
+
+      // Allow participant listing for inbox queries
+      allow list: if isAdmin() || isAuthenticated();
+
+      // Participants can create direct conversations
+      allow create: if isAuthenticated()
+        && request.resource.data.type == 'direct'
+        && request.resource.data.participantIds is list
+        && request.resource.data.participantIds.size() == 2
+        && request.auth.uid in request.resource.data.participantIds;
+
+      // Participants can update metadata (unread counters, last message, updatedAt)
+      // participantIds must remain immutable
+      allow update: if isAdmin()
+        || (isAuthenticated()
+          && resource.data.participantIds != null
+          && request.auth.uid in resource.data.participantIds
+          && request.resource.data.participantIds == resource.data.participantIds);
+
+      // Only admin can hard-delete conversations
+      allow delete: if isAdmin();
+
+      // Conversation messages subcollection
+      match /messages/{messageId} {
+        // Participants or admin can read
+        allow read: if isAdmin()
+          || isConversationParticipant(conversationId)
+          || isDirectConversationForUser(conversationId);
+        allow list: if isAdmin()
+          || isConversationParticipant(conversationId)
+          || isDirectConversationForUser(conversationId);
+
+        // Authenticated participant can create message as themselves
+        // chatId must match parent conversation path
+        allow create: if isAuthenticated()
+          && isConversationParticipant(conversationId)
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.chatId == conversationId
+          && (
+            (request.resource.data.message is string && request.resource.data.message.size() <= 1000)
+            || (request.resource.data.text is string && request.resource.data.text.size() <= 1000)
+            || request.resource.data.imageUrl != null
+            || request.resource.data.quoteCard != null
+            || request.resource.data.paymentLink != null
+          );
+
+        // Sender or admin can update own message (edit/deleteForEveryone flags)
+        allow update: if isAdmin()
+          || (isAuthenticated() && resource.data.senderId == request.auth.uid);
+
+        // Only admin can hard-delete
+        allow delete: if isAdmin();
+      }
     }
     
     // Trending Hashtags Collection

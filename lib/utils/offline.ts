@@ -12,7 +12,7 @@ export interface CachedData<T> {
 
 export interface QueuedWrite {
   id: string;
-  type: 'product' | 'order' | 'user';
+  type: 'product' | 'order' | 'user' | 'marketMessage';
   action: 'create' | 'update' | 'delete';
   data: any;
   timestamp: number;

@@ -1,12 +1,12 @@
 // Hook for offline sync functionality
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { syncQueuedWrites, getWriteQueue } from '../utils/offline';
+import { syncQueuedWrites, getWriteQueue, QueuedWrite } from '../utils/offline';
 import { productApi } from '../api/products';
 import { orderApi } from '../api/orders';
 import { userApi } from '../api/user';
-import { QueuedWrite } from '../utils/offline';
+import { marketMessagesApi } from '../api/market-messages';
 
 export function useOfflineSync() {
   const [isOnline, setIsOnline] = useState(true);
@@ -53,7 +53,7 @@ export function useOfflineSync() {
     setQueuedWrites(queue);
   };
 
-  const syncWrites = async () => {
+  const syncWrites = useCallback(async () => {
     if (!isOnline || syncing) return;
 
     setSyncing(true);
@@ -79,6 +79,11 @@ export function useOfflineSync() {
               await userApi.updateProfile(write.data.userId, write.data);
             }
             break;
+          case 'marketMessage':
+            if (write.action === 'create') {
+              await marketMessagesApi.sendQueuedMessage(write.data);
+            }
+            break;
         }
       });
       await loadQueuedWrites();
@@ -87,14 +92,14 @@ export function useOfflineSync() {
     } finally {
       setSyncing(false);
     }
-  };
+  }, [isOnline, syncing]);
 
   // Auto-sync when coming online (only if app is active)
   useEffect(() => {
     if (isOnline && queuedWrites.length > 0 && appState.current === 'active') {
       syncWrites();
     }
-  }, [isOnline]);
+  }, [isOnline, queuedWrites.length, syncWrites]);
 
   return {
     isOnline,

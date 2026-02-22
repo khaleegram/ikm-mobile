@@ -1,17 +1,24 @@
 // Firebase configuration and initialization
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getAuth, Auth } from 'firebase/auth';
+import { getAuth, Auth, initializeAuth, type Persistence } from 'firebase/auth';
+import * as FirebaseAuthRuntime from '@firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
-// NOTE:
-// This project previously attempted to use:
-//   initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) })
-// via a deep import (`firebase/auth/react-native`).
-//
-// In this repo's current dependency/Metro setup, that module path isn't resolvable,
-// which breaks bundling for dev-client. We intentionally fall back to `getAuth()`
-// to keep the app booting reliably.
+function getReactNativePersistenceFactory():
+  | ((storage: typeof AsyncStorage) => Persistence)
+  | null {
+  // `firebase/auth/react-native` is not exported in firebase@12.
+  // Use @firebase/auth runtime entry and fallback safely when unavailable.
+  const runtime = FirebaseAuthRuntime as unknown as {
+    getReactNativePersistence?: (storage: typeof AsyncStorage) => Persistence;
+  };
+  return typeof runtime.getReactNativePersistence === 'function'
+    ? runtime.getReactNativePersistence
+    : null;
+}
 
 // Firebase config - should be in environment variables
 // For now, using placeholder values - replace with actual config
@@ -33,14 +40,31 @@ let storage: FirebaseStorage;
 if (getApps().length === 0) {
   app = initializeApp(firebaseConfig);
 
-  // Keep auth init simple and bundler-safe for Expo dev-client.
-  auth = getAuth(app);
+  const isNative = Platform.OS === 'android' || Platform.OS === 'ios';
+  const getReactNativePersistence = getReactNativePersistenceFactory();
+
+  if (isNative && getReactNativePersistence) {
+    try {
+      auth = initializeAuth(app, {
+        persistence: getReactNativePersistence(AsyncStorage),
+      });
+    } catch (error: any) {
+      // Reuse existing Auth instance if already initialized elsewhere.
+      if (error?.code === 'auth/already-initialized') {
+        auth = getAuth(app);
+      } else {
+        throw error;
+      }
+    }
+  } else {
+    auth = getAuth(app);
+  }
   
   firestore = getFirestore(app);
   storage = getStorage(app);
 } else {
   app = getApps()[0];
-  // Always use getAuth for existing apps to avoid re-initialization errors
+  // Existing app should already have Auth initialized (with persistence on native).
   auth = getAuth(app);
   firestore = getFirestore(app);
   storage = getStorage(app);

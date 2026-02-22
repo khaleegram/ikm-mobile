@@ -1,0 +1,62 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isImageUploadUnder5MB() {
+      return request.resource != null
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // Product images (legacy/current path requested)
+    match /product_images/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwner(userId) && isImageUploadUnder5MB();
+    }
+
+    // Profile pictures
+    // Public read so avatars load for all users
+    // Only owner can upload/update/delete their own profile pictures
+    match /profile_pictures/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwner(userId) && isImageUploadUnder5MB();
+    }
+
+    // Store images (logo/banner)
+    match /store_images/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwner(userId) && isImageUploadUnder5MB();
+    }
+
+    // Product images
+    match /products/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwner(userId) && isImageUploadUnder5MB();
+    }
+
+    // Market message images
+    match /marketMessages/{chatId}/{fileName} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Market post images
+    match /marketPosts/{postId}/{fileName} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Deny all other paths by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

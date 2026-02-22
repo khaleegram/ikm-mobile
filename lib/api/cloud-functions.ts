@@ -135,13 +135,63 @@ const SHARED_FUNCTIONS = {
   helloWorld: 'https://helloworld-q3rjv54uka-uc.a.run.app',
 };
 
+const CLOUD_FUNCTIONS_DEBUG = false;
+
+function cloudDebug(...args: any[]) {
+  if (!CLOUD_FUNCTIONS_DEBUG) return;
+  console.log(...args);
+}
+
+function cloudWarn(...args: any[]) {
+  if (!CLOUD_FUNCTIONS_DEBUG) return;
+  console.warn(...args);
+}
+
 export interface CloudFunctionError {
   message: string;
   code?: string;
   status?: number;
+  url?: string;
+  functionName?: string;
 }
 
 class CloudFunctionsClient {
+  private getFunctionNameFromUrl(url: string): string {
+    try {
+      const parsedUrl = new URL(url);
+
+      if (parsedUrl.hostname.endsWith('.a.run.app')) {
+        const serviceName = parsedUrl.hostname.split('.')[0] || '';
+        return serviceName.split('-')[0] || serviceName || 'unknown';
+      }
+
+      if (parsedUrl.hostname.includes('.cloudfunctions.net')) {
+        const pathName = parsedUrl.pathname.replace(/^\/+/, '');
+        if (pathName) return pathName;
+      }
+    } catch {
+      // Ignore parse errors and fallback below.
+    }
+    return 'unknown';
+  }
+
+  private get404FallbackUrl(url: string): string | null {
+    const projectId = process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID?.trim();
+    if (!projectId) return null;
+
+    try {
+      const parsedUrl = new URL(url);
+      if (!parsedUrl.hostname.endsWith('.a.run.app')) return null;
+
+      const functionName = this.getFunctionNameFromUrl(url);
+      if (!functionName || functionName === 'unknown') return null;
+
+      return `https://us-central1-${projectId}.cloudfunctions.net/${functionName}`;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Get Firebase ID token for authentication
    * Uses cached token when possible to avoid quota issues
@@ -150,20 +200,20 @@ class CloudFunctionsClient {
     try {
       const user = auth.currentUser;
       if (!user) {
-        console.warn('[Cloud Function] No authenticated user');
+        cloudWarn('[Cloud Function] No authenticated user');
         return null;
       }
       // Force refresh if requested, otherwise use cached token
       // Firebase SDK will automatically refresh if token is expired
       const token = await user.getIdToken(forceRefresh);
       if (!token) {
-        console.warn('[Cloud Function] Failed to get ID token');
+        cloudWarn('[Cloud Function] Failed to get ID token');
       }
       return token;
     } catch (error: any) {
       // Handle quota exceeded errors gracefully
       if (error?.code === 'auth/quota-exceeded') {
-        console.warn('Firebase Auth quota exceeded. Using cached token if available.');
+        cloudWarn('Firebase Auth quota exceeded. Using cached token if available.');
         // Try to get cached token (don't force refresh)
         try {
           const user = auth.currentUser;
@@ -194,6 +244,8 @@ class CloudFunctionsClient {
     } = {}
   ): Promise<T> {
     const { method = 'POST', body, requiresAuth = false, retries = 3 } = options;
+    let requestUrl = url;
+    let tried404Fallback = false;
 
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
@@ -225,13 +277,18 @@ class CloudFunctionsClient {
         if (attempt > 0) {
           // Exponential backoff: 1s, 2s, 4s
           const delayMs = Math.pow(2, attempt - 1) * 1000;
-          console.log(`[Cloud Function] Retry attempt ${attempt}/${retries} after ${delayMs}ms delay`);
+          cloudDebug(`[Cloud Function] Retry attempt ${attempt}/${retries} after ${delayMs}ms delay`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }
         
-        console.log(`[Cloud Function] ${method} ${url}`, { requiresAuth, hasBody: !!body, attempt: attempt + 1 });
+        cloudDebug(`[Cloud Function] ${method} ${requestUrl}`, {
+          requiresAuth,
+          hasBody: !!body,
+          attempt: attempt + 1,
+          functionName: this.getFunctionNameFromUrl(requestUrl),
+        });
         
-        const response = await fetch(url, requestOptions);
+        const response = await fetch(requestUrl, requestOptions);
 
         // Handle network errors
         if (!response) {
@@ -266,20 +323,37 @@ class CloudFunctionsClient {
           }
         }
 
+        // If old/stale Cloud Run URL returns 404, try Firebase cloudfunctions.net fallback once.
+        if (response.status === 404 && !tried404Fallback) {
+          const fallbackUrl = this.get404FallbackUrl(requestUrl);
+          if (fallbackUrl && fallbackUrl !== requestUrl) {
+            tried404Fallback = true;
+            cloudWarn(`[Cloud Function] 404 on ${requestUrl}. Retrying with fallback ${fallbackUrl}`);
+            requestUrl = fallbackUrl;
+            continue;
+          }
+        }
+
         // Check for success field in response
         if (data.success === false) {
-          const errorMessage = data.error || data.message || `Request failed with status ${response.status}`;
+          const defaultMessage =
+            response.status === 404
+              ? `Cloud Function endpoint not found (404): ${this.getFunctionNameFromUrl(requestUrl)}`
+              : `Request failed with status ${response.status}`;
+          const errorMessage = data.error || data.message || defaultMessage;
           const error: CloudFunctionError = {
             message: errorMessage,
             code: data.code,
             status: response.status,
+            url: requestUrl,
+            functionName: this.getFunctionNameFromUrl(requestUrl),
           };
           
           // Retry on rate limit (503) or server errors (500-502, 504)
           if (response.status === 503 || (response.status >= 500 && response.status < 505)) {
             if (attempt < retries) {
               lastError = error;
-              console.warn(`[Cloud Function] Server error ${response.status}, will retry...`);
+              cloudWarn(`[Cloud Function] Server error ${response.status}, will retry...`);
               continue; // Retry the request
             }
           }
@@ -289,16 +363,22 @@ class CloudFunctionsClient {
         }
 
         if (!response.ok) {
-          const errorMessage = data.message || data.error || data.errorMessage || `HTTP ${response.status}: ${response.statusText}`;
+          const defaultMessage =
+            response.status === 404
+              ? `Cloud Function endpoint not found (404): ${this.getFunctionNameFromUrl(requestUrl)}`
+              : `HTTP ${response.status}: ${response.statusText}`;
+          const errorMessage = data.message || data.error || data.errorMessage || defaultMessage;
           const error: CloudFunctionError = {
             message: errorMessage,
             code: data.code || data.errorCode,
             status: response.status,
+            url: requestUrl,
+            functionName: this.getFunctionNameFromUrl(requestUrl),
           };
           
           // Handle 401 Unauthorized - try refreshing token once
           if (response.status === 401 && requiresAuth && attempt === 0) {
-            console.warn('[Cloud Function] 401 Unauthorized, attempting token refresh...');
+            cloudWarn('[Cloud Function] 401 Unauthorized, attempting token refresh...');
             try {
               const refreshedToken = await this.getIdToken(true); // Force refresh
               if (refreshedToken) {
@@ -317,7 +397,7 @@ class CloudFunctionsClient {
           if (response.status === 503 || (response.status >= 500 && response.status < 505)) {
             if (attempt < retries) {
               lastError = error;
-              console.warn(`[Cloud Function] Server error ${response.status}, will retry...`);
+              cloudWarn(`[Cloud Function] Server error ${response.status}, will retry...`);
               continue; // Retry the request
             }
           }
@@ -326,14 +406,14 @@ class CloudFunctionsClient {
           throw error;
         }
 
-        console.log('[Cloud Function] Success');
+        cloudDebug('[Cloud Function] Success');
         return data as T;
       } catch (error: any) {
         // Network errors - retry if we have attempts left
         if (error.name === 'TypeError' && error.message.includes('fetch')) {
           if (attempt < retries) {
             lastError = error;
-            console.warn('[Cloud Function] Network error, will retry...');
+            cloudWarn('[Cloud Function] Network error, will retry...');
             continue; // Retry the request
           }
           throw new Error('Network request failed. Please check your internet connection and try again.');
@@ -375,7 +455,7 @@ class CloudFunctionsClient {
   async getAllUsers(data?: {
     limit?: number;
     startAfter?: string;
-    role?: 'customer' | 'seller' | 'admin';
+    role?: 'user' | 'customer' | 'seller' | 'admin';
   }): Promise<{
     success: boolean;
     users: any[];
@@ -1619,6 +1699,7 @@ class CloudFunctionsClient {
     images: string[]; // Base64 encoded images
     hashtags?: string[];
     price?: number;
+    isNegotiable?: boolean;
     description?: string;
     location?: {
       state?: string;
@@ -1715,9 +1796,10 @@ class CloudFunctionsClient {
    * Create Market Chat
    */
   async createMarketChat(data: {
-    buyerId: string;
-    posterId: string;
     postId: string;
+    receiverId?: string;
+    buyerId?: string;
+    posterId?: string;
   }): Promise<{
     success: boolean;
     chatId: string;

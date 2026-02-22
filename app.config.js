@@ -53,6 +53,7 @@ module.exports = ({ config }) => {
     android: {
       ...(config.android || {}),
       package: androidPackage,
+      softwareKeyboardLayoutMode: 'resize',
     },
     extra,
   };
