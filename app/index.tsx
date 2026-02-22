@@ -60,11 +60,11 @@ export default function Index() {
   // Seller/Admin variant
   // ======================
   if (!user) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/(auth)/seller-login" />;
   }
 
   if (!userHasAccess) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/(auth)/seller-login" />;
   }
 
   return <Redirect href={isAdmin ? '/(admin)' : '/(tabs)'} />;

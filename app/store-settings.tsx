@@ -4,11 +4,11 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import { router } from 'expo-router';
 import { useUser } from '@/lib/firebase/auth/use-user';
@@ -16,10 +16,10 @@ import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useStore } from '@/lib/firebase/firestore/stores';
 import { userApi } from '@/lib/api/user';
 import { pickImage, uploadImage } from '@/lib/utils/image-upload';
-import { Image } from 'react-native';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { premiumShadow } from '@/lib/theme/styles';
+import KeyboardScreen from '@/components/layout/KeyboardScreen';
 
 type Category = 'personal' | 'store' | 'location' | 'policies' | 'social' | 'hours' | 'contact' | 'payout';
 
@@ -131,7 +131,7 @@ export default function SettingsScreen() {
         const uploadedUrl = await uploadImage(result.assets[0].uri, 'store_images', user.uid);
         setFormData((prev) => ({ ...prev, storeLogoUrl: uploadedUrl }));
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Failed to upload logo');
     } finally {
       setUploadingLogo(false);
@@ -147,7 +147,7 @@ export default function SettingsScreen() {
         const uploadedUrl = await uploadImage(result.assets[0].uri, 'store_images', user.uid);
         setFormData((prev) => ({ ...prev, storeBannerUrl: uploadedUrl }));
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Failed to upload banner');
     } finally {
       setUploadingBanner(false);
@@ -242,7 +242,7 @@ export default function SettingsScreen() {
     setExpandedCategory(expandedCategory === category ? null : category);
   };
 
-  const categories: Array<{ id: Category; title: string; icon: string }> = [
+  const categories: { id: Category; title: string; icon: string }[] = [
     { id: 'personal', title: 'Personal Information', icon: 'person.fill' },
     { id: 'store', title: 'Store Information', icon: 'storefront.fill' },
     { id: 'location', title: 'Location', icon: 'location.fill' },
@@ -282,7 +282,11 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <KeyboardScreen
+        style={styles.content}
+        extraScrollHeight={40}
+        contentContainerStyle={styles.contentContainer}
+        showsVerticalScrollIndicator={false}>
         {categories.map((category) => (
           <View key={category.id} style={[styles.categoryCard, { backgroundColor: colors.card }]}>
             <TouchableOpacity
@@ -568,7 +572,7 @@ export default function SettingsScreen() {
                 {category.id === 'hours' && (
                   <>
                     <Text style={[styles.hint, { color: colors.textSecondary }]}>
-                      Enter hours for each day (e.g., "9:00 AM - 6:00 PM" or "Closed")
+                      {'Enter hours for each day (e.g., "9:00 AM - 6:00 PM" or "Closed")'}
                     </Text>
                     {['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map((day) => (
                       <View key={day}>
@@ -670,7 +674,7 @@ export default function SettingsScreen() {
           onPress={handleLogout}>
           <Text style={styles.logoutButtonText}>Logout</Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardScreen>
     </View>
   );
 }
@@ -712,7 +716,11 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       fontWeight: '600',
     },
     content: {
+      flex: 1,
+    },
+    contentContainer: {
       padding: 20,
+      paddingBottom: 90,
     },
     categoryCard: {
       borderRadius: 16,

@@ -88,6 +88,8 @@ const MAPPING = {
   'paperplane': 'send',
   'message.fill': 'message',
   'message': 'message',
+  'envelope.fill': 'mail',
+  'envelope': 'mail-outline',
   
   // Status & Indicators
   'checkmark.circle.fill': 'check-circle',
@@ -108,6 +110,8 @@ const MAPPING = {
   // Location
   'location.fill': 'location-on',
   'location': 'location-on',
+  'building.2.fill': 'apartment',
+  'building.2': 'apartment',
   'map.fill': 'map',
   'map': 'map',
   
@@ -120,10 +124,18 @@ const MAPPING = {
   'pencil': 'edit',
   'trash.fill': 'delete',
   'trash': 'delete-outline',
+  'minus': 'remove',
+  'plus': 'add',
   'arrow.up': 'arrow-upward',
   'arrow.down': 'arrow-downward',
   'arrow.left': 'arrow-back',
   'arrow.right': 'arrow-forward',
+  'arrow.up.right': 'open-in-new',
+  'arrow.up.right.square': 'open-in-new',
+  'arrow.clockwise': 'refresh',
+  'arrow.up.circle.fill': 'send',
+  'square.and.arrow.up': 'share',
+  'ellipsis': 'more-horiz',
   
   // More
   'star.fill': 'star',

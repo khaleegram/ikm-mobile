@@ -345,7 +345,8 @@ export default function ProductDetailScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={insets.top}>
       
       {/* Fixed Header - Outside ScrollView */}
       <View style={[styles.floatingHeaderContainer, styles.fixedHeader, { paddingTop: insets.top + 10, paddingBottom: 15 }]}>
@@ -380,7 +381,9 @@ export default function ProductDetailScreen() {
       <ScrollView 
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}>
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}>
         
         {/* Updated Hero Section */}
         <View style={styles.heroSection}>

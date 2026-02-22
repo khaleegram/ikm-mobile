@@ -11,8 +11,17 @@ export default function MarketTabLayout() {
   const renderTabBar = useCallback((props: any) => <CustomTabBar {...props} />, []);
 
   const screenOptions = useMemo(() => {
-    return { headerShown: false as const };
-  }, []);
+    return {
+      headerShown: false as const,
+      sceneStyle: { backgroundColor: colors.background },
+      tabBarStyle: {
+        backgroundColor: colors.background,
+        borderTopWidth: 0,
+        elevation: 0,
+        shadowOpacity: 0,
+      },
+    };
+  }, [colors.background]);
 
   return (
     <Tabs tabBar={renderTabBar} screenOptions={screenOptions}>
@@ -53,7 +62,7 @@ export default function MarketTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="messages"
+        name="messages/index"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol
@@ -81,7 +90,18 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="settings" options={{ href: null }} />
       <Tabs.Screen name="search" options={{ href: null }} />
       <Tabs.Screen name="post/[id]" options={{ href: null }} />
-      <Tabs.Screen name="messages/[chatId]" options={{ href: null }} />
+      <Tabs.Screen name="post-edit/[id]" options={{ href: null }} />
+      <Tabs.Screen
+        name="messages/[chatId]"
+        options={{
+          href: null,
+          tabBarStyle: { display: 'none' },
+        }}
+      />
+      <Tabs.Screen name="buy/[postId]" options={{ href: null }} />
+      <Tabs.Screen name="orders/index" options={{ href: null }} />
+      <Tabs.Screen name="orders/[id]" options={{ href: null }} />
+      <Tabs.Screen name="payouts" options={{ href: null }} />
     </Tabs>
   );
 }

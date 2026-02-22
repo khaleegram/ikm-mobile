@@ -123,11 +123,26 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
     return state.routes[state.index]?.key === routeKey;
   };
 
+  const focusedRoute = state.routes[state.index];
+  const focusedOptions = descriptors[focusedRoute.key]?.options;
+  const focusedTabBarStyle = StyleSheet.flatten(focusedOptions?.tabBarStyle as any);
+  const shouldHideTabBar = focusedTabBarStyle?.display === 'none';
+  if (shouldHideTabBar) {
+    return null;
+  }
+
   const totalHeight = TAB_BAR_HEIGHT + insets.bottom;
 
   if (isMarketStreet) {
     return (
-      <View style={[styles.marketContainer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+      <View
+        style={[
+          styles.marketContainer,
+          {
+            paddingBottom: Math.max(insets.bottom, 8),
+            backgroundColor: colors.background,
+          },
+        ]}>
         <View style={[styles.marketBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
           {marketVisibleTabs.map(({ route, index, name }) => {
             const { options } = descriptors[route.key];
@@ -188,7 +203,7 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   ];
 
   return (
-    <View style={[styles.container, { height: totalHeight }]}>
+    <View style={[styles.container, { height: totalHeight, backgroundColor: colors.background }]}>
       {/* Background with SVG notch */}
       <View style={styles.backgroundContainer}>
         <Svg width={width} height={totalHeight} style={styles.svg}>
@@ -287,10 +302,7 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
 
 const styles = StyleSheet.create({
   marketContainer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    width: '100%',
     paddingHorizontal: 14,
     zIndex: 1000,
   },
@@ -325,10 +337,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 4,
   },
   container: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
+    width: '100%',
   },
   backgroundContainer: {
     ...StyleSheet.absoluteFillObject,

@@ -28,11 +28,11 @@ export default function TabLayout() {
   }
 
   if (!user) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/(auth)/seller-login" />;
   }
 
   if (!hasAppAccess(user)) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/(auth)/seller-login" />;
   }
 
   return (
@@ -40,6 +40,13 @@ export default function TabLayout() {
       tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{
         headerShown: false,
+        sceneStyle: { backgroundColor: colors.background },
+        tabBarStyle: {
+          backgroundColor: colors.background,
+          borderTopWidth: 0,
+          elevation: 0,
+          shadowOpacity: 0,
+        },
       }}>
       <Tabs.Screen
         name="index"

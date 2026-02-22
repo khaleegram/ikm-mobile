@@ -1,7 +1,7 @@
-import { Stack } from 'expo-router';
+import { router, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { FlatList, Platform, ScrollView } from 'react-native';
 import * as SystemUI from 'expo-system-ui';
 import 'react-native-reanimated';
 
@@ -13,9 +13,43 @@ function AppShell() {
   const { colorScheme } = useTheme();
 
   useEffect(() => {
+    const keyboardDismissMode = Platform.OS === 'ios' ? 'none' : 'none';
+
+    const ScrollViewAny = ScrollView as any;
+    const FlatListAny = FlatList as any;
+
+    ScrollViewAny.defaultProps = {
+      ...(ScrollViewAny.defaultProps || {}),
+      keyboardShouldPersistTaps: 'always',
+      keyboardDismissMode,
+      automaticallyAdjustKeyboardInsets: true,
+    };
+
+    FlatListAny.defaultProps = {
+      ...(FlatListAny.defaultProps || {}),
+      keyboardShouldPersistTaps: 'always',
+      keyboardDismissMode,
+      automaticallyAdjustKeyboardInsets: true,
+    };
+
     if (Platform.OS === 'android') {
       SystemUI.setBackgroundColorAsync('transparent');
     }
+  }, []);
+
+  useEffect(() => {
+    const routerAny = router as any;
+    if (routerAny.__ikmBackGuardApplied) return;
+
+    const originalBack = router.back.bind(router);
+    routerAny.__ikmBackGuardApplied = true;
+    routerAny.__ikmOriginalBack = originalBack;
+    routerAny.back = () => {
+      if (typeof router.canGoBack === 'function' && !router.canGoBack()) {
+        return;
+      }
+      originalBack();
+    };
   }, []);
 
   return (

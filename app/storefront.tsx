@@ -8,6 +8,7 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { useStore } from '@/lib/firebase/firestore/stores';
 import { userApi } from '@/lib/api/user';
 import { router } from 'expo-router';
+import KeyboardScreen from '@/components/layout/KeyboardScreen';
 
 export default function StorefrontScreen() {
   const { colors } = useTheme();
@@ -65,7 +66,7 @@ export default function StorefrontScreen() {
 
   const fontOptions = ['Inter', 'Roboto', 'Open Sans', 'Lato', 'Montserrat', 'Poppins', 'Playfair Display', 'Merriweather'];
 
-  const layoutOptions: Array<{ value: 'grid' | 'list' | 'masonry'; label: string; icon: string }> = [
+  const layoutOptions: { value: 'grid' | 'list' | 'masonry'; label: string; icon: string }[] = [
     { value: 'grid', label: 'Grid', icon: 'square.grid.2x2.fill' },
     { value: 'list', label: 'List', icon: 'list.bullet.fill' },
     { value: 'masonry', label: 'Masonry', icon: 'rectangle.split.3x1.fill' },
@@ -80,7 +81,11 @@ export default function StorefrontScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <KeyboardScreen
+      style={styles.container}
+      extraScrollHeight={32}
+      contentContainerStyle={styles.screenContent}
+      showsVerticalScrollIndicator={false}>
       <View style={[styles.header, { backgroundColor: colors.card }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <IconSymbol name="chevron.left" size={24} color={colors.text} />
@@ -100,7 +105,7 @@ export default function StorefrontScreen() {
         <View style={[styles.section, { backgroundColor: colors.card }]}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Colors</Text>
           <Text style={[styles.sectionDescription, { color: colors.textSecondary }]}>
-            Customize your store's color scheme
+            {"Customize your store's color scheme"}
           </Text>
 
           <View style={styles.colorRow}>
@@ -243,7 +248,7 @@ export default function StorefrontScreen() {
           </View>
         </View>
       </View>
-    </ScrollView>
+    </KeyboardScreen>
   );
 }
 
@@ -280,6 +285,10 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     },
     content: {
       padding: 20,
+    },
+    screenContent: {
+      flexGrow: 1,
+      paddingBottom: 80,
     },
     section: {
       padding: 20,
