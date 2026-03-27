@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { auth } from '@/lib/firebase/config';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -21,6 +22,7 @@ import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
 import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
+import { sendPasswordResetEmail } from 'firebase/auth';
 import { showToast } from '@/components/toast';
 
 const lightBrown = '#A67C52';
@@ -33,12 +35,18 @@ export default function SettingsScreen() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
-  const [phone, setPhone] = useState(profile?.phone || '');
+
+  const normalizedPhone = React.useMemo(() => {
+    return String((profile as any)?.marketBuyerPhone || profile?.phone || '').trim();
+  }, [profile]);
+  const phoneVerified = React.useMemo(() => {
+    if (!normalizedPhone || normalizedPhone.length < 10) return false;
+    return Boolean(profile?.phoneVerified || profile?.phoneVerifiedAt);
+  }, [normalizedPhone, profile?.phoneVerified, profile?.phoneVerifiedAt]);
 
   React.useEffect(() => {
     if (profile) {
       setDisplayName(profile.displayName || '');
-      setPhone(profile.phone || '');
     }
   }, [profile]);
 
@@ -53,7 +61,7 @@ export default function SettingsScreen() {
 
     try {
       // TODO: Update user profile via API
-      // await userApi.updateProfile({ displayName, phone });
+      // await userApi.updateProfile({ displayName });
       haptics.success();
       showToast('Profile updated successfully', 'success');
       setEditing(false);
@@ -76,8 +84,12 @@ export default function SettingsScreen() {
           text: 'Send Reset Link',
           onPress: async () => {
             try {
-              // TODO: Send password reset email
-              // await sendPasswordResetEmail(auth, user.email);
+              const email = String(user?.email || '').trim();
+              if (!email) {
+                showToast('No email found for this account.', 'error');
+                return;
+              }
+              await sendPasswordResetEmail(auth, email);
               showToast('Password reset email sent', 'success');
             } catch (error: any) {
               showToast(error.message || 'Failed to send reset email', 'error');
@@ -241,41 +253,32 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Phone */}
-        {editing ? (
-          <View style={styles.settingRow}>
-            <View style={styles.settingLeft}>
-              <IconSymbol name="phone.fill" size={20} color={colors.text} />
-              <TextInput
-                style={[styles.input, { color: colors.text }]}
-                placeholder="Phone Number"
-                placeholderTextColor={colors.textSecondary}
-                value={phone}
-                onChangeText={setPhone}
-                keyboardType="phone-pad"
-              />
+        {/* Phone Verification */}
+        <TouchableOpacity
+          style={styles.settingRow}
+          onPress={() => {
+            haptics.light();
+            if (phoneVerified) {
+              showToast('Phone already verified.', 'info');
+              return;
+            }
+            router.push('/complete-phone' as any);
+          }}>
+          <View style={styles.settingLeft}>
+            <IconSymbol name="phone.fill" size={20} color={colors.text} />
+            <View>
+              <Text style={[styles.settingLabel, { color: colors.text }]}>Phone</Text>
+              <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
+                {normalizedPhone || 'Not verified'}
+              </Text>
             </View>
           </View>
-        ) : (
-          <View style={styles.settingRow}>
-            <View style={styles.settingLeft}>
-              <IconSymbol name="phone.fill" size={20} color={colors.text} />
-              <View>
-                <Text style={[styles.settingLabel, { color: colors.text }]}>Phone</Text>
-                <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
-                  {profile?.phone || 'Not set'}
-                </Text>
-              </View>
-            </View>
-            <TouchableOpacity
-              onPress={() => {
-                haptics.light();
-                setEditing(true);
-              }}>
-              <IconSymbol name="pencil" size={18} color={lightBrown} />
-            </TouchableOpacity>
-          </View>
-        )}
+          {phoneVerified ? (
+            <IconSymbol name="checkmark.circle.fill" size={18} color={colors.success} />
+          ) : (
+            <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+          )}
+        </TouchableOpacity>
 
         {/* Save/Cancel Buttons */}
         {editing && (
@@ -286,7 +289,6 @@ export default function SettingsScreen() {
                 haptics.light();
                 setEditing(false);
                 setDisplayName(profile?.displayName || '');
-                setPhone(profile?.phone || '');
               }}>
               <Text style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</Text>
             </TouchableOpacity>
@@ -362,6 +364,18 @@ export default function SettingsScreen() {
           style={[styles.settingRow, { borderBottomColor: colors.border }]}
           onPress={() => {
             haptics.light();
+            router.push('/(market)/saved-sounds' as any);
+          }}>
+          <View style={styles.settingLeft}>
+            <IconSymbol name="music.note" size={20} color={colors.text} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Saved Sounds</Text>
+          </View>
+          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.settingRow, { borderBottomColor: colors.border }]}
+          onPress={() => {
+            haptics.light();
             router.push('/(market)/orders' as any);
           }}>
           <View style={styles.settingLeft}>
@@ -371,7 +385,7 @@ export default function SettingsScreen() {
           <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.settingRow}
+          style={[styles.settingRow, { borderBottomColor: colors.border }]}
           onPress={() => {
             haptics.light();
             router.push('/(market)/payouts' as any);
@@ -379,6 +393,18 @@ export default function SettingsScreen() {
           <View style={styles.settingLeft}>
             <IconSymbol name="dollarsign.circle.fill" size={20} color={colors.text} />
             <Text style={[styles.settingLabel, { color: colors.text }]}>Payouts</Text>
+          </View>
+          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.settingRow}
+          onPress={() => {
+            haptics.light();
+            router.push('/(market)/delivery-settings' as any);
+          }}>
+          <View style={styles.settingLeft}>
+            <IconSymbol name="location.fill" size={20} color={colors.text} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Edit Saved Delivery Settings</Text>
           </View>
           <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
         </TouchableOpacity>

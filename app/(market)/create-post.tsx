@@ -1,1025 +1,1386 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAudioPlayer } from "@/hooks/use-audio-player";
+import { Image } from "expo-image";
+import { router, useLocalSearchParams } from "expo-router";
+import React, { useEffect, useMemo, useState } from "react";
+import * as DocumentPicker from "expo-document-picker";
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Switch,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
-import { collection, endAt, limit, onSnapshot, orderBy, query, startAt } from 'firebase/firestore';
+    ActivityIndicator,
+    Modal,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { showToast } from '@/components/toast';
-import { marketPostsApi } from '@/lib/api/market-posts';
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { NIGERIA_LOCATION_OPTIONS, type NigeriaLocationOption } from '@/lib/constants/nigeria-locations';
-import { firestore } from '@/lib/firebase/config';
-import { useTheme } from '@/lib/theme/theme-context';
-import { canPostToMarketStreet } from '@/lib/utils/auth-helpers';
-import { getLoginRoute } from '@/lib/utils/auth-routes';
-import { haptics } from '@/lib/utils/haptics';
-import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import KeyboardScreen from "@/components/layout/KeyboardScreen";
+import { MarketSoundRow } from "@/components/market/market-sound-row";
+import { MarketVideoSurface } from "@/components/market/market-video-surface";
+import { showToast } from "@/components/toast";
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { marketPostsApi } from "@/lib/api/market-posts";
+import { marketSoundsApi } from "@/lib/api/market-sounds";
+import {
+    NIGERIA_LOCATION_OPTIONS,
+    type NigeriaLocationOption,
+} from "@/lib/constants/nigeria-locations";
+import { useUser } from "@/lib/firebase/auth/use-user";
+import {
+    useMarketSound,
+    useMarketSounds,
+    useSavedMarketSounds,
+    useUserSavedSoundIds,
+} from "@/lib/firebase/firestore/market-sounds";
+import { useTheme } from "@/lib/theme/theme-context";
+import { canPostToMarketStreet } from "@/lib/utils/auth-helpers";
+import { getLoginRoute } from "@/lib/utils/auth-routes";
+import { haptics } from "@/lib/utils/haptics";
+import {
+    pickImage,
+    pickMultipleImages,
+    pickVideo,
+} from "@/lib/utils/image-upload";
+import {
+    buildOriginalSoundTitle,
+    buildUploadedSoundTitle,
+    extractFileStem,
+} from "@/lib/utils/market-media";
+import type { MarketSound } from "@/types";
 
+const LIGHT_BROWN = "#A67C52";
 const MAX_IMAGES = 20;
-const MIN_IMAGES = 1;
-const MAX_HASHTAGS = 10;
-const lightBrown = '#A67C52';
 const HASHTAG_REGEX = /(^|\s)#([a-zA-Z0-9_]+)/g;
-const MENTION_REGEX = /(^|\s)@([a-zA-Z0-9._]+)/g;
 
-interface TrendingHashtag {
-  id: string;
-  tag: string;
-  count: number;
-}
-
-interface ActiveHashtagContext {
-  query: string;
-  start: number;
-  end: number;
-}
-
-function normalizeCreatePostError(error: unknown): string {
-  const raw = (error as any)?.message || 'Unable to publish post. Please try again.';
-  const lower = String(raw).toLowerCase();
-
-  if (lower.includes('daily') || lower.includes('20 post') || lower.includes('post limit')) {
-    return 'Posting is temporarily unavailable. Please try again shortly.';
-  }
-  if (lower.includes('at least one image')) {
-    return 'Please add at least one photo.';
-  }
-  if (lower.includes('maximum') && lower.includes('image')) {
-    return 'You reached the photo limit for one post.';
-  }
-  return String(raw);
-}
-
-function extractTokens(text: string, regex: RegExp, limitCount: number): string[] {
+function extractHashtags(text: string): string[] {
   const found: string[] = [];
-  regex.lastIndex = 0;
+  HASHTAG_REGEX.lastIndex = 0;
   let match: RegExpExecArray | null = null;
-
-  while ((match = regex.exec(text)) !== null) {
-    const token = (match[2] || '').toLowerCase().trim();
-    if (token && !found.includes(token)) {
-      found.push(token);
-      if (found.length >= limitCount) {
-        break;
-      }
-    }
+  while ((match = HASHTAG_REGEX.exec(text)) !== null) {
+    const tag = String(match[2] || "")
+      .trim()
+      .toLowerCase();
+    if (tag && !found.includes(tag)) found.push(tag);
+    if (found.length >= 10) break;
   }
-
   return found;
 }
 
-function getActiveHashtagContext(text: string, cursorIndex: number): ActiveHashtagContext | null {
-  const safeCursorIndex = Math.max(0, Math.min(cursorIndex, text.length));
-
-  let start = safeCursorIndex;
-  while (start > 0 && !/\s/.test(text[start - 1])) {
-    start -= 1;
-  }
-
-  let end = safeCursorIndex;
-  while (end < text.length && !/\s/.test(text[end])) {
-    end += 1;
-  }
-
-  const token = text.slice(start, end);
-  if (!/^#[a-zA-Z0-9_]*$/.test(token)) return null;
-
-  return {
-    query: token.slice(1).toLowerCase(),
-    start,
-    end,
+function Chip({
+  active,
+  colors,
+  label,
+  onPress,
+}: {
+  active?: boolean;
+  colors: {
+    border: string;
+    primary: string;
+    text: string;
+    textSecondary: string;
   };
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      activeOpacity={0.88}
+      onPress={onPress}
+      style={[
+        styles.chip,
+        {
+          borderColor: active ? colors.primary : colors.border,
+          backgroundColor: active ? `${colors.primary}18` : "transparent",
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.chipText,
+          { color: active ? colors.primary : colors.textSecondary },
+        ]}
+      >
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+function normalizeCreatePostError(error: unknown): string {
+  const raw = (error as any)?.message || "Unable to publish post.";
+  const lower = String(raw).toLowerCase();
+  if (lower.includes("photo")) return "Please add at least one photo.";
+  if (lower.includes("video")) return "Please pick a video before publishing.";
+  if (lower.includes("document picker"))
+    return "Rebuild your dev build to use audio selection.";
+  return String(raw);
 }
 
 export default function CreatePostScreen() {
   const { user } = useUser();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-
-  const [images, setImages] = useState<string[]>([]);
-  const [description, setDescription] = useState('');
-  const [price, setPrice] = useState('');
-  const [isNegotiable, setIsNegotiable] = useState(false);
-  const [location, setLocation] = useState({ state: '', city: '' });
-  const [locationPickerVisible, setLocationPickerVisible] = useState(false);
-  const [locationSearch, setLocationSearch] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [captionSelection, setCaptionSelection] = useState({ start: 0, end: 0 });
-  const [captionInputHeight, setCaptionInputHeight] = useState(96);
-  const [trendingHashtags, setTrendingHashtags] = useState<TrendingHashtag[]>([]);
-  const [liveHashtagSuggestions, setLiveHashtagSuggestions] = useState<TrendingHashtag[]>([]);
-  const hashtags = useMemo(() => extractTokens(description, HASHTAG_REGEX, MAX_HASHTAGS), [description]);
-  const mentions = useMemo(() => extractTokens(description, MENTION_REGEX, 20), [description]);
-  const activeHashtagContext = useMemo(
-    () => getActiveHashtagContext(description, captionSelection.start),
-    [description, captionSelection.start]
+  const params = useLocalSearchParams<{ soundId?: string }>();
+  const initialSoundId = Array.isArray(params.soundId)
+    ? params.soundId[0]
+    : params.soundId;
+  const { sound: preselectedSound } = useMarketSound(initialSoundId || null);
+  const { sounds: allSounds, loading: soundsLoading } = useMarketSounds(
+    null,
+    120,
   );
-  const activeHashtagQuery = activeHashtagContext?.query ?? null;
-  const hashtagSuggestions = useMemo(() => {
-    if (activeHashtagQuery === null) return [];
-    if (!activeHashtagQuery.trim()) return trendingHashtags.slice(0, 8);
-    return liveHashtagSuggestions.length > 0
-      ? liveHashtagSuggestions
-      : trendingHashtags
-          .filter((item) => item.tag.toLowerCase().startsWith(activeHashtagQuery))
-          .slice(0, 8);
-  }, [activeHashtagQuery, liveHashtagSuggestions, trendingHashtags]);
-  const cursorLineIndex = useMemo(() => {
-    const charsPerLineEstimate = 28;
-    const beforeCursor = description.slice(0, captionSelection.start);
-    const lines = beforeCursor.split('\n');
-    const explicitLineCount = Math.max(0, lines.length - 1);
-    const tailLine = lines[lines.length - 1] || '';
-    const wrappedTailLines = Math.floor(tailLine.length / charsPerLineEstimate);
-    return explicitLineCount + wrappedTailLines;
-  }, [description, captionSelection.start]);
-  const hashtagSuggestionsTop = useMemo(() => {
-    const lineHeight = 20;
-    const baseTop = 28;
-    const desired = baseTop + (cursorLineIndex + 1) * lineHeight + 4;
-    const maxTop = Math.max(baseTop, captionInputHeight - 132);
-    return Math.min(desired, maxTop);
-  }, [captionInputHeight, cursorLineIndex]);
-  const locationSuggestions = useMemo(() => {
-    const queryValue = locationSearch.trim().toLowerCase();
-    const results = !queryValue
-      ? NIGERIA_LOCATION_OPTIONS
-      : NIGERIA_LOCATION_OPTIONS.filter((option) => {
-          return (
-            option.city.toLowerCase().includes(queryValue) ||
-            option.state.toLowerCase().includes(queryValue) ||
-            option.label.toLowerCase().includes(queryValue)
-          );
-        });
-    return results.slice(0, 80);
-  }, [locationSearch]);
-  const selectedLocationLabel = useMemo(() => {
-    if (!location.city && !location.state) return '';
-    if (location.city && location.state) return `${location.city}, ${location.state}`;
-    return location.city || location.state;
+  const { sounds: savedSounds, loading: savedSoundsLoading } =
+    useSavedMarketSounds(user?.uid || null);
+  const { soundIds: savedSoundIds } = useUserSavedSoundIds(user?.uid || null);
+
+  const [postMode, setPostMode] = useState<"photo" | "video">("photo");
+  const [images, setImages] = useState<string[]>([]);
+  const [videoUri, setVideoUri] = useState("");
+  const [coverImageUri, setCoverImageUri] = useState("");
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState("");
+  const [isNegotiable, setIsNegotiable] = useState(false);
+  const [location, setLocation] = useState({ state: "", city: "" });
+  const [locationSearch, setLocationSearch] = useState("");
+  const [locationPickerVisible, setLocationPickerVisible] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
+  const [soundMode, setSoundMode] = useState<
+    "original" | "existing" | "uploaded"
+  >("existing");
+  const [selectedSound, setSelectedSound] = useState<MarketSound | null>(null);
+  const [uploadedSoundUri, setUploadedSoundUri] = useState("");
+  const [uploadedSoundTitle, setUploadedSoundTitle] = useState("");
+  const [soundPickerVisible, setSoundPickerVisible] = useState(false);
+  const [showSavedOnly, setShowSavedOnly] = useState(false);
+  const [previewingSoundId, setPreviewingSoundId] = useState<string | null>(
+    null,
+  );
+  const [busySoundIds, setBusySoundIds] = useState<string[]>([]);
+  const [keepOriginalAudio, setKeepOriginalAudio] = useState(true);
+  const [soundStartMs, setSoundStartMs] = useState(0);
+  const [soundVolume, setSoundVolume] = useState(0.9);
+  const [originalAudioVolume, setOriginalAudioVolume] = useState(1);
+
+  useEffect(() => {
+    if (!preselectedSound?.id) return;
+    setPostMode("video");
+    setSoundMode("existing");
+    setSelectedSound(preselectedSound);
+    setKeepOriginalAudio(false);
+    setOriginalAudioVolume(0);
+  }, [preselectedSound]);
+
+  const hashtags = useMemo(() => extractHashtags(description), [description]);
+  const locationLabel = useMemo(() => {
+    if (!location.city && !location.state) return "";
+    return [location.city, location.state].filter(Boolean).join(", ");
   }, [location.city, location.state]);
-
-  const canPublish = useMemo(() => images.length >= MIN_IMAGES && !loading, [images.length, loading]);
-
-  useEffect(() => {
-    const trendingQuery = query(
-      collection(firestore, 'trendingHashtags'),
-      orderBy('count', 'desc'),
-      limit(100)
-    );
-
-    const unsubscribe = onSnapshot(
-      trendingQuery,
-      (snapshot) => {
-        const items: TrendingHashtag[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          if (typeof data.tag === 'string' && data.tag.trim()) {
-            items.push({
-              id: doc.id,
-              tag: data.tag.toLowerCase(),
-              count: typeof data.count === 'number' ? data.count : 0,
-            });
-          }
-        });
-        setTrendingHashtags(items);
-      },
-      () => {
-        // Keep compose flow usable even if suggestions fail.
-        setTrendingHashtags([]);
-      }
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (activeHashtagQuery === null) {
-      setLiveHashtagSuggestions([]);
-      return;
-    }
-
-    const trimmed = activeHashtagQuery.trim();
-    if (!trimmed) {
-      setLiveHashtagSuggestions(trendingHashtags.slice(0, 8));
-      return;
-    }
-
-    const liveQuery = query(
-      collection(firestore, 'trendingHashtags'),
-      orderBy('tag'),
-      startAt(trimmed),
-      endAt(`${trimmed}\uf8ff`),
-      limit(8)
-    );
-
-    const unsubscribe = onSnapshot(
-      liveQuery,
-      (snapshot) => {
-        const items: TrendingHashtag[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          if (typeof data.tag === 'string' && data.tag.trim()) {
-            items.push({
-              id: doc.id,
-              tag: data.tag.toLowerCase(),
-              count: typeof data.count === 'number' ? data.count : 0,
-            });
-          }
-        });
-        setLiveHashtagSuggestions(items);
-      },
-      () => {
-        setLiveHashtagSuggestions(
-          trendingHashtags
-            .filter((item) => item.tag.toLowerCase().startsWith(trimmed))
-            .slice(0, 8)
+  const locationSuggestions = useMemo(() => {
+    const q = locationSearch.trim().toLowerCase();
+    const pool = !q
+      ? NIGERIA_LOCATION_OPTIONS
+      : NIGERIA_LOCATION_OPTIONS.filter((option) =>
+          option.label.toLowerCase().includes(q),
         );
-      }
-    );
+    return pool.slice(0, 80);
+  }, [locationSearch]);
+  const displayedSounds = useMemo(() => {
+    if (!showSavedOnly) return allSounds;
+    const ids = new Set(savedSoundIds);
+    return savedSounds.filter((sound) => sound.id && ids.has(sound.id));
+  }, [allSounds, savedSoundIds, savedSounds, showSavedOnly]);
+  const previewSound = useMemo(
+    () => displayedSounds.find((item) => item.id === previewingSoundId) || null,
+    [displayedSounds, previewingSoundId],
+  );
+  const previewPlayer = useAudioPlayer(previewSound?.sourceUri || null, {
+    updateIntervalMs: 500,
+  });
 
-    return () => unsubscribe();
-  }, [activeHashtagQuery, trendingHashtags]);
-
-  const requestPermissions = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Allow photo access to create a post.');
-      return false;
-    }
-    return true;
-  };
-
-  const pickImages = async () => {
-    const hasPermission = await requestPermissions();
-    if (!hasPermission) return;
-
-    const remainingSlots = MAX_IMAGES - images.length;
-    if (remainingSlots <= 0) {
-      Alert.alert('Limit Reached', 'You reached the photo limit for one post.');
+  useEffect(() => {
+    previewPlayer.loop = true;
+    previewPlayer.volume = 0.95;
+    if (!previewSound?.sourceUri) {
+      previewPlayer.pause();
+      previewPlayer.currentTime = 0;
       return;
     }
+    previewPlayer.currentTime = 0;
+    previewPlayer.play();
+  }, [previewPlayer, previewSound?.sourceUri]);
 
-    haptics.light();
+  const canPublish = useMemo(() => {
+    if (publishing) return false;
+    return postMode === "photo" ? images.length > 0 : Boolean(videoUri);
+  }, [images.length, postMode, publishing, videoUri]);
+  const videoPreviewSoundUri = useMemo(() => {
+    if (soundMode === "existing") return selectedSound?.sourceUri || undefined;
+    if (soundMode === "uploaded") return uploadedSoundUri || undefined;
+    return undefined;
+  }, [selectedSound?.sourceUri, soundMode, uploadedSoundUri]);
+  const soundTitle = useMemo(() => {
+    if (soundMode === "existing" && selectedSound) return selectedSound.title;
+    if (soundMode === "uploaded" && uploadedSoundUri) {
+      return (
+        uploadedSoundTitle ||
+        buildUploadedSoundTitle(
+          uploadedSoundUri,
+          user?.displayName || user?.email,
+        )
+      );
+    }
+    return buildOriginalSoundTitle(user?.displayName || user?.email);
+  }, [
+    selectedSound,
+    soundMode,
+    uploadedSoundTitle,
+    uploadedSoundUri,
+    user?.displayName,
+    user?.email,
+  ]);
 
+  const pickImagesForPost = async () => {
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsMultipleSelection: true,
-        allowsEditing: false,
-        quality: 0.85,
-        selectionLimit: remainingSlots,
-      });
-
-      if (!result.canceled && result.assets.length > 0) {
-        const selected = result.assets.map((asset) => asset.uri);
-        setImages((prev) => [...prev, ...selected].slice(0, MAX_IMAGES));
-      }
-    } catch {
-      showToast('Could not pick images. Please try again.', 'error');
+      const picked = await pickMultipleImages(
+        Math.max(1, MAX_IMAGES - images.length),
+      );
+      if (picked.length)
+        setImages((prev) => [...prev, ...picked].slice(0, MAX_IMAGES));
+    } catch (error: any) {
+      showToast(error?.message || "Unable to pick photos.", "error");
     }
   };
 
-  const removeImage = (index: number) => {
-    haptics.light();
-    setImages((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const appendToken = (token: '#' | '@') => {
-    haptics.light();
-    setDescription((prev) => {
-      const trimmedRight = prev.replace(/\s+$/, '');
-      if (!trimmedRight) {
-        return token;
+  const pickVideoForPost = async () => {
+    try {
+      const picked = await pickVideo();
+      if (!picked) return;
+      setVideoUri(picked);
+      if (soundMode === "original") {
+        setKeepOriginalAudio(true);
+        setOriginalAudioVolume(1);
       }
-      return `${trimmedRight} ${token}`;
-    });
+    } catch (error: any) {
+      showToast(error?.message || "Unable to pick a video.", "error");
+    }
   };
 
-  const applyHashtagSuggestion = (tag: string) => {
-    haptics.light();
-    setDescription((prev) => {
-      const normalizedTag = tag.toLowerCase().replace(/^#/, '');
-      if (!normalizedTag) return prev;
-
-      const context = getActiveHashtagContext(prev, captionSelection.start);
-      if (context) {
-        const before = prev.slice(0, context.start);
-        const after = prev.slice(context.end).replace(/^\s+/, '');
-        const spacer = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
-        return `${before}${spacer}#${normalizedTag} ${after}`.trimEnd();
-      }
-
-      const trimmedRight = prev.replace(/\s+$/, '');
-      return `${trimmedRight}${trimmedRight ? ' ' : ''}#${normalizedTag} `;
-    });
+  const pickCover = async () => {
+    try {
+      const picked = await pickImage();
+      if (picked) setCoverImageUri(picked);
+    } catch (error: any) {
+      showToast(error?.message || "Unable to pick a cover image.", "error");
+    }
   };
 
-  const handleLocationPick = (option: NigeriaLocationOption) => {
-    haptics.light();
-    setLocation({ state: option.state, city: option.city });
-    setLocationPickerVisible(false);
-    setLocationSearch('');
+  const pickAudioForSound = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "audio/*",
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+      if ((result as any)?.canceled) return;
+      const asset = (result as any)?.assets?.[0];
+      const pickedAudioUri = String(asset?.uri || "").trim();
+      if (!pickedAudioUri) return;
+      setSoundMode("uploaded");
+      setUploadedSoundUri(pickedAudioUri);
+      setUploadedSoundTitle(
+        buildUploadedSoundTitle(
+          pickedAudioUri,
+          user?.displayName || user?.email,
+        ),
+      );
+      setSelectedSound(null);
+      showToast("Sound selected.", "success");
+    } catch (error: any) {
+      showToast(
+        error?.message || "Unable to pick an audio file.",
+        "error",
+      );
+    }
   };
 
-  const clearLocation = () => {
-    haptics.light();
-    setLocation({ state: '', city: '' });
+  const selectExistingSound = (sound: MarketSound) => {
+    setSoundMode("existing");
+    setSelectedSound(sound);
+    setUploadedSoundUri("");
+    setUploadedSoundTitle("");
+    setSoundPickerVisible(false);
+    setPreviewingSoundId(null);
   };
 
-  const resetCreatePostForm = useCallback(() => {
+  const toggleSaveSound = async (sound: MarketSound) => {
+    if (!sound.id) return;
+    try {
+      setBusySoundIds((prev) => [...prev, sound.id!]);
+      await marketSoundsApi.toggleSaveSound(
+        sound.id,
+        savedSoundIds.includes(sound.id),
+      );
+    } catch (error: any) {
+      showToast(error?.message || "Unable to update saved sound.", "error");
+    } finally {
+      setBusySoundIds((prev) => prev.filter((id) => id !== sound.id));
+    }
+  };
+
+  const resetForm = () => {
+    setPostMode("photo");
     setImages([]);
-    setDescription('');
-    setPrice('');
+    setVideoUri("");
+    setCoverImageUri("");
+    setDescription("");
+    setPrice("");
     setIsNegotiable(false);
-    setLocation({ state: '', city: '' });
-    setLocationPickerVisible(false);
-    setLocationSearch('');
-    setCaptionSelection({ start: 0, end: 0 });
-    setCaptionInputHeight(96);
-    setLiveHashtagSuggestions([]);
-  }, []);
+    setLocation({ state: "", city: "" });
+    setLocationSearch("");
+    setSoundMode("original");
+    setSelectedSound(null);
+    setUploadedSoundUri("");
+    setUploadedSoundTitle("");
+    setSoundPickerVisible(false);
+    setShowSavedOnly(false);
+    setPreviewingSoundId(null);
+    setKeepOriginalAudio(true);
+    setSoundStartMs(0);
+    setSoundVolume(0.9);
+    setOriginalAudioVolume(1);
+  };
 
   const handlePublish = async () => {
     if (!canPublish) return;
-
-    setLoading(true);
+    setPublishing(true);
     haptics.medium();
-
     try {
-      const parsedPrice = price ? parseFloat(price.replace(/[^0-9.]/g, '')) : undefined;
-
+      const parsedPrice = price
+        ? Number(price.replace(/[^0-9.]/g, ""))
+        : undefined;
       await marketPostsApi.create({
-        images,
-        hashtags: hashtags.length > 0 ? hashtags : undefined,
+        mediaType: postMode === "video" ? "video" : "image_gallery",
+        images: postMode === "photo" ? images : [],
+        coverImageUri:
+          postMode === "video" ? coverImageUri || undefined : undefined,
+        videoUri: postMode === "video" ? videoUri || undefined : undefined,
+        hashtags,
         description: description.trim() || undefined,
         price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
         isNegotiable: Number.isFinite(parsedPrice) ? isNegotiable : false,
-        location: location.state || location.city ? location : undefined,
-        contactMethod: 'in-app',
+        location: locationLabel ? location : undefined,
+        contactMethod: "in-app",
+        soundSelection:
+          postMode === "video"
+            ? {
+                mode: soundMode,
+                existingSound:
+                  soundMode === "existing" ? selectedSound : undefined,
+                uploadedAudioUri:
+                  soundMode === "uploaded"
+                    ? uploadedSoundUri || undefined
+                    : undefined,
+                soundTitle:
+                  soundMode === "uploaded"
+                    ? uploadedSoundTitle || undefined
+                    : undefined,
+                startMs: soundStartMs,
+                soundVolume,
+                originalAudioVolume,
+                useOriginalVideoAudio: keepOriginalAudio,
+              }
+            : undefined,
       });
-
       haptics.success();
-      showToast('Post published.', 'success');
-      resetCreatePostForm();
-      router.replace('/(market)' as any);
+      showToast(
+        postMode === "video" ? "Video post published." : "Post published.",
+        "success",
+      );
+      resetForm();
+      router.replace("/(market)" as any);
     } catch (error) {
       haptics.error();
-      showToast(normalizeCreatePostError(error), 'error');
+      showToast(normalizeCreatePostError(error), "error");
     } finally {
-      setLoading(false);
+      setPublishing(false);
     }
   };
 
   if (!user || !canPostToMarketStreet(user)) {
     return (
-      <View style={[styles.centeredContainer, { backgroundColor: colors.background }]}>
-        <Text style={[styles.loginTitle, { color: colors.text }]}>Sign in to create a post</Text>
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <Text style={[styles.title, { color: colors.text }]}>
+          Sign in to create a post
+        </Text>
         <TouchableOpacity
-          style={[styles.loginButton, { backgroundColor: lightBrown }]}
-          onPress={() => router.push(getLoginRoute() as any)}>
-          <Text style={styles.loginButtonText}>Go to Login</Text>
+          style={[styles.primaryButton, { backgroundColor: LIGHT_BROWN }]}
+          onPress={() => router.push(getLoginRoute() as any)}
+        >
+          <Text style={styles.primaryButtonText}>Go to Login</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerIconButton}>
-          <IconSymbol name="xmark" size={22} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Create Post</Text>
+    <View style={[styles.screen, { backgroundColor: colors.background }]}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: insets.top + 8, borderBottomColor: colors.border },
+        ]}
+      >
         <TouchableOpacity
+          style={styles.headerButton}
+          onPress={() => router.back()}
+        >
+          <IconSymbol name="xmark" size={20} color={colors.text} />
+        </TouchableOpacity>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>
+          Create Post
+        </Text>
+        <TouchableOpacity
+          disabled={!canPublish}
           onPress={handlePublish}
-          style={[styles.publishChip, { backgroundColor: canPublish ? lightBrown : colors.backgroundSecondary }]}
-          disabled={!canPublish}>
-          {loading ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.publishText}>Publish</Text>}
+          style={[
+            styles.publishButton,
+            {
+              backgroundColor: canPublish
+                ? LIGHT_BROWN
+                : colors.backgroundSecondary,
+            },
+          ]}
+        >
+          {publishing ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Text style={styles.publishButtonText}>Publish</Text>
+          )}
         </TouchableOpacity>
       </View>
 
       <KeyboardScreen
-        style={styles.scroll}
         keyboardVerticalOffset={insets.top}
-        extraScrollHeight={32}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 72 }]}>
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>Photos</Text>
-            <Text style={[styles.cardHint, { color: colors.textSecondary }]}>Add clear photos of your item.</Text>
+        extraScrollHeight={28}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: insets.bottom + 90 },
+        ]}
+      >
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>
+            Post Format
+          </Text>
+          <View style={styles.row}>
+            <TouchableOpacity
+              style={[
+                styles.segment,
+                {
+                  backgroundColor:
+                    postMode === "photo"
+                      ? LIGHT_BROWN
+                      : colors.backgroundSecondary,
+                },
+              ]}
+              onPress={() => setPostMode("photo")}
+            >
+              <Text style={styles.segmentText}>Photo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.segment,
+                {
+                  backgroundColor:
+                    postMode === "video"
+                      ? LIGHT_BROWN
+                      : colors.backgroundSecondary,
+                },
+              ]}
+              onPress={() => setPostMode("video")}
+            >
+              <Text style={styles.segmentText}>Video + Sound</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
+        {postMode === "photo" ? (
+          <View
+            style={[
+              styles.card,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>
+              Photos
+            </Text>
             {images.length === 0 ? (
               <TouchableOpacity
-                style={[styles.emptyImagePicker, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
-                onPress={pickImages}>
-                <IconSymbol name="photo.fill" size={28} color={lightBrown} />
-                <Text style={[styles.emptyImageText, { color: colors.text }]}>Add Photos</Text>
+                style={[
+                  styles.emptyBox,
+                  {
+                    backgroundColor: colors.backgroundSecondary,
+                    borderColor: colors.border,
+                  },
+                ]}
+                onPress={pickImagesForPost}
+              >
+                <IconSymbol name="photo.fill" size={28} color={LIGHT_BROWN} />
+                <Text style={[styles.emptyText, { color: colors.text }]}>
+                  Add Photos
+                </Text>
               </TouchableOpacity>
             ) : (
               <>
-                <Image source={{ uri: images[0] }} style={styles.mainPreview} contentFit="cover" />
+                <Image
+                  source={{ uri: images[0] }}
+                  style={styles.preview}
+                  contentFit="cover"
+                />
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.thumbRow}>
+                  contentContainerStyle={styles.thumbRow}
+                >
                   {images.map((uri, index) => (
                     <View key={`${uri}-${index}`} style={styles.thumbWrap}>
-                      <Image source={{ uri }} style={styles.thumbImage} contentFit="cover" />
-                      <TouchableOpacity style={styles.thumbRemove} onPress={() => removeImage(index)}>
-                        <IconSymbol name="xmark" size={12} color="#FFFFFF" />
+                      <Image
+                        source={{ uri }}
+                        style={styles.thumb}
+                        contentFit="cover"
+                      />
+                      <TouchableOpacity
+                        style={styles.thumbRemove}
+                        onPress={() =>
+                          setImages((prev) =>
+                            prev.filter((_, i) => i !== index),
+                          )
+                        }
+                      >
+                        <IconSymbol name="xmark" size={10} color="#FFFFFF" />
                       </TouchableOpacity>
                     </View>
                   ))}
-                  {images.length < MAX_IMAGES && (
+                  {images.length < MAX_IMAGES ? (
                     <TouchableOpacity
-                      style={[styles.addThumb, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
-                      onPress={pickImages}>
-                      <IconSymbol name="plus" size={20} color={lightBrown} />
+                      style={[
+                        styles.addThumb,
+                        {
+                          backgroundColor: colors.backgroundSecondary,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                      onPress={pickImagesForPost}
+                    >
+                      <IconSymbol name="plus" size={18} color={LIGHT_BROWN} />
                     </TouchableOpacity>
-                  )}
+                  ) : null}
                 </ScrollView>
               </>
             )}
           </View>
-
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>Caption</Text>
-            <View style={styles.captionInputContainer}>
-              <TextInput
-                value={description}
-                onChangeText={setDescription}
-                placeholder="Describe your post... Use #hashtags and @tag someone"
-                placeholderTextColor={colors.textSecondary}
-                multiline
-                maxLength={500}
-                onSelectionChange={(event) => setCaptionSelection(event.nativeEvent.selection)}
-                onContentSizeChange={(event) => {
-                  const nextHeight = Math.max(96, event.nativeEvent.contentSize.height + 20);
-                  setCaptionInputHeight(nextHeight);
-                }}
-                style={[
-                  styles.captionInput,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.backgroundSecondary,
-                    height: captionInputHeight,
-                  },
-                ]}
-              />
-              {activeHashtagQuery !== null && hashtagSuggestions.length > 0 && (
-                <View
+        ) : (
+          <>
+            <View
+              style={[
+                styles.card,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                Video
+              </Text>
+              {!videoUri ? (
+                <TouchableOpacity
                   style={[
-                    styles.cursorSuggestionsWrap,
+                    styles.emptyBox,
                     {
-                      top: hashtagSuggestionsTop,
-                      backgroundColor: colors.card,
+                      backgroundColor: colors.backgroundSecondary,
                       borderColor: colors.border,
                     },
-                  ]}>
-                  <ScrollView
-                    keyboardShouldPersistTaps="handled"
-                    nestedScrollEnabled
-                    contentContainerStyle={styles.cursorSuggestionsList}>
-                    {hashtagSuggestions.map((item) => (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[styles.cursorSuggestionRow, { borderBottomColor: colors.border }]}
-                        onPress={() => applyHashtagSuggestion(item.tag)}>
-                        <Text style={[styles.cursorSuggestionTag, { color: colors.text }]}>#{item.tag}</Text>
-                        <Text style={[styles.cursorSuggestionCount, { color: colors.textSecondary }]}>
-                          {item.count} {item.count === 1 ? 'post' : 'posts'}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </View>
+                  ]}
+                  onPress={pickVideoForPost}
+                >
+                  <IconSymbol
+                    name="play.rectangle.fill"
+                    size={28}
+                    color={LIGHT_BROWN}
+                  />
+                  <Text style={[styles.emptyText, { color: colors.text }]}>
+                    Pick Video
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <>
+                  <View style={styles.videoBox}>
+                    <MarketVideoSurface
+                      active={true}
+                      videoUri={videoUri}
+                      externalSoundUri={videoPreviewSoundUri}
+                      externalSoundVolume={soundVolume}
+                      originalAudioVolume={originalAudioVolume}
+                      soundStartMs={soundStartMs}
+                      useOriginalVideoAudio={keepOriginalAudio}
+                    />
+                  </View>
+                  <View style={styles.row}>
+                    <TouchableOpacity
+                      style={[
+                        styles.secondaryButton,
+                        { backgroundColor: colors.backgroundSecondary },
+                      ]}
+                      onPress={pickVideoForPost}
+                    >
+                      <Text
+                        style={[
+                          styles.secondaryButtonText,
+                          { color: colors.text },
+                        ]}
+                      >
+                        Change Video
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.secondaryButton,
+                        { backgroundColor: colors.backgroundSecondary },
+                      ]}
+                      onPress={() => setVideoUri("")}
+                    >
+                      <Text
+                        style={[
+                          styles.secondaryButtonText,
+                          { color: colors.text },
+                        ]}
+                      >
+                        Remove
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
               )}
-            </View>
-            <View style={styles.captionActions}>
               <TouchableOpacity
-                style={[styles.captionActionChip, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}
-                onPress={() => appendToken('#')}>
-                <IconSymbol name="tag" size={13} color={lightBrown} />
-                <Text style={[styles.captionActionText, { color: colors.text }]}>Hashtag</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.captionActionChip, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}
-                onPress={() => appendToken('@')}>
-                <IconSymbol name="person.fill" size={13} color={lightBrown} />
-                <Text style={[styles.captionActionText, { color: colors.text }]}>Tag</Text>
-              </TouchableOpacity>
-            </View>
-            {(hashtags.length > 0 || mentions.length > 0) && (
-              <View style={styles.detectedWrap}>
-                {hashtags.length > 0 && (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.detectedChipsRow}>
-                    {hashtags.map((tag) => (
-                      <View key={tag} style={[styles.detectedChip, { backgroundColor: colors.backgroundSecondary }]}>
-                        <Text style={[styles.detectedChipText, { color: colors.text }]}>#{tag}</Text>
-                      </View>
-                    ))}
-                  </ScrollView>
-                )}
-                {mentions.length > 0 && (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.detectedChipsRow}>
-                    {mentions.map((mention) => (
-                      <View key={mention} style={[styles.detectedChip, { backgroundColor: colors.backgroundSecondary }]}>
-                        <Text style={[styles.detectedChipText, { color: colors.text }]}>@{mention}</Text>
-                      </View>
-                    ))}
-                  </ScrollView>
-                )}
-              </View>
-            )}
-            <Text style={[styles.counterText, { color: colors.textSecondary }]}>{description.length}/500</Text>
-          </View>
-
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>Price (Optional)</Text>
-            <View style={[styles.priceInputWrap, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}>
-              <Text style={[styles.pricePrefix, { color: colors.textSecondary }]}>NGN</Text>
-              <TextInput
-                value={price}
-                onChangeText={setPrice}
-                keyboardType="numeric"
-                placeholder="0.00"
-                placeholderTextColor={colors.textSecondary}
-                style={[styles.priceInput, { color: colors.text }]}
-              />
-            </View>
-            <View style={styles.negotiableRow}>
-              <View style={styles.negotiableTextWrap}>
-                <Text style={[styles.negotiableTitle, { color: colors.text }]}>Price is negotiable</Text>
-                <Text style={[styles.negotiableHint, { color: colors.textSecondary }]}>
-                  Show a DM button next to Buy on your post.
-                </Text>
-              </View>
-              <Switch
-                value={isNegotiable}
-                onValueChange={(value) => {
-                  haptics.light();
-                  setIsNegotiable(value);
-                }}
-                thumbColor={Platform.OS === 'android' ? '#FFFFFF' : undefined}
-                trackColor={{ false: '#9CA3AF', true: lightBrown }}
-              />
-            </View>
-          </View>
-
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>Location (Optional)</Text>
-            <TouchableOpacity
-              style={[styles.locationPicker, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
-              onPress={() => setLocationPickerVisible(true)}>
-              <IconSymbol name="location.fill" size={16} color={lightBrown} />
-              <Text
                 style={[
-                  styles.locationPickerText,
-                  { color: selectedLocationLabel ? colors.text : colors.textSecondary },
+                  styles.secondaryButton,
+                  { backgroundColor: colors.backgroundSecondary },
                 ]}
-                numberOfLines={1}>
-                {selectedLocationLabel || 'Search and select location'}
-              </Text>
-              <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
-            </TouchableOpacity>
-            {!!selectedLocationLabel && (
-              <TouchableOpacity style={styles.clearLocationButton} onPress={clearLocation}>
-                <Text style={[styles.clearLocationText, { color: lightBrown }]}>Clear location</Text>
+                onPress={pickCover}
+              >
+                <Text
+                  style={[styles.secondaryButtonText, { color: colors.text }]}
+                >
+                  {coverImageUri ? "Change Cover" : "Add Cover"}
+                </Text>
               </TouchableOpacity>
-            )}
+              {coverImageUri ? (
+                <Image
+                  source={{ uri: coverImageUri }}
+                  style={styles.cover}
+                  contentFit="cover"
+                />
+              ) : null}
+            </View>
+            <View
+              style={[
+                styles.card,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <View style={styles.inlineHeader}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                  Sound
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    styles.smallButton,
+                    { backgroundColor: colors.backgroundSecondary },
+                  ]}
+                  onPress={() => setSoundPickerVisible(true)}
+                >
+                  <Text
+                    style={[styles.smallButtonText, { color: colors.text }]}
+                  >
+                    Browse
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.row}>
+                <TouchableOpacity
+                  style={[
+                    styles.mode,
+                    {
+                      borderColor:
+                        soundMode === "original" ? LIGHT_BROWN : colors.border,
+                    },
+                  ]}
+                  onPress={() => setSoundMode("original")}
+                >
+                  <Text
+                    style={[
+                      styles.modeText,
+                      {
+                        color:
+                          soundMode === "original"
+                            ? LIGHT_BROWN
+                            : colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    Original
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.mode,
+                    {
+                      borderColor:
+                        soundMode === "existing" ? LIGHT_BROWN : colors.border,
+                    },
+                  ]}
+                  onPress={() => setSoundPickerVisible(true)}
+                >
+                  <Text
+                    style={[
+                      styles.modeText,
+                      {
+                        color:
+                          soundMode === "existing"
+                            ? LIGHT_BROWN
+                            : colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    Existing
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.mode,
+                    {
+                      borderColor:
+                        soundMode === "uploaded" ? LIGHT_BROWN : colors.border,
+                    },
+                  ]}
+                  onPress={pickAudioForSound}
+                >
+                  <Text
+                    style={[
+                      styles.modeText,
+                      {
+                        color:
+                          soundMode === "uploaded"
+                            ? LIGHT_BROWN
+                            : colors.textSecondary,
+                      },
+                    ]}
+                  >
+                    Upload
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <View
+                style={[
+                  styles.soundCard,
+                  {
+                    backgroundColor: colors.backgroundSecondary,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[styles.soundTitle, { color: colors.text }]}
+                  numberOfLines={1}
+                >
+                  {soundTitle}
+                </Text>
+                <Text
+                  style={[styles.soundMeta, { color: colors.textSecondary }]}
+                  numberOfLines={1}
+                >
+                  {soundMode === "existing"
+                    ? "Reusable sound"
+                    : soundMode === "uploaded"
+                      ? extractFileStem(uploadedSoundUri)
+                      : "Original video audio"}
+                </Text>
+                {soundMode === "uploaded" && uploadedSoundUri ? (
+                  <TextInput
+                    value={uploadedSoundTitle}
+                    onChangeText={setUploadedSoundTitle}
+                    placeholder="Sound title"
+                    placeholderTextColor={colors.textSecondary}
+                    style={[
+                      styles.input,
+                      {
+                        color: colors.text,
+                        borderColor: colors.border,
+                        backgroundColor: colors.card,
+                      },
+                    ]}
+                  />
+                ) : null}
+                <View style={styles.switchRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.label, { color: colors.text }]}>
+                      Keep original audio
+                    </Text>
+                    <Text
+                      style={[styles.help, { color: colors.textSecondary }]}
+                    >
+                      Mix the video audio with the selected sound.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={keepOriginalAudio}
+                    onValueChange={(value) => {
+                      setKeepOriginalAudio(value);
+                      setOriginalAudioVolume(
+                        value ? Math.max(0.3, originalAudioVolume) : 0,
+                      );
+                    }}
+                    thumbColor="#FFFFFF"
+                    trackColor={{
+                      false: colors.border,
+                      true: `${LIGHT_BROWN}88`,
+                    }}
+                  />
+                </View>
+                <Text style={[styles.label, { color: colors.text }]}>
+                  Clip start
+                </Text>
+                <View style={styles.wrapRow}>
+                  {[0, 5000, 10000, 15000].map((value) => (
+                    <Chip
+                      key={value}
+                      active={soundStartMs === value}
+                      colors={colors}
+                      label={`${value / 1000}s`}
+                      onPress={() => setSoundStartMs(value)}
+                    />
+                  ))}
+                </View>
+                <Text style={[styles.label, { color: colors.text }]}>
+                  Sound volume
+                </Text>
+                <View style={styles.wrapRow}>
+                  {[1, 0.8, 0.6].map((value) => (
+                    <Chip
+                      key={`s-${value}`}
+                      active={Math.abs(soundVolume - value) < 0.001}
+                      colors={colors}
+                      label={`${Math.round(value * 100)}%`}
+                      onPress={() => setSoundVolume(value)}
+                    />
+                  ))}
+                </View>
+                <Text style={[styles.label, { color: colors.text }]}>
+                  Original audio
+                </Text>
+                <View style={styles.wrapRow}>
+                  {[0, 0.3, 0.6, 1].map((value) => (
+                    <Chip
+                      key={`o-${value}`}
+                      active={Math.abs(originalAudioVolume - value) < 0.001}
+                      colors={colors}
+                      label={`${Math.round(value * 100)}%`}
+                      onPress={() => {
+                        setOriginalAudioVolume(value);
+                        setKeepOriginalAudio(value > 0);
+                      }}
+                    />
+                  ))}
+                </View>
+              </View>
+            </View>
+          </>
+        )}
+
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>
+            Caption
+          </Text>
+          <TextInput
+            value={description}
+            onChangeText={setDescription}
+            placeholder="Describe your post..."
+            placeholderTextColor={colors.textSecondary}
+            multiline
+            maxLength={500}
+            style={[
+              styles.descriptionInput,
+              {
+                color: colors.text,
+                borderColor: colors.border,
+                backgroundColor: colors.backgroundSecondary,
+              },
+            ]}
+          />
+          <Text style={[styles.help, { color: colors.textSecondary }]}>
+            Hashtags still work. Example: `#abaya #kano`
+          </Text>
+        </View>
+
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>
+            Price
+          </Text>
+          <TextInput
+            value={price}
+            onChangeText={setPrice}
+            placeholder="Optional price in NGN"
+            placeholderTextColor={colors.textSecondary}
+            keyboardType="numeric"
+            style={[
+              styles.input,
+              {
+                color: colors.text,
+                borderColor: colors.border,
+                backgroundColor: colors.backgroundSecondary,
+              },
+            ]}
+          />
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.label, { color: colors.text }]}>
+                Negotiable
+              </Text>
+              <Text style={[styles.help, { color: colors.textSecondary }]}>
+                Shows DM and Buy for priced posts.
+              </Text>
+            </View>
+            <Switch
+              value={isNegotiable}
+              onValueChange={setIsNegotiable}
+              thumbColor="#FFFFFF"
+              trackColor={{ false: colors.border, true: `${LIGHT_BROWN}88` }}
+            />
           </View>
+        </View>
+
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <View style={styles.inlineHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>
+              Location
+            </Text>
+            <TouchableOpacity
+              style={[
+                styles.smallButton,
+                { backgroundColor: colors.backgroundSecondary },
+              ]}
+              onPress={() => setLocationPickerVisible(true)}
+            >
+              <Text style={[styles.smallButtonText, { color: colors.text }]}>
+                {locationLabel ? "Change" : "Select"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {locationLabel ? (
+            <View
+              style={[
+                styles.locationPill,
+                {
+                  backgroundColor: colors.backgroundSecondary,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <Text style={[styles.locationText, { color: colors.text }]}>
+                {locationLabel}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setLocation({ state: "", city: "" })}
+              >
+                <IconSymbol
+                  name="xmark"
+                  size={14}
+                  color={colors.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={[styles.help, { color: colors.textSecondary }]}>
+              Optional. Buyers can still DM for delivery details.
+            </Text>
+          )}
+        </View>
       </KeyboardScreen>
 
       <Modal
         visible={locationPickerVisible}
-        animationType="slide"
         transparent
-        onRequestClose={() => setLocationPickerVisible(false)}>
-        <Pressable style={styles.locationModalBackdrop} onPress={() => setLocationPickerVisible(false)}>
-          {/* Keep FlatList out of ScrollView wrappers to avoid nested VirtualizedList warnings. */}
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            keyboardVerticalOffset={insets.top}
-            style={styles.locationModalKeyboardWrap}>
-            <Pressable
+        animationType="slide"
+        onRequestClose={() => setLocationPickerVisible(false)}
+      >
+        <View style={styles.backdrop}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.inlineHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                Choose Location
+              </Text>
+              <TouchableOpacity onPress={() => setLocationPickerVisible(false)}>
+                <IconSymbol name="xmark" size={18} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              value={locationSearch}
+              onChangeText={setLocationSearch}
+              placeholder="Search state or city"
+              placeholderTextColor={colors.textSecondary}
               style={[
-                styles.locationModalSheet,
+                styles.input,
                 {
-                  backgroundColor: colors.card,
-                  borderTopColor: colors.border,
-                  paddingBottom: insets.bottom + 12,
+                  color: colors.text,
+                  borderColor: colors.border,
+                  backgroundColor: colors.backgroundSecondary,
                 },
               ]}
-              onPress={(e) => e.stopPropagation()}>
-              <View style={styles.locationModalHeader}>
-                <Text style={[styles.locationModalTitle, { color: colors.text }]}>Pick Location</Text>
-                <TouchableOpacity onPress={() => setLocationPickerVisible(false)} style={styles.locationModalCloseButton}>
-                  <IconSymbol name="xmark" size={18} color={colors.text} />
+            />
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {locationSuggestions.map((option) => (
+                <TouchableOpacity
+                  key={option.label}
+                  style={[
+                    styles.modalRow,
+                    { borderBottomColor: colors.border },
+                  ]}
+                  onPress={() => {
+                    const nextLocation: NigeriaLocationOption = option;
+                    setLocation({
+                      state: nextLocation.state,
+                      city: nextLocation.city,
+                    });
+                    setLocationPickerVisible(false);
+                    setLocationSearch("");
+                  }}
+                >
+                  <Text style={[styles.modalRowTitle, { color: colors.text }]}>
+                    {option.city}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.modalRowMeta,
+                      { color: colors.textSecondary },
+                    ]}
+                  >
+                    {option.state}
+                  </Text>
                 </TouchableOpacity>
-              </View>
-              <View style={[styles.locationSearchWrap, { borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}>
-                <IconSymbol name="magnifyingglass" size={16} color={colors.textSecondary} />
-                <TextInput
-                  value={locationSearch}
-                  onChangeText={setLocationSearch}
-                  placeholder="Search city or state"
-                  placeholderTextColor={colors.textSecondary}
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                  style={[styles.locationSearchInput, { color: colors.text }]}
-                />
-              </View>
-              <FlatList
-                data={locationSuggestions}
-                keyExtractor={(item) => `${item.state}-${item.city}`}
-                keyboardShouldPersistTaps="always"
-                keyboardDismissMode="none"
-                contentContainerStyle={styles.locationListContent}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[styles.locationRowItem, { borderBottomColor: colors.border }]}
-                    onPress={() => handleLocationPick(item)}>
-                    <Text style={[styles.locationRowMain, { color: colors.text }]}>{item.city}</Text>
-                    <Text style={[styles.locationRowSub, { color: colors.textSecondary }]}>{item.state}</Text>
-                  </TouchableOpacity>
-                )}
-                ListEmptyComponent={
-                  <View style={styles.emptyLocationWrap}>
-                    <Text style={[styles.emptyLocationText, { color: colors.textSecondary }]}>No location found</Text>
-                  </View>
-                }
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={soundPickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setSoundPickerVisible(false);
+          setPreviewingSoundId(null);
+        }}
+      >
+        <View style={styles.backdrop}>
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                maxHeight: "82%",
+              },
+            ]}
+          >
+            <View style={styles.inlineHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>
+                Sound Library
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setSoundPickerVisible(false);
+                  setPreviewingSoundId(null);
+                }}
+              >
+                <IconSymbol name="xmark" size={18} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.wrapRow}>
+              <Chip
+                active={!showSavedOnly}
+                colors={colors}
+                label="All Sounds"
+                onPress={() => setShowSavedOnly(false)}
               />
-            </Pressable>
-          </KeyboardAvoidingView>
-        </Pressable>
+              <Chip
+                active={showSavedOnly}
+                colors={colors}
+                label="Saved"
+                onPress={() => setShowSavedOnly(true)}
+              />
+            </View>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.modalList}
+            >
+              {soundsLoading || savedSoundsLoading ? (
+                <ActivityIndicator size="small" color={LIGHT_BROWN} />
+              ) : displayedSounds.length === 0 ? (
+                <Text style={[styles.help, { color: colors.textSecondary }]}>
+                  No sounds found yet.
+                </Text>
+              ) : (
+                displayedSounds.map((sound) => (
+                  <MarketSoundRow
+                    key={sound.id || sound.title}
+                    colors={colors}
+                    sound={sound}
+                    selected={selectedSound?.id === sound.id}
+                    isPreviewing={previewingSoundId === sound.id}
+                    isSaved={Boolean(
+                      sound.id && savedSoundIds.includes(sound.id),
+                    )}
+                    togglingSave={Boolean(
+                      sound.id && busySoundIds.includes(sound.id),
+                    )}
+                    onPreview={() =>
+                      setPreviewingSoundId((current) =>
+                        current === sound.id ? null : sound.id || null,
+                      )
+                    }
+                    onOpen={() => selectExistingSound(sound)}
+                    onToggleSave={() => toggleSaveSound(sound)}
+                  />
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: { flex: 1 },
+  center: {
     flex: 1,
-  },
-  centeredContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     paddingHorizontal: 24,
+    gap: 14,
   },
-  loginTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 16,
-  },
-  loginButton: {
-    paddingVertical: 12,
+  title: { fontSize: 18, fontWeight: "700", textAlign: "center" },
+  primaryButton: {
     paddingHorizontal: 18,
-    borderRadius: 12,
+    paddingVertical: 12,
+    borderRadius: 14,
   },
-  loginButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
+  primaryButtonText: { color: "#FFFFFF", fontWeight: "700" },
   header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
     borderBottomWidth: 1,
+  },
+  headerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: { fontSize: 18, fontWeight: "800" },
+  publishButton: {
+    minWidth: 92,
+    minHeight: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
     paddingHorizontal: 14,
-    paddingBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
   },
-  headerIconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  publishChip: {
-    minWidth: 84,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
+  publishButtonText: { color: "#FFFFFF", fontWeight: "800" },
+  content: { paddingHorizontal: 16, paddingTop: 14, gap: 12 },
+  card: { borderWidth: 1, borderRadius: 22, padding: 16, gap: 12 },
+  sectionTitle: { fontSize: 17, fontWeight: "800" },
+  row: { flexDirection: "row", gap: 10 },
+  wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  segment: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
     paddingHorizontal: 12,
   },
-  publishText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 14,
-    gap: 12,
-    paddingTop: 12,
-  },
-  card: {
-    borderWidth: 1,
+  segmentText: { color: "#FFFFFF", fontWeight: "800", fontSize: 13 },
+  emptyBox: {
+    minHeight: 180,
     borderRadius: 18,
-    padding: 12,
-  },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-  cardHint: {
-    fontSize: 12,
-    marginBottom: 8,
-  },
-  emptyImagePicker: {
     borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: 14,
-    minHeight: 130,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  emptyImageText: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  mainPreview: {
-    width: '100%',
-    height: 240,
-    borderRadius: 14,
-    backgroundColor: '#101010',
-  },
-  thumbRow: {
-    paddingTop: 10,
+    alignItems: "center",
+    justifyContent: "center",
     gap: 10,
   },
+  emptyText: { fontSize: 15, fontWeight: "700" },
+  preview: { width: "100%", height: 280, borderRadius: 18 },
+  thumbRow: { gap: 10 },
   thumbWrap: {
     width: 74,
     height: 74,
-    borderRadius: 10,
-    overflow: 'hidden',
+    borderRadius: 16,
+    overflow: "hidden",
+    position: "relative",
   },
-  thumbImage: {
-    width: '100%',
-    height: '100%',
-  },
+  thumb: { width: "100%", height: "100%" },
   thumbRemove: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
+    position: "absolute",
+    top: 6,
+    right: 6,
     width: 18,
     height: 18,
     borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   addThumb: {
     width: 74,
     height: 74,
-    borderRadius: 10,
+    borderRadius: 16,
     borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
-  captionInput: {
-    minHeight: 96,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    fontSize: 14,
-    textAlignVertical: 'top',
+  videoBox: {
+    width: "100%",
+    height: 320,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#000000",
   },
-  captionInputContainer: {
-    position: 'relative',
-  },
-  counterText: {
-    fontSize: 12,
-    marginTop: 6,
-    textAlign: 'right',
-  },
-  captionActions: {
-    marginTop: 10,
-    flexDirection: 'row',
-    gap: 8,
-  },
-  captionActionChip: {
-    borderWidth: 1,
-    borderRadius: 999,
-    minHeight: 32,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  captionActionText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  detectedWrap: {
-    marginTop: 10,
-    gap: 8,
-  },
-  detectedChipsRow: {
-    gap: 8,
-  },
-  detectedChip: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    minHeight: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  detectedChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  cursorSuggestionsWrap: {
-    position: 'absolute',
-    left: 10,
-    right: 10,
-    zIndex: 20,
-    borderWidth: 1,
-    borderRadius: 12,
-    maxHeight: 170,
-    overflow: 'hidden',
-  },
-  cursorSuggestionsList: {
-    paddingVertical: 2,
-  },
-  cursorSuggestionRow: {
-    minHeight: 38,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  cursorSuggestionTag: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  cursorSuggestionCount: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  priceInputWrap: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 46,
-  },
-  pricePrefix: {
-    fontSize: 13,
-    fontWeight: '700',
-    marginRight: 8,
-  },
-  priceInput: {
+  secondaryButton: {
     flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    paddingVertical: 8,
+    minHeight: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  negotiableRow: {
-    marginTop: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  secondaryButtonText: { fontWeight: "700", fontSize: 13 },
+  cover: { width: "100%", height: 170, borderRadius: 16 },
+  inlineHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
   },
-  negotiableTextWrap: {
+  smallButton: {
+    minHeight: 38,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  smallButtonText: { fontWeight: "700", fontSize: 13 },
+  mode: {
     flex: 1,
-  },
-  negotiableTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  negotiableHint: {
-    marginTop: 2,
-    fontSize: 11,
-    fontWeight: '500',
-  },
-  locationPicker: {
-    minHeight: 48,
+    minHeight: 40,
+    borderRadius: 14,
     borderWidth: 1,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  locationPickerText: {
-    flex: 1,
-    fontSize: 14,
-  },
-  clearLocationButton: {
-    marginTop: 8,
-    alignSelf: 'flex-start',
-    paddingVertical: 2,
-  },
-  clearLocationText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  locationModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'flex-end',
-  },
-  locationModalKeyboardWrap: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  locationModalSheet: {
-    maxHeight: '75%',
-    borderTopWidth: 1,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+  modeText: { fontWeight: "700", fontSize: 12 },
+  soundCard: { borderWidth: 1, borderRadius: 18, padding: 14, gap: 10 },
+  soundTitle: { fontSize: 15, fontWeight: "800" },
+  soundMeta: { fontSize: 12 },
+  input: {
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: 1,
     paddingHorizontal: 14,
-    paddingTop: 12,
+    fontSize: 14,
   },
-  locationModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  locationModalTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  locationModalCloseButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  locationSearchWrap: {
-    minHeight: 44,
+  descriptionInput: {
+    minHeight: 120,
+    borderRadius: 18,
     borderWidth: 1,
-    borderRadius: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    marginBottom: 10,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    fontSize: 15,
+    lineHeight: 21,
+    textAlignVertical: "top",
   },
-  locationSearchInput: {
+  switchRow: { flexDirection: "row", gap: 12, alignItems: "center" },
+  label: { fontSize: 14, fontWeight: "700" },
+  help: { fontSize: 12, lineHeight: 17 },
+  locationPill: {
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  locationText: { fontSize: 14, fontWeight: "700" },
+  chip: {
+    minHeight: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chipText: { fontSize: 12, fontWeight: "700" },
+  backdrop: {
     flex: 1,
-    fontSize: 14,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
   },
-  locationListContent: {
-    paddingBottom: 6,
+  modalCard: {
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 22,
+    gap: 12,
+    maxHeight: "76%",
   },
-  locationRowItem: {
-    minHeight: 48,
+  modalRow: {
+    paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    justifyContent: 'center',
-    gap: 2,
   },
-  locationRowMain: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  locationRowSub: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  emptyLocationWrap: {
-    paddingVertical: 20,
-    alignItems: 'center',
-  },
-  emptyLocationText: {
-    fontSize: 13,
-  },
+  modalRowTitle: { fontSize: 15, fontWeight: "700" },
+  modalRowMeta: { fontSize: 12, marginTop: 2 },
+  modalList: { gap: 10, paddingBottom: 24 },
 });

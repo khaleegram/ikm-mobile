@@ -16,6 +16,21 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
     }
 
+    function isMarketPostMediaUpload() {
+      return request.resource != null
+        && request.resource.size < 250 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('video/.*')
+        );
+    }
+
+    function isMarketSoundUpload() {
+      return request.resource != null
+        && request.resource.size < 40 * 1024 * 1024
+        && request.resource.contentType.matches('audio/.*');
+    }
+
     // Product images (legacy/current path requested)
     match /product_images/{userId}/{fileName} {
       allow read: if true;
@@ -51,7 +66,13 @@ service firebase.storage {
     // Market post images
     match /marketPosts/{postId}/{fileName} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isAuthenticated() && isMarketPostMediaUpload();
+    }
+
+    // Market sounds
+    match /marketSounds/{ownerId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwner(ownerId) && isMarketSoundUpload();
     }
 
     // Deny all other paths by default

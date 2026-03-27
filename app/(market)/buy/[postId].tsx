@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,14 +11,19 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as Linking from 'expo-linking';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import {
+  PaystackCheckoutModal,
+  type PaystackCheckoutResult,
+} from '@/components/market/paystack-checkout-modal';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
-import { marketOrdersApi } from '@/lib/api/market-orders';
+import { paymentsApi } from '@/lib/api/payments';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
@@ -26,6 +31,9 @@ import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
+import {
+  savePendingEscrowCheckout,
+} from '@/lib/utils/pending-escrow-checkout';
 
 const lightBrown = '#A67C52';
 const NIGERIA_STATES = [...new Set(NIGERIA_LOCATION_OPTIONS.map((item) => item.state))].sort((a, b) =>
@@ -46,6 +54,30 @@ function resolveDisplayName(profile: any, fallback: string): string {
   const store = String(profile?.storeName || '').trim();
   if (store) return store;
   return fallback;
+}
+
+function extractPaymentReference(url: string): string {
+  const normalizedUrl = String(url || '').trim();
+  if (!normalizedUrl) return '';
+
+  try {
+    const parsed = Linking.parse(normalizedUrl);
+    const reference =
+      String(parsed.queryParams?.reference || '').trim() ||
+      String(parsed.queryParams?.trxref || '').trim() ||
+      String(parsed.queryParams?.ref || '').trim();
+    if (reference) return reference;
+  } catch {
+    // Fallback to raw parsing below.
+  }
+
+  const match = normalizedUrl.match(/[?&](reference|trxref|ref)=([^&#]+)/i);
+  if (!match?.[2]) return '';
+  try {
+    return decodeURIComponent(match[2]).trim();
+  } catch {
+    return String(match[2]).trim();
+  }
 }
 
 export default function MarketBuyScreen() {
@@ -78,12 +110,56 @@ export default function MarketBuyScreen() {
   const [cityPickerVisible, setCityPickerVisible] = useState(false);
   const [stateSearch, setStateSearch] = useState('');
   const [citySearch, setCitySearch] = useState('');
-  const [phone, setPhone] = useState(profile?.phone || '');
+
+  const checkoutResolverRef = useRef<((result: PaystackCheckoutResult) => void) | null>(null);
+  const [checkoutVisible, setCheckoutVisible] = useState(false);
+  const [checkoutAuthorizationUrl, setCheckoutAuthorizationUrl] = useState<string | null>(null);
+
+  const openCheckoutModal = useCallback(async (authorizationUrl: string) => {
+    const normalizedUrl = String(authorizationUrl || '').trim();
+    if (!normalizedUrl) {
+      throw new Error('Unable to open payment checkout.');
+    }
+
+    setCheckoutAuthorizationUrl(normalizedUrl);
+    setCheckoutVisible(true);
+
+    return new Promise<PaystackCheckoutResult>((resolve) => {
+      checkoutResolverRef.current = resolve;
+    });
+  }, []);
+
+  const handleCheckoutResult = useCallback((result: PaystackCheckoutResult) => {
+    const resolver = checkoutResolverRef.current;
+    checkoutResolverRef.current = null;
+
+    setCheckoutVisible(false);
+    setCheckoutAuthorizationUrl(null);
+
+    resolver?.(result);
+  }, []);
+  const savedBuyerPhone = useMemo(
+    () =>
+      String((profile as any)?.marketBuyerPhone || profile?.phone || '')
+        .trim(),
+    [profile]
+  );
+  const savedBuyerLocation = useMemo(() => {
+    const raw = (profile as any)?.marketBuyerLocation || {};
+    return {
+      state: String(raw.state || '').trim(),
+      city: String(raw.city || '').trim(),
+      address: String(raw.address || '').trim(),
+    };
+  }, [profile]);
+  const buyerPhone = useMemo(() => String(savedBuyerPhone || '').trim(), [savedBuyerPhone]);
 
   React.useEffect(() => {
-    if (!profile?.phone) return;
-    setPhone((prev) => prev || profile.phone || '');
-  }, [profile?.phone]);
+    if (!savedBuyerLocation.state && !savedBuyerLocation.city && !savedBuyerLocation.address) return;
+    setDeliveryState((prev) => prev || savedBuyerLocation.state);
+    setDeliveryCity((prev) => prev || savedBuyerLocation.city);
+    setAddressLine((prev) => prev || savedBuyerLocation.address);
+  }, [savedBuyerLocation]);
 
   const lockedPrice = useMemo(() => {
     const hasValidOffer = Number.isFinite(offeredPrice) && offeredPrice > 0;
@@ -138,11 +214,11 @@ export default function MarketBuyScreen() {
     trimmedAddressLine.length >= 5 &&
     !!deliveryState &&
     !!deliveryCity &&
-    phone.trim().length >= 7;
+    buyerPhone.length >= 10;
 
   const missingChecks: string[] = [];
   if (!hasLockedPrice) missingChecks.push('seller final price');
-  if (!phone.trim()) missingChecks.push('phone');
+  if (!buyerPhone) missingChecks.push('phone');
   if (!deliveryState) missingChecks.push('state');
   if (!deliveryCity) missingChecks.push('city');
   if (trimmedAddressLine.length < 5) missingChecks.push('address');
@@ -159,6 +235,11 @@ export default function MarketBuyScreen() {
   const priceSourceLabel = hasValidOffer ? 'Seller offer accepted' : 'Post listed price';
   const subtotal = hasLockedPrice ? lockedPrice * numericQuantity : 0;
 
+  const handleOpenDeliverySettings = () => {
+    haptics.light();
+    router.push('/(market)/delivery-settings' as any);
+  };
+
   const handleSubmit = async () => {
     if (!user) {
       router.push(getLoginRouteForVariant('market') as any);
@@ -169,8 +250,9 @@ export default function MarketBuyScreen() {
       showToast('Seller must set a final price before escrow payment.', 'error');
       return;
     }
-    if (!phone.trim()) {
-      showToast('Enter your phone number.', 'error');
+    if (!buyerPhone) {
+      showToast('Verify your phone before checkout.', 'error');
+      router.push('/complete-phone' as any);
       return;
     }
     if (!deliveryState) {
@@ -195,28 +277,74 @@ export default function MarketBuyScreen() {
       return;
     }
 
+    const buyerEmail = String(user.email || '').trim();
+    if (!buyerEmail) {
+      showToast('A valid account email is required for payment.', 'error');
+      return;
+    }
+
     try {
       setSubmitting(true);
       haptics.medium();
 
-      const created = await marketOrdersApi.createFromPost({
+      const callbackUrl = Linking.createURL('/paystack-callback');
+      const initializedCheckout = await paymentsApi.initializeEscrowPayment({
+        amount: total,
+        email: buyerEmail,
+        callbackUrl,
+        metadata: {
+          buyerId: user.uid,
+          sellerId: post.posterId,
+          postId: post.id,
+          chatId: chatId || null,
+          quantity: numericQuantity,
+        },
+      });
+
+      await savePendingEscrowCheckout({
+        reference: initializedCheckout.reference,
+        amount: total,
         buyerId: user.uid,
         buyerName: profile?.displayName || user.displayName || user.email || 'Market Buyer',
-        buyerEmail: user.email || '',
-        buyerPhone: phone.trim(),
+        buyerEmail,
+        buyerPhone,
         post,
         quantity: numericQuantity,
         finalPrice: lockedPrice,
         deliveryAddress: builtDeliveryAddress,
-        fromChatId: chatId,
+        fromChatId: chatId || null,
+        deliveryState,
+        deliveryCity,
+        addressLine: trimmedAddressLine,
+        createdAtMs: Date.now(),
       });
 
-      haptics.success();
-      showToast('Order placed. Payment is held in escrow.', 'success');
-      router.replace(`/(market)/orders/${created.id}` as any);
+      const checkoutResult = await openCheckoutModal(initializedCheckout.authorizationUrl);
+      if (checkoutResult.type === 'error') {
+        throw new Error('Unable to open payment checkout.');
+      }
+
+      if (checkoutResult.type !== 'success') {
+        showToast('Payment not completed. You can try again when ready.', 'info');
+        return;
+      }
+
+      const callbackReference = extractPaymentReference(checkoutResult.url || '');
+      const paymentReference = callbackReference || initializedCheckout.reference;
+      if (!paymentReference) {
+        throw new Error('Unable to confirm payment reference.');
+      }
+
+      // Finalize payment + order in a dedicated processing route.
+      // This gives users deterministic progress UI and retry handling.
+      showToast('Payment submitted. Confirming now...', 'info');
+      router.replace({
+        pathname: '/paystack-callback',
+        params: { reference: paymentReference },
+      } as any);
     } catch (error: any) {
       haptics.error();
-      showToast(error?.message || 'Unable to create order right now.', 'error');
+      showToast(error?.message || 'Unable to process payment right now.', 'error');
     } finally {
       setSubmitting(false);
     }
@@ -245,6 +373,11 @@ export default function MarketBuyScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <PaystackCheckoutModal
+        visible={checkoutVisible}
+        authorizationUrl={checkoutAuthorizationUrl}
+        onResult={handleCheckoutResult}
+      />
       <View
         style={[
           styles.header,
@@ -364,21 +497,23 @@ export default function MarketBuyScreen() {
           </View>
 
           <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Phone Number</Text>
-          <TextInput
-            value={phone}
-            onChangeText={setPhone}
-            keyboardType="phone-pad"
-            placeholder="Your contact number"
-            placeholderTextColor={colors.textSecondary}
+          <View
             style={[
-              styles.input,
+              styles.readonlyField,
               {
-                color: colors.text,
                 borderColor: colors.border,
                 backgroundColor: colors.backgroundSecondary,
               },
-            ]}
-          />
+            ]}>
+            <Text style={[styles.readonlyValue, { color: buyerPhone ? colors.text : colors.textSecondary }]}>
+              {buyerPhone || 'Phone not verified'}
+            </Text>
+          </View>
+          <TouchableOpacity style={styles.editSettingsAction} onPress={handleOpenDeliverySettings}>
+            <Text style={[styles.cancelText, { color: colors.textSecondary }]}>
+              Edit saved delivery settings
+            </Text>
+          </TouchableOpacity>
 
           <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery State</Text>
           <TouchableOpacity
@@ -964,6 +1099,10 @@ const styles = StyleSheet.create({
   cancelAction: {
     alignSelf: 'center',
     paddingVertical: 4,
+  },
+  editSettingsAction: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
   },
   cancelText: {
     fontSize: 13,

@@ -1,4 +1,4 @@
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { addDoc, collection, getDocs, limit, query, serverTimestamp, where } from 'firebase/firestore';
 
 import { firestore } from '@/lib/firebase/config';
 import { MarketPost, Order } from '@/types';
@@ -13,6 +13,8 @@ export interface CreateMarketOrderInput {
   finalPrice: number;
   deliveryAddress: string;
   fromChatId?: string;
+  paymentReference?: string;
+  paystackReference?: string;
 }
 
 function buildMarketItemName(post: MarketPost): string {
@@ -30,6 +32,32 @@ function buildIdempotencyKey(data: CreateMarketOrderInput): string {
   return raw.replace(/[^a-zA-Z0-9_]/g, '');
 }
 
+async function findExistingOrderByPaymentReference(
+  reference: string
+): Promise<(Order & { id: string }) | null> {
+  const normalizedReference = String(reference || '').trim();
+  if (!normalizedReference) return null;
+
+  const ordersRef = collection(firestore, 'orders');
+  const paystackSnap = await getDocs(
+    query(ordersRef, where('paystackReference', '==', normalizedReference), limit(1))
+  );
+  if (!paystackSnap.empty) {
+    const docSnap = paystackSnap.docs[0];
+    return { ...(docSnap.data() as Order), id: docSnap.id };
+  }
+
+  const paymentSnap = await getDocs(
+    query(ordersRef, where('paymentReference', '==', normalizedReference), limit(1))
+  );
+  if (!paymentSnap.empty) {
+    const docSnap = paymentSnap.docs[0];
+    return { ...(docSnap.data() as Order), id: docSnap.id };
+  }
+
+  return null;
+}
+
 export const marketOrdersApi = {
   async createFromPost(input: CreateMarketOrderInput): Promise<Order & { id: string }> {
     if (!input.post.id) {
@@ -37,6 +65,14 @@ export const marketOrdersApi = {
     }
     if (!input.post.posterId) {
       throw new Error('Seller id is missing on this post');
+    }
+
+    const reference = String(input.paystackReference || input.paymentReference || '').trim();
+    if (reference) {
+      const existing = await findExistingOrderByPaymentReference(reference).catch(() => null);
+      if (existing?.id) {
+        return existing;
+      }
     }
 
     const now = new Date();
@@ -65,10 +101,15 @@ export const marketOrdersApi = {
         email: input.buyerEmail.trim(),
         phone: input.buyerPhone.trim(),
       },
-      paymentMethod: 'Escrow',
+      paymentMethod: 'Paystack Escrow',
+      // Firestore does not allow `undefined` values.
+      paymentReference: input.paymentReference ? String(input.paymentReference).trim() : null,
+      paystackReference: (input.paystackReference || input.paymentReference)
+        ? String(input.paystackReference || input.paymentReference).trim()
+        : null,
       escrowStatus: 'held',
-      commissionRate: undefined,
-      autoReleaseDate: undefined,
+      commissionRate: null,
+      autoReleaseDate: null,
       marketMeta: {
         postId: input.post.id,
         source: 'market_post',
@@ -89,4 +130,3 @@ export const marketOrdersApi = {
     };
   },
 };
-

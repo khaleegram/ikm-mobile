@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Text,
@@ -18,6 +17,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { marketMessagesApi } from '@/lib/api/market-messages';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
@@ -42,6 +42,7 @@ export default function ChatDetailScreen() {
   const insets = useSafeAreaInsets();
   const marketLoginRoute = getLoginRouteForVariant('market');
   const userId = user?.uid || null;
+  const { idSet: blockedIds } = useBlockedUserIds(userId);
 
   const {
     activeChatId,
@@ -62,6 +63,7 @@ export default function ChatDetailScreen() {
     loading,
     renderedMessages,
     setPendingMessages,
+    markLatestVisibleIncomingAsRead,
     unreadCount,
     unreadDividerMessageId,
   } = useChatMessages({
@@ -83,41 +85,15 @@ export default function ChatDetailScreen() {
     legacySellerId,
     userId,
   });
+  const isBlockedPeer = Boolean(resolvedPeerId && blockedIds.has(String(resolvedPeerId)));
 
   const flatListRef = useRef<FlatList<MarketMessage>>(null);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
   const [offerVisible, setOfferVisible] = useState(false);
   const [offerAmount, setOfferAmount] = useState('');
   const [offerNote, setOfferNote] = useState('');
   const [sendingOffer, setSendingOffer] = useState(false);
-
-  const scrollToLatest = useCallback((animated: boolean = true) => {
-    requestAnimationFrame(() => {
-      flatListRef.current?.scrollToOffset({ offset: 0, animated });
-    });
-  }, []);
-
-  useEffect(() => {
-    if (renderedMessages.length === 0) return undefined;
-    const timeout = setTimeout(() => scrollToLatest(false), 40);
-    return () => clearTimeout(timeout);
-  }, [renderedMessages.length, scrollToLatest]);
-
-  useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', () => {
-      setKeyboardVisible(true);
-      scrollToLatest(false);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardVisible(false);
-    });
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, [scrollToLatest]);
 
   const applyResolvedChatId = useCallback(
     (chatId: string) => {
@@ -190,6 +166,10 @@ export default function ChatDetailScreen() {
   );
 
   const handleSend = async () => {
+    if (isBlockedPeer) {
+      showToast('You blocked this user. Unblock them to continue.', 'info');
+      return;
+    }
     if (!user) {
       Alert.alert('Login Required', 'Please log in to send messages', [
         { text: 'Cancel', style: 'cancel' },
@@ -214,7 +194,7 @@ export default function ChatDetailScreen() {
       senderId: user.uid,
       receiverId: '',
       postId: contextPostId || '',
-      message: trimmedMessage,
+      text: trimmedMessage,
       clientMessageId: optimisticMessageId,
       read: false,
       createdAt: new Date(),
@@ -222,7 +202,6 @@ export default function ChatDetailScreen() {
 
     setPendingMessages((previous) => [...previous, optimisticMessage]);
     setMessageText('');
-    scrollToLatest();
     haptics.medium();
 
     try {
@@ -235,13 +214,7 @@ export default function ChatDetailScreen() {
         showToast('No network. Message queued and will send when online.', 'info');
       } else {
         haptics.success();
-        setTimeout(() => {
-          setPendingMessages((previous) =>
-            previous.filter((pendingMessage) => pendingMessage.id !== optimisticMessageId)
-          );
-        }, 20000);
       }
-      scrollToLatest();
     } catch (sendError: any) {
       setPendingMessages((previous) =>
         previous.filter((pendingMessage) => pendingMessage.id !== optimisticMessageId)
@@ -254,6 +227,10 @@ export default function ChatDetailScreen() {
   };
 
   const handleSendOffer = async () => {
+    if (isBlockedPeer) {
+      showToast('You blocked this user. Unblock them to continue.', 'info');
+      return;
+    }
     if (!user || !contextPostId || !sellerId) return;
 
     const numericAmount = Number(offerAmount);
@@ -297,7 +274,6 @@ export default function ChatDetailScreen() {
       setOfferAmount('');
       setOfferNote('');
       haptics.success();
-      scrollToLatest();
     } catch (offerError: any) {
       console.error('Error sending offer:', offerError);
       haptics.error();
@@ -308,6 +284,10 @@ export default function ChatDetailScreen() {
   };
 
   const handlePickImage = async () => {
+    if (isBlockedPeer) {
+      showToast('You blocked this user. Unblock them to continue.', 'info');
+      return;
+    }
     if (!user) {
       Alert.alert('Login Required', 'Please log in to send images', [
         { text: 'Cancel', style: 'cancel' },
@@ -340,7 +320,6 @@ export default function ChatDetailScreen() {
       });
       applyResolvedChatId(sendResult.chatId);
       haptics.success();
-      scrollToLatest();
     } catch (pickError: any) {
       console.error('Error picking image:', pickError);
       haptics.error();
@@ -408,32 +387,49 @@ export default function ChatDetailScreen() {
             currentUserId={userId}
             flatListRef={flatListRef}
             insetsBottom={insets.bottom}
-            keyboardVisible={keyboardVisible}
             messages={renderedMessages}
             onOpenOffer={handleOpenOffer}
-            onScrollToLatest={scrollToLatest}
             peerAvatarUri={headerAvatarUri}
+            onLatestVisibleIncomingMessage={markLatestVisibleIncomingAsRead}
             unreadCount={unreadCount}
             unreadDividerMessageId={unreadDividerMessageId}
           />
         )}
 
-        <ChatComposer
-          colors={colors}
-          keyboardVisible={keyboardVisible}
-          messageText={messageText}
-          onChangeMessageText={setMessageText}
-          onFocusInput={() => scrollToLatest(false)}
-          onOpenOffer={() => {
-            haptics.light();
-            setOfferVisible(true);
-          }}
-          onPickImage={handlePickImage}
-          onSend={handleSend}
-          sending={sending}
-          showInlineOfferCta={showInlineOfferCta}
-          insetBottom={insets.bottom}
-        />
+        {isBlockedPeer ? (
+          <View
+            style={{
+              marginHorizontal: 12,
+              marginBottom: Math.max(insets.bottom, 12),
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: colors.border,
+              backgroundColor: colors.card,
+              minHeight: 52,
+              paddingHorizontal: 14,
+              alignItems: 'center',
+              flexDirection: 'row',
+            }}>
+            <Text style={{ color: colors.textSecondary, fontWeight: '700', fontSize: 13 }}>
+              Messaging disabled because you blocked this user.
+            </Text>
+          </View>
+        ) : (
+          <ChatComposer
+            colors={colors}
+            messageText={messageText}
+            onChangeMessageText={setMessageText}
+            onOpenOffer={() => {
+              haptics.light();
+              setOfferVisible(true);
+            }}
+            onPickImage={handlePickImage}
+            onSend={handleSend}
+            sending={sending}
+            showInlineOfferCta={showInlineOfferCta}
+            insetBottom={insets.bottom}
+          />
+        )}
       </View>
 
       <OfferModal
@@ -445,7 +441,7 @@ export default function ChatDetailScreen() {
         onClose={() => setOfferVisible(false)}
         onSendOffer={handleSendOffer}
         sendingOffer={sendingOffer}
-        visible={offerVisible}
+        visible={offerVisible && !isBlockedPeer}
       />
     </KeyboardAvoidingView>
   );

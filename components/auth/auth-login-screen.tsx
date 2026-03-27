@@ -6,7 +6,7 @@ import { haptics } from '@/lib/utils/haptics';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { router } from 'expo-router';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
@@ -83,6 +83,26 @@ export function AuthLoginScreen({ variant }: AuthLoginScreenProps) {
     }, 0);
   };
 
+  const handleForgotCredentials = async () => {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail) {
+      Alert.alert('Email Required', 'Enter your email address first, then try again.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      await sendPasswordResetEmail(auth, normalizedEmail);
+      haptics.success();
+      Alert.alert('Reset Link Sent', `A password reset email was sent to ${normalizedEmail}.`);
+    } catch (error: any) {
+      haptics.error();
+      Alert.alert('Reset Failed', error?.message || 'Unable to send password reset link.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const styles = createStyles(colors, insets, lightBrown);
 
   return (
@@ -136,7 +156,7 @@ export function AuthLoginScreen({ variant }: AuthLoginScreenProps) {
               </View>
             </View>
 
-            <TouchableOpacity style={styles.forgotBtn}>
+            <TouchableOpacity style={styles.forgotBtn} onPress={handleForgotCredentials}>
               <Text style={styles.forgotText}>Forgot Credentials?</Text>
             </TouchableOpacity>
           </View>

@@ -6,6 +6,7 @@ import { premiumShadow } from '@/lib/theme/styles';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { OrderStatus } from '@/types';
+import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Platform, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -149,7 +150,10 @@ export default function AdminReports() {
       <View style={styles.floatingHeaderContainer}>
         <AnimatedPressable
           style={styles.iconIsland}
-          onPress={() => { haptics.light(); }}
+          onPress={() => {
+            haptics.light();
+            router.back();
+          }}
           scaleValue={0.9}>
           <IconSymbol name="chevron.left" size={20} color={colors.text} />
         </AnimatedPressable>

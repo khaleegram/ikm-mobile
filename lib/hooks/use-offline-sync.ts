@@ -14,27 +14,40 @@ export function useOfflineSync() {
   const [syncing, setSyncing] = useState(false);
   const appState = useRef(AppState.currentState);
 
+  const loadQueuedWrites = useCallback(async () => {
+    const queue = await getWriteQueue();
+    setQueuedWrites(queue);
+  }, []);
+
   useEffect(() => {
-    // Track app state to prevent operations when backgrounded
     const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
       appState.current = nextAppState;
+      if (nextAppState === 'active') {
+        void loadQueuedWrites();
+      }
     });
 
-    // Subscribe to network state changes
     let unsubscribe: (() => void) | null = null;
     try {
       unsubscribe = NetInfo.addEventListener((state) => {
-        // Only update if app is in foreground or active
         if (appState.current === 'active') {
-          setIsOnline(state.isConnected ?? false);
+          setIsOnline(Boolean(state.isConnected));
+          void loadQueuedWrites();
         }
       });
+
+      void NetInfo.fetch()
+        .then((state) => {
+          if (appState.current !== 'active') return;
+          setIsOnline(Boolean(state.isConnected));
+          return loadQueuedWrites();
+        })
+        .catch(() => {});
     } catch (error) {
       console.error('Error setting up NetInfo listener:', error);
     }
 
-    // Load queued writes
-    loadQueuedWrites();
+    void loadQueuedWrites();
 
     return () => {
       appStateSubscription?.remove();
@@ -46,12 +59,7 @@ export function useOfflineSync() {
         console.error('Error removing NetInfo listener:', error);
       }
     };
-  }, []);
-
-  const loadQueuedWrites = async () => {
-    const queue = await getWriteQueue();
-    setQueuedWrites(queue);
-  };
+  }, [loadQueuedWrites]);
 
   const syncWrites = useCallback(async () => {
     if (!isOnline || syncing) return;
@@ -92,12 +100,11 @@ export function useOfflineSync() {
     } finally {
       setSyncing(false);
     }
-  }, [isOnline, syncing]);
+  }, [isOnline, syncing, loadQueuedWrites]);
 
-  // Auto-sync when coming online (only if app is active)
   useEffect(() => {
     if (isOnline && queuedWrites.length > 0 && appState.current === 'active') {
-      syncWrites();
+      void syncWrites();
     }
   }, [isOnline, queuedWrites.length, syncWrites]);
 

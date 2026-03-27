@@ -17,6 +17,7 @@ const NOTCH_RADIUS = 35;
 const CENTER_BUTTON_SIZE = 56;
 const CENTER_BUTTON_OFFSET = 12;
 const NOTCH_DEPTH = 22;
+const IOS_MARKET_BOTTOM_GAP = 6;
 const lightBrown = '#A67C52';
 const MARKET_TABS_ORDER = ['index', 'following', 'create-post', 'messages', 'profile'] as const;
 type MarketTabName = (typeof MARKET_TABS_ORDER)[number];
@@ -33,6 +34,15 @@ const MARKET_ICONS: Record<MarketTabName, { focused: IconSymbolName; unfocused: 
   'create-post': { focused: 'plus.circle.fill', unfocused: 'plus.circle' },
   messages: { focused: 'message.fill', unfocused: 'message' },
   profile: { focused: 'person.fill', unfocused: 'person' },
+};
+const SELLER_ICONS: Record<
+  'index' | 'products' | 'analytics' | 'settings',
+  { focused: IconSymbolName; unfocused: IconSymbolName }
+> = {
+  index: { focused: 'house.fill', unfocused: 'house' },
+  products: { focused: 'cube.box.fill', unfocused: 'cube.box' },
+  analytics: { focused: 'chart.bar.fill', unfocused: 'chart.bar' },
+  settings: { focused: 'gearshape.fill', unfocused: 'gearshape' },
 };
 
 function getMarketTabName(routeName: string): MarketTabName | null {
@@ -130,6 +140,8 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   if (shouldHideTabBar) {
     return null;
   }
+  const isImmersiveMarketFeed = isMarketStreet && getMarketTabName(focusedRoute.name) === 'index';
+  const focusedAccentColor = Platform.OS === 'ios' ? lightBrown : colors.primary;
 
   const totalHeight = TAB_BAR_HEIGHT + insets.bottom;
 
@@ -138,26 +150,42 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
       <View
         style={[
           styles.marketContainer,
+          isImmersiveMarketFeed && styles.marketContainerOverlay,
           {
-            paddingBottom: Math.max(insets.bottom, 8),
-            backgroundColor: colors.background,
+            paddingBottom:
+              Platform.OS === 'ios' ? IOS_MARKET_BOTTOM_GAP : Math.max(insets.bottom, 8),
+            backgroundColor: isImmersiveMarketFeed ? 'transparent' : colors.background,
           },
         ]}>
-        <View style={[styles.marketBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.marketBar,
+            isImmersiveMarketFeed
+              ? styles.marketBarOverlay
+              : { backgroundColor: colors.card, borderColor: colors.border },
+          ]}>
+          {isImmersiveMarketFeed && Platform.OS === 'ios' ? (
+            <BlurView intensity={35} tint="dark" style={styles.marketBarBlur} />
+          ) : null}
           {marketVisibleTabs.map(({ route, index, name }) => {
-            const { options } = descriptors[route.key];
             const isFocused = isRouteFocused(route.key);
-            const icon = options.tabBarIcon as any;
             const isAddButton = name === 'create-post';
             const fallbackIcon = MARKET_ICONS[name];
-            const iconColor = isAddButton ? '#FFFFFF' : isFocused ? colors.primary : colors.textSecondary;
+            const baseTabColor = isImmersiveMarketFeed
+              ? isFocused
+                ? '#FFFFFF'
+                : 'rgba(255,255,255,0.74)'
+              : isFocused
+              ? focusedAccentColor
+              : colors.textSecondary;
+            const iconColor = isAddButton ? '#FFFFFF' : baseTabColor;
 
             return (
               <TouchableOpacity
                 key={route.key}
                 accessibilityRole="button"
                 accessibilityState={isFocused ? { selected: true } : {}}
-                accessibilityLabel={options.tabBarAccessibilityLabel}
+                accessibilityLabel={descriptors[route.key]?.options?.tabBarAccessibilityLabel}
                 onPress={() => handleTabPress(route, index)}
                 style={[
                   styles.marketTabButton,
@@ -165,19 +193,11 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
                   isAddButton && { backgroundColor: lightBrown },
                 ]}>
                 <View style={styles.marketTabInner}>
-                  {icon
-                    ? icon({
-                        focused: isFocused,
-                        color: iconColor,
-                        size: isAddButton ? 22 : 24,
-                      })
-                    : (
-                      <IconSymbol
-                        size={isAddButton ? 22 : 24}
-                        name={isFocused ? fallbackIcon.focused : fallbackIcon.unfocused}
-                        color={iconColor}
-                      />
-                    )}
+                  <IconSymbol
+                    size={isAddButton ? 22 : 24}
+                    name={isFocused ? fallbackIcon.focused : fallbackIcon.unfocused}
+                    color={iconColor}
+                  />
                   <Text
                     style={[
                       styles.marketTabLabel,
@@ -195,7 +215,11 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   }
 
   // Seller tabs: index, products, analytics, settings
-  const visibleTabs = [
+  const visibleTabs: {
+    route: (typeof state.routes)[number];
+    index: number;
+    name: 'index' | 'products' | 'analytics' | 'settings';
+  }[] = [
     { route: state.routes[0], index: 0, name: 'index' },
     { route: state.routes[1], index: 1, name: 'products' },
     { route: state.routes[3], index: 3, name: 'analytics' }, // skip orders
@@ -232,24 +256,24 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
       <View style={styles.tabsContainer}>
         {/* Left 2 tabs: Home, Products */}
         {visibleTabs.slice(0, 2).map(({ route, index }) => {
-          const { options } = descriptors[route.key];
           const isFocused = isRouteFocused(route.key);
-          const icon = options.tabBarIcon as any;
+          const iconSpec = SELLER_ICONS[route.name as keyof typeof SELLER_ICONS];
+          const iconColor = isFocused ? focusedAccentColor : colors.textSecondary;
 
           return (
             <TouchableOpacity
               key={route.key}
               accessibilityRole="button"
               accessibilityState={isFocused ? { selected: true } : {}}
-              accessibilityLabel={options.tabBarAccessibilityLabel}
+              accessibilityLabel={descriptors[route.key]?.options?.tabBarAccessibilityLabel}
               onPress={() => handleTabPress(route, index)}
               style={styles.tabButton}
             >
-              {icon && icon({ 
-                focused: isFocused, 
-                color: isFocused ? colors.primary : colors.textSecondary, 
-                size: 24 
-              })}
+              <IconSymbol
+                size={24}
+                name={isFocused ? iconSpec.focused : iconSpec.unfocused}
+                color={iconColor}
+              />
             </TouchableOpacity>
           );
         })}
@@ -259,24 +283,24 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
 
         {/* Right 2 tabs: Analytics, Settings */}
         {visibleTabs.slice(2, 4).map(({ route, index }) => {
-          const { options } = descriptors[route.key];
           const isFocused = isRouteFocused(route.key);
-          const icon = options.tabBarIcon as any;
+          const iconSpec = SELLER_ICONS[route.name as keyof typeof SELLER_ICONS];
+          const iconColor = isFocused ? focusedAccentColor : colors.textSecondary;
 
           return (
             <TouchableOpacity
               key={route.key}
               accessibilityRole="button"
               accessibilityState={isFocused ? { selected: true } : {}}
-              accessibilityLabel={options.tabBarAccessibilityLabel}
+              accessibilityLabel={descriptors[route.key]?.options?.tabBarAccessibilityLabel}
               onPress={() => handleTabPress(route, index)}
               style={styles.tabButton}
             >
-              {icon && icon({ 
-                focused: isFocused, 
-                color: isFocused ? colors.primary : colors.textSecondary, 
-                size: 24 
-              })}
+              <IconSymbol
+                size={24}
+                name={isFocused ? iconSpec.focused : iconSpec.unfocused}
+                color={iconColor}
+              />
             </TouchableOpacity>
           );
         })}
@@ -306,6 +330,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     zIndex: 1000,
   },
+  marketContainerOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   marketBar: {
     minHeight: 64,
     borderRadius: 24,
@@ -315,6 +345,15 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 6,
     ...premiumShadow,
+  },
+  marketBarOverlay: {
+    backgroundColor: 'rgba(8,8,8,0.32)',
+    borderColor: 'rgba(255,255,255,0.16)',
+    overflow: 'hidden',
+  },
+  marketBarBlur: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
   },
   marketTabButton: {
     flex: 1,

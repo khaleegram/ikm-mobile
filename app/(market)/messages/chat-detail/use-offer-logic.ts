@@ -4,6 +4,18 @@ import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
 import { parseMarketOfferLink } from '@/lib/utils/market-offer-link';
 import { MarketMessage } from '@/types';
 
+const ASK_PRICE_PHRASES = [
+  'ask for price',
+  'best price',
+  'share your best price',
+  'your best price',
+  'final price',
+  'what is the price',
+  'how much',
+  'price?',
+  'send offer',
+];
+
 type UseOfferLogicParams = {
   contextPostId: string | null;
   displayMessages: MarketMessage[];
@@ -45,13 +57,8 @@ export function useOfferLogic({
 
     return displayMessages.some((message) => {
       if (String(message.senderId || '') === userId) return false;
-      const text = String(message.message || '').toLowerCase();
-      const hasAskPhrase =
-        text.includes('ask for price') ||
-        text.includes('best price') ||
-        text.includes('share your best price') ||
-        text.includes('price');
-      return Boolean(message.quoteCard) || hasAskPhrase;
+      const text = String((message as any).text || message.message || '').toLowerCase();
+      return ASK_PRICE_PHRASES.some((phrase) => text.includes(phrase));
     });
   }, [displayMessages, userId]);
 

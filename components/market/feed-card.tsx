@@ -12,6 +12,8 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPostLikes } from '@/lib/firebase/firestore/market-posts';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { haptics } from '@/lib/utils/haptics';
+import { isVideoMarketPost } from '@/lib/utils/market-media';
+import { MarketVideoSurface } from './market-video-surface';
 import { PostOverlay } from './post-overlay';
 
 const { width, height } = Dimensions.get('window');
@@ -19,11 +21,18 @@ const viewedPostIds = new Set<string>();
 interface FeedCardProps {
   post: MarketPost;
   itemHeight?: number;
+  isActive?: boolean;
   onComment?: () => void;
   onShare?: () => void;
 }
 
-export const FeedCard = React.memo(function FeedCard({ post, itemHeight, onComment, onShare }: FeedCardProps) {
+export const FeedCard = React.memo(function FeedCard({
+  post,
+  itemHeight,
+  isActive = false,
+  onComment,
+  onShare,
+}: FeedCardProps) {
   const { user } = useUser();
   const { likes, isLiked } = useMarketPostLikes(post.id || null, user?.uid || null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -31,6 +40,7 @@ export const FeedCard = React.memo(function FeedCard({ post, itemHeight, onComme
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
   const [isLiking, setIsLiking] = useState(false);
   const cardHeight = itemHeight ?? height;
+  const isVideo = isVideoMarketPost(post);
 
   const handleLike = useCallback(async () => {
     if (!user) {
@@ -107,30 +117,47 @@ export const FeedCard = React.memo(function FeedCard({ post, itemHeight, onComme
 
   return (
     <View style={[styles.container, { width, height: cardHeight }]}>
-      {/* Image Gallery */}
-      <ScrollView
-        ref={scrollViewRef}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        onMomentumScrollEnd={handleImageScroll}
-        style={styles.imageScrollView}>
-        {post.images.map((imageUri, index) => (
-          <Image
-            key={`${post.id}-${index}`}
-            source={{ uri: imageUri }}
-            style={[styles.image, { height: cardHeight }]}
-            contentFit="cover"
-            transition={200}
-            placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
-            cachePolicy="memory-disk"
-            recyclingKey={`${post.id}-${index}`}
-          />
-        ))}
-      </ScrollView>
+      {isVideo && post.videoUrl ? (
+        <MarketVideoSurface
+          active={isActive}
+          videoUri={post.videoUrl}
+          externalSoundUri={
+            post.soundMeta?.sourceType === 'original'
+              ? undefined
+              : post.soundMeta?.sourceUri
+                ? post.soundMeta.sourceUri
+                : undefined
+          }
+          externalSoundVolume={post.soundMeta?.soundVolume}
+          originalAudioVolume={post.soundMeta?.originalAudioVolume}
+          soundStartMs={post.soundMeta?.startMs}
+          useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
+        />
+      ) : (
+        <ScrollView
+          ref={scrollViewRef}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onMomentumScrollEnd={handleImageScroll}
+          style={styles.imageScrollView}>
+          {post.images.map((imageUri, index) => (
+            <Image
+              key={`${post.id}-${index}`}
+              source={{ uri: imageUri }}
+              style={[styles.image, { height: cardHeight }]}
+              contentFit="cover"
+              transition={200}
+              placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
+              cachePolicy="memory-disk"
+              recyclingKey={`${post.id}-${index}`}
+            />
+          ))}
+        </ScrollView>
+      )}
 
       {/* Image Pagination Dots */}
-      {post.images.length > 1 && (
+      {!isVideo && post.images.length > 1 && (
         <View style={styles.paginationContainer}>
           {post.images.map((_, index) => (
             <View
@@ -166,9 +193,11 @@ export const FeedCard = React.memo(function FeedCard({ post, itemHeight, onComme
   return (
     prevProps.post.id === nextProps.post.id &&
     prevProps.itemHeight === nextProps.itemHeight &&
+    prevProps.isActive === nextProps.isActive &&
     prevProps.post.likes === nextProps.post.likes &&
     prevProps.post.comments === nextProps.post.comments &&
-    prevProps.post.images.length === nextProps.post.images.length
+    prevProps.post.images.length === nextProps.post.images.length &&
+    prevProps.post.videoUrl === nextProps.post.videoUrl
   );
 });
 

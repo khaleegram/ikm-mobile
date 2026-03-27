@@ -1,34 +1,117 @@
 import React, { useRef, useCallback } from 'react';
 import {
   View,
-  FlatList,
   Dimensions,
   RefreshControl,
   ActivityIndicator,
+  Alert,
   Text,
   StyleSheet,
   StatusBar,
   TouchableOpacity,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showToast } from '@/components/toast';
 import { useMarketPosts } from '@/lib/firebase/firestore/market-posts';
 import { FeedCard } from '@/components/market/feed-card';
+import { FlashListCompat } from '@/components/layout/flash-list-compat';
 import { MarketPost } from '@/types';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { firestore } from '@/lib/firebase/config';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
+import { getDeviceCoordinates } from '@/lib/utils/device-location';
+import { buildMarketPostStableKey } from '@/lib/utils/market-media';
+import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { router } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
 const { height } = Dimensions.get('window');
 const lightBrown = '#A67C52';
+const SNAP_TOLERANCE_PX = 2;
+const MARKET_LOCATION_PROMPT_KEY = '@ikm_market_location_prompted_v1';
 
 export default function MarketFeedScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { user } = useUser();
+  const { user: profile } = useUserProfile(user?.uid || null);
   const { posts, loading, error, loadMore, hasMore, refresh } = useMarketPosts();
   const [refreshing, setRefreshing] = React.useState(false);
   const [viewportHeight, setViewportHeight] = React.useState(height);
-  const flatListRef = useRef<FlatList>(null);
+  const [activePostId, setActivePostId] = React.useState<string | null>(null);
+  const flatListRef = useRef<any>(null);
+  const isProgrammaticSnapRef = useRef(false);
+  const hasShownLocationPromptRef = useRef(false);
+  const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
+  const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
+    const firstVisible = viewableItems?.[0]?.item as MarketPost | undefined;
+    setActivePostId(firstVisible?.id || null);
+  }).current;
+
+  React.useEffect(() => {
+    if (!user?.uid || !profile) return;
+    if (hasShownLocationPromptRef.current) return;
+
+    const rawLocation = (profile as any)?.marketBuyerLocation || {};
+    const latitude = Number(rawLocation.latitude);
+    const longitude = Number(rawLocation.longitude);
+    const hasCoordinates =
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      Math.abs(latitude) > 0.0001 &&
+      Math.abs(longitude) > 0.0001;
+    if (hasCoordinates) return;
+
+    hasShownLocationPromptRef.current = true;
+
+    void (async () => {
+      try {
+        const alreadyPrompted = await AsyncStorage.getItem(MARKET_LOCATION_PROMPT_KEY);
+        if (alreadyPrompted) return;
+        await AsyncStorage.setItem(MARKET_LOCATION_PROMPT_KEY, '1');
+
+        Alert.alert(
+          'Use your location?',
+          'Allow IKM to use your device location to help prefill delivery settings. You can change it during checkout.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            {
+              text: 'Allow',
+              onPress: () => {
+                void (async () => {
+                  try {
+                    const coords = await getDeviceCoordinates();
+                    await setDoc(
+                      doc(firestore, 'users', user.uid),
+                      {
+                        marketBuyerLocation: {
+                          state: String(rawLocation.state || '').trim(),
+                          city: String(rawLocation.city || '').trim(),
+                          address: String(rawLocation.address || '').trim(),
+                          latitude: coords.latitude,
+                          longitude: coords.longitude,
+                        },
+                        updatedAt: serverTimestamp(),
+                      },
+                      { merge: true }
+                    );
+                    showToast('Device location saved.', 'success');
+                  } catch (locationError: any) {
+                    showToast(locationError?.message || 'Unable to capture location.', 'error');
+                  }
+                })();
+              },
+            },
+          ]
+        );
+      } catch {
+        // Never block the feed for a prompt storage issue.
+      }
+    })();
+  }, [profile, user?.uid]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -47,14 +130,71 @@ export default function MarketFeedScreen() {
     router.push(`/(market)/post/${postId}` as any);
   }, []);
 
-  const renderItem = useCallback(
-    ({ item }: { item: MarketPost }) => (
-      <FeedCard post={item} itemHeight={viewportHeight} onComment={() => handleComment(item.id!)} />
-    ),
-    [handleComment, viewportHeight]
+  const settleToNearestPost = useCallback(
+    (rawOffsetY: number, animated: boolean) => {
+      const listRef = flatListRef.current;
+      if (!listRef || posts.length === 0) return;
+      const pageHeight = Math.max(1, viewportHeight);
+      const clampedOffset = Math.max(0, Number(rawOffsetY || 0));
+      const nearestIndex = Math.max(0, Math.min(posts.length - 1, Math.round(clampedOffset / pageHeight)));
+      const targetOffset = nearestIndex * pageHeight;
+
+      if (Math.abs(targetOffset - clampedOffset) <= SNAP_TOLERANCE_PX) return;
+      if (typeof listRef.scrollToOffset !== 'function') return;
+
+      isProgrammaticSnapRef.current = true;
+      listRef.scrollToOffset({ offset: targetOffset, animated });
+      setTimeout(() => {
+        isProgrammaticSnapRef.current = false;
+      }, 140);
+    },
+    [posts.length, viewportHeight]
   );
 
-  const keyExtractor = useCallback((item: MarketPost) => item.id || Math.random().toString(), []);
+  const handleMomentumScrollEnd = useCallback(
+    (event: any) => {
+      if (isProgrammaticSnapRef.current) return;
+      const offsetY = Number(event?.nativeEvent?.contentOffset?.y || 0);
+      settleToNearestPost(offsetY, true);
+    },
+    [settleToNearestPost]
+  );
+
+  const handleScrollEndDrag = useCallback(
+    (event: any) => {
+      if (isProgrammaticSnapRef.current) return;
+      const velocityY = Number(event?.nativeEvent?.velocity?.y || 0);
+      if (Math.abs(velocityY) > 0.05) return;
+      const offsetY = Number(event?.nativeEvent?.contentOffset?.y || 0);
+      settleToNearestPost(offsetY, true);
+    },
+    [settleToNearestPost]
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: MarketPost }) => (
+      <FeedCard
+        post={item}
+        itemHeight={viewportHeight}
+        isActive={item.id === activePostId}
+        onComment={() => handleComment(item.id!)}
+      />
+    ),
+    [activePostId, handleComment, viewportHeight]
+  );
+
+  const keyExtractor = useCallback(
+    (item: MarketPost) => buildMarketPostStableKey(item),
+    []
+  );
+
+  React.useEffect(() => {
+    if (!posts.length) {
+      setActivePostId(null);
+      return;
+    }
+    setActivePostId((current) => current || posts[0]?.id || null);
+  }, [posts]);
 
   const getItemLayout = useCallback(
     (_: any, index: number) => ({
@@ -148,15 +288,25 @@ export default function MarketFeedScreen() {
       }}>
       <StatusBar barStyle="light-content" translucent />
 
-      <FlatList
+      <FlashListCompat
         ref={flatListRef}
         data={posts}
         renderItem={renderItem}
         keyExtractor={keyExtractor}
+        estimatedItemSize={viewportHeight}
         pagingEnabled={true}
         snapToInterval={viewportHeight}
+        snapToAlignment="start"
+        disableIntervalMomentum
         decelerationRate="fast"
+        bounces={false}
+        alwaysBounceVertical={false}
+        overScrollMode="never"
         showsVerticalScrollIndicator={false}
+        onMomentumScrollEnd={handleMomentumScrollEnd}
+        onScrollEndDrag={handleScrollEndDrag}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
         onEndReached={handleEndReached}
         onEndReachedThreshold={0.5}
         refreshControl={

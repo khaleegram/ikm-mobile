@@ -9,10 +9,8 @@ import { lightBrown } from './utils';
 
 type ChatComposerProps = {
   colors: any;
-  keyboardVisible: boolean;
   messageText: string;
   onChangeMessageText: (value: string) => void;
-  onFocusInput: () => void;
   onOpenOffer: () => void;
   onPickImage: () => void;
   onSend: () => void;
@@ -24,10 +22,8 @@ type ChatComposerProps = {
 export function ChatComposer({
   colors,
   insetBottom,
-  keyboardVisible,
   messageText,
   onChangeMessageText,
-  onFocusInput,
   onOpenOffer,
   onPickImage,
   onSend,
@@ -43,7 +39,7 @@ export function ChatComposer({
         {
           backgroundColor: colors.card,
           borderTopColor: colors.border,
-          paddingBottom: keyboardVisible ? 0 : insetBottom + 12,
+          paddingBottom: insetBottom + 12,
         },
       ]}>
       {showInlineOfferCta ? (
@@ -76,7 +72,6 @@ export function ChatComposer({
           placeholderTextColor={colors.textSecondary}
           value={messageText}
           onChangeText={onChangeMessageText}
-          onFocus={onFocusInput}
           multiline
           maxLength={1000}
         />

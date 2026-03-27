@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 
 import { marketMessagesApi } from '@/lib/api/market-messages';
@@ -7,9 +7,10 @@ import {
   useMarketChatMeta,
   useMarketConversationMessages,
 } from '@/lib/firebase/firestore/market-messages';
+import { getQueuedMarketMessages, removeQueuedWrite } from '@/lib/utils/offline';
 import { MarketMessage } from '@/types';
 
-import { getStableMessageKey, isDirectConversationId, toMs } from './utils';
+import { getMessageTimeMs, getStableMessageKey, isDirectConversationId } from './utils';
 
 type UseChatMessagesParams = {
   activeChatId: string | null;
@@ -28,9 +29,30 @@ type UseChatMessagesResult = {
   pendingMessages: MarketMessage[];
   renderedMessages: MarketMessage[];
   setPendingMessages: Dispatch<SetStateAction<MarketMessage[]>>;
+  markLatestVisibleIncomingAsRead: (messageId: string) => void;
   unreadCount: number;
   unreadDividerMessageId: string;
 };
+
+function normalizeDate(value: unknown): Date {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value;
+  const parsed = new Date(value as any);
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date(0);
+}
+
+function normalizeMessage(
+  message: MarketMessage,
+  fallbackChatId: string
+): MarketMessage {
+  const stableId = getStableMessageKey(message, fallbackChatId);
+  const text = String((message as any).text || message.message || '').trim();
+  return {
+    ...message,
+    id: stableId,
+    text,
+    createdAt: normalizeDate((message as any).createdAt),
+  } as MarketMessage;
+}
 
 export function useChatMessages({
   activeChatId,
@@ -40,6 +62,7 @@ export function useChatMessages({
 }: UseChatMessagesParams): UseChatMessagesResult {
   const lastMarkedReadMessageIdRef = useRef<string>('');
   const [pendingMessages, setPendingMessages] = useState<MarketMessage[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<MarketMessage[]>([]);
   const [unreadSnapshotCount, setUnreadSnapshotCount] = useState(0);
   const [unreadSnapshotMessageId, setUnreadSnapshotMessageId] = useState('');
 
@@ -76,14 +99,106 @@ export function useChatMessages({
     return candidate || null;
   }, [legacyChat]);
 
+  const serverMessages = useMemo(() => {
+    const merged = new Map<string, MarketMessage>();
+    [...legacyMessages, ...conversationMessages].forEach((message) => {
+      const normalized = normalizeMessage(message, String(activeChatId || 'chat'));
+      merged.set(String(normalized.id), normalized);
+    });
+    return [...merged.values()].sort(
+      (left, right) => getMessageTimeMs(left.createdAt) - getMessageTimeMs(right.createdAt)
+    );
+  }, [legacyMessages, conversationMessages, activeChatId]);
+
+  const hydrateQueuedMessages = useCallback(async () => {
+    if (!userId || !activeChatId || !isDirectConversationId(activeChatId)) {
+      setQueuedMessages([]);
+      return;
+    }
+
+    const queuedWrites = await getQueuedMarketMessages(activeChatId);
+    if (queuedWrites.length === 0) {
+      setQueuedMessages([]);
+      return;
+    }
+
+    const retained: MarketMessage[] = [];
+    const staleWriteIds: string[] = [];
+
+    queuedWrites.forEach((write) => {
+      const clientMessageId = String(write.data?.clientMessageId || '').trim();
+      const queuedText = String(write.data?.text || write.data?.message || '').trim();
+      const queuedTimestamp = Number(write.timestamp || 0);
+      const queuedImageUrl = String(write.data?.imageUrl || '').trim();
+      const queuedPaymentLink = String(write.data?.paymentLink || '').trim();
+      const queuedQuoteCard = write.data?.quoteCard;
+      const normalizedClientMessageId = clientMessageId || String(write.id || '').trim();
+
+      const matched = serverMessages.some((serverMessage) => {
+        if (!normalizedClientMessageId) return false;
+        if (String(serverMessage.senderId || '') !== userId) return false;
+        const serverClientMessageId = String((serverMessage as any)?.clientMessageId || '').trim();
+        if (!serverClientMessageId) return false;
+        return normalizedClientMessageId === serverClientMessageId;
+      });
+
+      if (matched) {
+        staleWriteIds.push(write.id);
+        return;
+      }
+
+      retained.push({
+        id: clientMessageId || write.id,
+        chatId: activeChatId,
+        senderId: userId,
+        receiverId: '',
+        postId: String(queuedQuoteCard?.postId || '').trim(),
+        text: queuedText,
+        clientMessageId: normalizedClientMessageId || undefined,
+        imageUrl: queuedImageUrl || undefined,
+        paymentLink: queuedPaymentLink || undefined,
+        quoteCard: queuedQuoteCard,
+        read: false,
+        createdAt: normalizeDate(queuedTimestamp || Date.now()),
+      } as MarketMessage);
+    });
+
+    if (staleWriteIds.length > 0) {
+      await Promise.all(staleWriteIds.map((writeId) => removeQueuedWrite(writeId)));
+    }
+
+    retained.sort(
+      (left, right) => getMessageTimeMs(left.createdAt) - getMessageTimeMs(right.createdAt)
+    );
+    setQueuedMessages(retained);
+  }, [activeChatId, serverMessages, userId]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const run = async () => {
+      if (!isMounted) return;
+      await hydrateQueuedMessages();
+    };
+
+    run();
+    const interval = setInterval(run, 2500);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [hydrateQueuedMessages]);
+
   const visibleMessages = useMemo(() => {
     const merged = new Map<string, MarketMessage>();
-    [...legacyMessages, ...conversationMessages, ...pendingMessages].forEach((message) => {
-      const stableId = getStableMessageKey(message, String(activeChatId || 'chat'));
-      merged.set(stableId, { ...message, id: stableId });
+    [...serverMessages, ...queuedMessages, ...pendingMessages].forEach((message) => {
+      const normalized = normalizeMessage(message, String(activeChatId || 'chat'));
+      merged.set(String(normalized.id), normalized);
     });
-    return [...merged.values()].sort((left, right) => toMs(left.createdAt) - toMs(right.createdAt));
-  }, [legacyMessages, conversationMessages, pendingMessages, activeChatId]);
+    return [...merged.values()].sort(
+      (left, right) => getMessageTimeMs(left.createdAt) - getMessageTimeMs(right.createdAt)
+    );
+  }, [serverMessages, queuedMessages, pendingMessages, activeChatId]);
 
   const displayMessages = useMemo(() => {
     if (visibleMessages.length > 0) return visibleMessages;
@@ -105,13 +220,14 @@ export function useChatMessages({
         ),
         receiverId: '',
         postId: legacyPostId || '',
-        message: fallbackText,
+        text: fallbackText,
         read: true,
-        createdAt:
+        createdAt: normalizeDate(
           (legacyChat as any)?.updatedAt ||
-          (legacyChat as any)?.lastMessageAt ||
-          (legacyChat as any)?.createdAt ||
-          new Date(),
+            (legacyChat as any)?.lastMessageAt ||
+            (legacyChat as any)?.createdAt ||
+            new Date()
+        ),
       } as MarketMessage,
     ];
   }, [visibleMessages, resolvedPeerId, loading, legacyChat, activeChatId, legacyPostId]);
@@ -125,15 +241,6 @@ export function useChatMessages({
       .find((message) => String(message.quoteCard?.postId || message.postId || '').trim().length > 0);
     return String(latestWithPost?.quoteCard?.postId || latestWithPost?.postId || '').trim() || null;
   }, [displayMessages, legacyPostId]);
-
-  const unreadCountFromMeta = useMemo(() => {
-    if (!userId || !activeChatMeta) return 0;
-    const unreadByUser = (activeChatMeta as any)?.unreadCountByUser;
-    if (unreadByUser && typeof unreadByUser === 'object') {
-      return Number(unreadByUser[userId] || 0);
-    }
-    return Number((activeChatMeta as any)?.unreadCount || 0);
-  }, [activeChatMeta, userId]);
 
   const lastReadMessageIdFromMeta = useMemo(() => {
     if (!userId || !activeChatMeta) return '';
@@ -154,10 +261,7 @@ export function useChatMessages({
       .filter((message) => String(message.senderId || '') !== userId);
   }, [displayMessages, lastReadMessageIdFromMeta, userId]);
 
-  const effectiveUnreadCount = useMemo(
-    () => Math.max(unreadCountFromMeta, unreadMessagesByPointer.length),
-    [unreadCountFromMeta, unreadMessagesByPointer.length]
-  );
+  const effectiveUnreadCount = unreadMessagesByPointer.length;
 
   useEffect(() => {
     setUnreadSnapshotCount(0);
@@ -211,18 +315,12 @@ export function useChatMessages({
       let changed = false;
       const next = previous.filter((pending) => {
         const pendingClientMessageId = String((pending as any)?.clientMessageId || '').trim();
-        const matched = displayMessages.some((serverMessage) => {
+        if (!pendingClientMessageId) return true;
+        const matched = serverMessages.some((serverMessage) => {
           if (serverMessage.senderId !== userId) return false;
           const serverClientMessageId = String((serverMessage as any)?.clientMessageId || '').trim();
-          if (pendingClientMessageId && serverClientMessageId) {
-            return serverClientMessageId === pendingClientMessageId;
-          }
-
-          if ((serverMessage.message || '').trim() !== (pending.message || '').trim()) return false;
-          if (String(serverMessage.chatId || '') !== String(pending.chatId || '')) return false;
-          const serverTime = toMs(serverMessage.createdAt);
-          const pendingTime = toMs(pending.createdAt);
-          return serverTime >= pendingTime - 60000 && serverTime - pendingTime <= 24 * 60 * 60 * 1000;
+          if (!serverClientMessageId) return false;
+          return serverClientMessageId === pendingClientMessageId;
         });
         if (!matched) return true;
         changed = true;
@@ -231,31 +329,24 @@ export function useChatMessages({
 
       return changed ? next : previous;
     });
-  }, [displayMessages, pendingMessages.length, userId]);
+  }, [serverMessages, displayMessages.length, pendingMessages.length, userId]);
 
-  useEffect(() => {
-    if (!userId || !activeChatId || !isDirectConversationId(activeChatId) || displayMessages.length === 0) {
-      return;
-    }
+  const markLatestVisibleIncomingAsRead = useCallback(
+    (messageId: string) => {
+      const normalizedMessageId = String(messageId || '').trim();
+      if (!normalizedMessageId) return;
+      if (!userId || !activeChatId || !isDirectConversationId(activeChatId)) return;
+      if (lastMarkedReadMessageIdRef.current === normalizedMessageId) return;
 
-    const incomingMessageIds = displayMessages
-      .filter((item) => item.senderId !== userId)
-      .map((item) => String(item.id || '').trim())
-      .filter(Boolean);
-
-    if (incomingMessageIds.length === 0) return;
-    const latestIncomingId = incomingMessageIds[incomingMessageIds.length - 1];
-    if (!latestIncomingId || lastMarkedReadMessageIdRef.current === latestIncomingId) {
-      return;
-    }
-
-    lastMarkedReadMessageIdRef.current = latestIncomingId;
-    marketMessagesApi.markAsRead(activeChatId, [latestIncomingId]).catch(() => {
-      if (lastMarkedReadMessageIdRef.current === latestIncomingId) {
-        lastMarkedReadMessageIdRef.current = '';
-      }
-    });
-  }, [activeChatId, displayMessages, userId]);
+      lastMarkedReadMessageIdRef.current = normalizedMessageId;
+      marketMessagesApi.markAsRead(activeChatId, normalizedMessageId).catch(() => {
+        if (lastMarkedReadMessageIdRef.current === normalizedMessageId) {
+          lastMarkedReadMessageIdRef.current = '';
+        }
+      });
+    },
+    [activeChatId, userId]
+  );
 
   return {
     contextPostId,
@@ -267,6 +358,7 @@ export function useChatMessages({
     pendingMessages,
     renderedMessages,
     setPendingMessages,
+    markLatestVisibleIncomingAsRead,
     unreadCount,
     unreadDividerMessageId,
   };

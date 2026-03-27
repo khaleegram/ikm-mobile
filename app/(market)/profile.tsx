@@ -20,13 +20,15 @@ import { showToast } from '@/components/toast';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { firestore } from '@/lib/firebase/config';
-import { useUserLikesCount, useUserMarketPosts } from '@/lib/firebase/firestore/market-posts';
-import { useSellerOrders } from '@/lib/firebase/firestore/orders';
+import { useUserMarketPosts } from '@/lib/firebase/firestore/market-posts';
+import { useSellerOrders, useUserOrders } from '@/lib/firebase/firestore/orders';
+import { useSellerPayouts } from '@/lib/firebase/firestore/payouts';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant, getSignupRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import { uploadImage } from '@/lib/utils/image-upload';
+import { toNameCase } from '@/lib/utils/name-case';
 import { shareMarketPost } from '@/lib/utils/market-post-share';
 import { MarketPost } from '@/types';
 
@@ -39,16 +41,6 @@ function getInitials(value: string): string {
     .map((word) => word.charAt(0).toUpperCase())
     .join('')
     .slice(0, 2);
-}
-
-function formatJoinedDate(value: unknown): string {
-  if (!value) return 'Recently';
-  const date =
-    value instanceof Date ? value : typeof (value as { toDate?: () => Date }).toDate === 'function'
-      ? (value as { toDate: () => Date }).toDate()
-      : null;
-  if (!date || Number.isNaN(date.getTime())) return 'Recently';
-  return date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 }
 
 function formatPostDate(value: unknown): string {
@@ -71,33 +63,49 @@ export default function ProfileScreen() {
   const { user } = useUser();
   const { user: profile, loading: profileLoading } = useUserProfile(user?.uid ?? null);
   const { posts, loading: postsLoading } = useUserMarketPosts(user?.uid ?? null);
-  const { likesCount, loading: likesLoading } = useUserLikesCount(user?.uid ?? null);
-  const { orders, loading: ordersLoading } = useSellerOrders(user?.uid ?? null);
+  const { orders: marketOrders, loading: marketOrdersLoading } = useUserOrders(user?.uid ?? null);
+  const { orders: sellerOrders, loading: sellerOrdersLoading } = useSellerOrders(user?.uid ?? null);
+  const { payouts, loading: payoutsLoading } = useSellerPayouts(user?.uid ?? null);
 
   const [managedPost, setManagedPost] = useState<MarketPost | null>(null);
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   const [updatingProfilePhoto, setUpdatingProfilePhoto] = useState(false);
 
-  const displayName = useMemo(
-    () => profile?.displayName || user?.displayName || user?.email || 'Market User',
-    [profile?.displayName, user?.displayName, user?.email]
-  );
+  const displayName = useMemo(() => {
+    const rawName = String(profile?.displayName || user?.displayName || '').trim();
+    if (rawName) return toNameCase(rawName);
+    return user?.email || 'Market User';
+  }, [profile?.displayName, user?.displayName, user?.email]);
   const profilePhotoUrl = useMemo(() => String(profile?.storeLogoUrl || '').trim(), [profile?.storeLogoUrl]);
   const initials = useMemo(() => getInitials(displayName), [displayName]);
-  const joinedLabel = useMemo(() => formatJoinedDate(profile?.createdAt), [profile?.createdAt]);
   const roleLabel = useMemo(() => {
     if (user?.isAdmin) return 'Administrator';
     if (user?.isSeller || profile?.storeName) return 'Seller and Buyer';
     return 'Market User';
   }, [profile?.storeName, user?.isAdmin, user?.isSeller]);
-  const totalSales = useMemo(() => {
-    return orders.reduce((sum, order) => {
+  const marketOrdersCount = useMemo(() => marketOrders.length, [marketOrders.length]);
+  const availableWithdrawableBalance = useMemo(() => {
+    const eligibleReleasedAmount = sellerOrders.reduce((sum, order) => {
       const status = String(order.status || '').toLowerCase();
-      const isCounted = status === 'completed' || status === 'received';
-      const amount = typeof order.total === 'number' ? order.total : 0;
-      return isCounted ? sum + amount : sum;
+      const escrowStatus = String(order.escrowStatus || '').toLowerCase();
+      const hasReleasedSignal =
+        escrowStatus === 'released' ||
+        Boolean(order.fundsReleasedAt) ||
+        status === 'completed' ||
+        status === 'received';
+      const amount = Number(order.total || 0);
+      return hasReleasedSignal && Number.isFinite(amount) ? sum + amount : sum;
     }, 0);
-  }, [orders]);
+
+    const committedPayoutAmount = payouts.reduce((sum, payout) => {
+      const status = String(payout.status || '').toLowerCase();
+      const shouldReserve = status === 'pending' || status === 'processing' || status === 'completed';
+      const amount = Number(payout.amount || 0);
+      return shouldReserve && Number.isFinite(amount) ? sum + amount : sum;
+    }, 0);
+
+    return Math.max(0, eligibleReleasedAmount - committedPayoutAmount);
+  }, [payouts, sellerOrders]);
 
   const handleRoutePress = (path: string) => {
     haptics.light();
@@ -287,25 +295,28 @@ export default function ProfileScreen() {
 
         <View style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <View style={styles.profileTopRow}>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={openProfilePhotoOptions}
-            disabled={updatingProfilePhoto}
-            style={[styles.avatar, { backgroundColor: `${lightBrown}1E` }]}>
-            {profilePhotoUrl ? (
-              <Image source={{ uri: profilePhotoUrl }} style={styles.avatarImage} contentFit="cover" />
-            ) : (
-              <Text style={[styles.avatarText, { color: lightBrown }]}>{initials || 'MU'}</Text>
-            )}
-            <View style={styles.avatarBadge}>
-              <IconSymbol name="photo.fill" size={12} color="#FFFFFF" />
+          <View style={styles.avatarWrap}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={openProfilePhotoOptions}
+              disabled={updatingProfilePhoto}
+              style={[styles.avatar, { backgroundColor: `${lightBrown}1E` }]}>
+              {profilePhotoUrl ? (
+                <Image source={{ uri: profilePhotoUrl }} style={styles.avatarImage} contentFit="cover" />
+              ) : (
+                <Text style={[styles.avatarText, { color: lightBrown }]}>{initials || 'MU'}</Text>
+              )}
+              {updatingProfilePhoto ? (
+                <View style={styles.avatarOverlay}>
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                </View>
+              ) : null}
+            </TouchableOpacity>
+
+            <View style={styles.avatarAddBadge}>
+              <IconSymbol name="plus" size={13} color="#FFFFFF" />
             </View>
-            {updatingProfilePhoto ? (
-              <View style={styles.avatarOverlay}>
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              </View>
-            ) : null}
-          </TouchableOpacity>
+          </View>
           <View style={styles.profileMeta}>
             <Text style={[styles.profileName, { color: colors.text }]} numberOfLines={1}>
               {displayName}
@@ -318,34 +329,60 @@ export default function ProfileScreen() {
               <Text style={[styles.roleChipText, { color: lightBrown }]}>{roleLabel}</Text>
             </View>
           </View>
-        </View>
-      </View>
-
-      <View style={styles.statsRow}>
-        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.statValue, { color: colors.text }]}>{postsLoading ? '...' : posts.length}</Text>
-          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Posts</Text>
-        </View>
-        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.statValue, { color: colors.text }]}>{likesLoading ? '...' : likesCount}</Text>
-          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Likes</Text>
-        </View>
-        <View style={[styles.statCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.statDateValue, { color: colors.text }]}>{joinedLabel}</Text>
-          <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Joined</Text>
-        </View>
-      </View>
-
-      <View style={[styles.salesCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <View style={styles.salesRow}>
-          <View style={styles.salesLeft}>
-            <IconSymbol name="dollarsign.circle.fill" size={22} color={lightBrown} />
-            <Text style={[styles.salesLabel, { color: colors.textSecondary }]}>Total Sales</Text>
+          <View
+            style={[
+              styles.profilePostsCard,
+              {
+                backgroundColor: colors.backgroundSecondary,
+                borderColor: colors.border,
+              },
+            ]}>
+            <Text style={[styles.profilePostsLabel, { color: colors.textSecondary }]}>Posts</Text>
+            <Text style={[styles.profilePostsValue, { color: colors.text }]}>
+              {postsLoading ? '...' : posts.length}
+            </Text>
           </View>
-          <Text style={[styles.salesValue, { color: colors.text }]}>
-            {ordersLoading ? '...' : formatAmount(totalSales)}
-          </Text>
         </View>
+      </View>
+
+      <View style={[styles.withdrawCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <Text style={[styles.withdrawLabel, { color: colors.textSecondary }]}>Available balance</Text>
+        <View style={styles.withdrawActionRow}>
+          <Text style={[styles.withdrawAmount, { color: colors.text }]}>
+            {sellerOrdersLoading || payoutsLoading ? '...' : formatAmount(availableWithdrawableBalance)}
+          </Text>
+          <TouchableOpacity
+            style={[styles.withdrawButton, { backgroundColor: lightBrown }]}
+            onPress={() => handleRoutePress('/(market)/payouts')}>
+            <Text style={styles.withdrawButtonText}>Withdraw</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <View style={styles.splitActionRow}>
+        <TouchableOpacity
+          style={[styles.splitActionCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => handleRoutePress('/(market)/orders')}>
+          <View style={styles.splitActionTop}>
+            <IconSymbol name="shippingbox.fill" size={17} color={colors.text} />
+            <Text style={[styles.splitActionTitle, { color: colors.text }]}>Market Orders</Text>
+          </View>
+          <Text style={[styles.splitActionMeta, { color: colors.textSecondary }]}>
+            {marketOrdersLoading ? 'Loading...' : `${marketOrdersCount} orders`}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.splitActionCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => handleRoutePress('/(market)/delivery-settings')}>
+          <View style={styles.splitActionTop}>
+            <IconSymbol name="location.fill" size={17} color={colors.text} />
+            <Text style={[styles.splitActionTitle, { color: colors.text }]}>Delivery Settings</Text>
+          </View>
+          <Text style={[styles.splitActionMeta, { color: colors.textSecondary }]}>
+            Saved address and city
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.postsSectionHeader}>
@@ -518,12 +555,18 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 1,
     padding: 16,
+    paddingBottom: 18,
     marginBottom: 12,
   },
   profileTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 13,
+    gap: 10,
+  },
+  avatarWrap: {
+    width: 74,
+    alignItems: 'center',
+    position: 'relative',
   },
   avatar: {
     width: 74,
@@ -542,13 +585,14 @@ const styles = StyleSheet.create({
     fontSize: 27,
     fontWeight: '800',
   },
-  avatarBadge: {
+  avatarAddBadge: {
     position: 'absolute',
-    right: 3,
-    bottom: 3,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    left: '50%',
+    bottom: -7,
+    transform: [{ translateX: -11 }],
+    width: 23,
+    height: 23,
+    borderRadius: 12,
     backgroundColor: lightBrown,
     alignItems: 'center',
     justifyContent: 'center',
@@ -561,6 +605,27 @@ const styles = StyleSheet.create({
   },
   profileMeta: {
     flex: 1,
+  },
+  profilePostsCard: {
+    width: 86,
+    minHeight: 62,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+  },
+  profilePostsLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  profilePostsValue: {
+    marginTop: 4,
+    fontSize: 19,
+    fontWeight: '800',
   },
   profileName: {
     fontSize: 21,
@@ -584,60 +649,71 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
-  },
-  statCard: {
-    flex: 1,
-    minHeight: 84,
+  withdrawCard: {
     borderRadius: 16,
     borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+    minHeight: 72,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 10,
   },
-  statValue: {
-    fontSize: 24,
-    fontWeight: '800',
-  },
-  statDateValue: {
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  statLabel: {
-    marginTop: 4,
+  withdrawLabel: {
     fontSize: 11,
     fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 0.6,
+    letterSpacing: 0.4,
   },
-  salesCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 14,
-    marginBottom: 16,
-  },
-  salesRow: {
+  withdrawActionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: 6,
     gap: 10,
   },
-  salesLeft: {
+  withdrawAmount: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  withdrawButton: {
+    minHeight: 34,
+    minWidth: 90,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  withdrawButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  splitActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  splitActionCard: {
+    flex: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    minHeight: 74,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  splitActionTop: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  salesLabel: {
+  splitActionTitle: {
     fontSize: 13,
-    fontWeight: '700',
-  },
-  salesValue: {
-    fontSize: 18,
     fontWeight: '800',
+  },
+  splitActionMeta: {
+    marginTop: 6,
+    fontSize: 11,
+    fontWeight: '600',
   },
   postsSectionHeader: {
     marginBottom: 10,

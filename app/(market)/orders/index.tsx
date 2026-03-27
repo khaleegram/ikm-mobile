@@ -5,6 +5,7 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -63,22 +64,44 @@ export default function MarketOrdersScreen() {
 
   const [activeFilter, setActiveFilter] = useState<FilterKey>('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchText, setSearchText] = useState('');
 
   const { orders, loading } = useUserOrders(user?.uid || null);
 
   const filteredOrders = useMemo(() => {
     if (!user) return [];
+    const queryValue = searchText.trim().toLowerCase();
 
     return orders.filter((order) => {
       const isBuyer = order.customerId === user.uid;
       const isSeller = order.sellerId === user.uid;
 
-      if (activeFilter === 'buying') return isBuyer;
-      if (activeFilter === 'selling') return isSeller;
-      if (activeFilter === 'active') return isActiveStatus(order.status);
-      return true;
+      const matchesFilter =
+        activeFilter === 'buying'
+          ? isBuyer
+          : activeFilter === 'selling'
+            ? isSeller
+            : activeFilter === 'active'
+              ? isActiveStatus(order.status)
+              : true;
+
+      if (!matchesFilter) return false;
+      if (!queryValue) return true;
+
+      const firstItemName = String(order.items?.[0]?.name || '').toLowerCase();
+      const orderId = String(order.id || '').toLowerCase();
+      const status = String(order.status || '').toLowerCase();
+      const amountText = String(order.total || '').toLowerCase();
+
+      return (
+        firstItemName.includes(queryValue) ||
+        orderId.includes(queryValue) ||
+        status.includes(queryValue) ||
+        amountText.includes(queryValue)
+      );
     });
-  }, [activeFilter, orders, user]);
+  }, [activeFilter, orders, searchText, user]);
 
   const onRefresh = async () => {
     haptics.light();
@@ -115,6 +138,18 @@ export default function MarketOrdersScreen() {
           <Text style={styles.headerLabel}>MARKET STREET</Text>
           <Text style={styles.headerTitle}>Orders</Text>
         </View>
+        <TouchableOpacity
+          style={[styles.searchButton, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => {
+            haptics.light();
+            setSearchOpen((previous) => {
+              const next = !previous;
+              if (!next) setSearchText('');
+              return next;
+            });
+          }}>
+          <IconSymbol name={searchOpen ? 'xmark' : 'magnifyingglass'} size={16} color={colors.text} />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.filterRow}>
@@ -145,6 +180,25 @@ export default function MarketOrdersScreen() {
           );
         })}
       </View>
+
+      {searchOpen ? (
+        <View style={styles.searchRow}>
+          <View
+            style={[
+              styles.searchInputWrap,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}>
+            <IconSymbol name="magnifyingglass" size={15} color={colors.textSecondary} />
+            <TextInput
+              value={searchText}
+              onChangeText={setSearchText}
+              placeholder="Search by item, order ID, or status"
+              placeholderTextColor={colors.textSecondary}
+              style={[styles.searchInput, { color: colors.text }]}
+            />
+          </View>
+        </View>
+      ) : null}
 
       {loading ? (
         <View style={styles.center}>
@@ -238,6 +292,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  searchButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   headerIsland: {
     flex: 1,
     backgroundColor: lightBrown,
@@ -262,6 +324,25 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 16,
     marginBottom: 2,
+  },
+  searchRow: {
+    paddingHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  searchInputWrap: {
+    minHeight: 42,
+    borderWidth: 1,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
   },
   filterChip: {
     borderRadius: 999,

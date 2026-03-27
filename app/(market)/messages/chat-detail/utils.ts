@@ -6,12 +6,21 @@ export function isDirectConversationId(chatId: string | null): boolean {
   return Boolean(chatId && chatId.startsWith('direct_'));
 }
 
-export function toMs(value: unknown): number {
-  if (value instanceof Date) return value.getTime();
-  if (value && typeof (value as any).toMillis === 'function') return (value as any).toMillis();
-  if (value && typeof (value as any).toDate === 'function') return (value as any).toDate().getTime();
+export function getMessageTimeMs(value: unknown): number {
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.getTime();
+  }
+
   const parsed = new Date(value as any).getTime();
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function hashStableKey(input: string): string {
+  let hash = 5381;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = (hash * 33) ^ input.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 export function resolveProfileName(profile: any, fallback: string): string {
@@ -38,9 +47,10 @@ export function getStableMessageKey(message: Partial<MarketMessage>, fallbackCha
 
   const chatId = String(message?.chatId || fallbackChatId || '').trim();
   const senderId = String(message?.senderId || '').trim();
-  const createdAtMs = toMs((message as any)?.createdAt);
-  const text = String((message as any)?.message || (message as any)?.text || '').trim();
-  return `fallback:${chatId}:${senderId}:${createdAtMs}:${text}`;
+  const createdAtMs = getMessageTimeMs((message as any)?.createdAt);
+  const text = String((message as any)?.text || (message as any)?.message || '').trim();
+  const hash = hashStableKey(`${chatId}|${senderId}|${createdAtMs}|${text}`);
+  return `fallback:${hash}`;
 }
 
 export function buildClientMessageId(): string {

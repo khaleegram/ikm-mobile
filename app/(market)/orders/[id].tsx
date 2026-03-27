@@ -76,6 +76,7 @@ export default function MarketOrderDetailScreen() {
     if (order.items.length === 1) return order.items[0].name;
     return `${order.items[0].name} +${order.items.length - 1} more`;
   }, [order?.items]);
+  const paymentReference = String(order?.paymentReference || order?.paystackReference || '').trim();
 
   const pickProofImage = async (): Promise<string | undefined> => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -256,6 +257,12 @@ export default function MarketOrderDetailScreen() {
               {orderCreated ? orderCreated.toLocaleString() : 'N/A'}
             </Text>
           </View>
+          {paymentReference ? (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Receipt Ref</Text>
+              <Text style={[styles.summaryMeta, { color: colors.text }]}>{paymentReference}</Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>

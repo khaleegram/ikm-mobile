@@ -1,22 +1,21 @@
-import React, { useCallback } from 'react';
-import { FlatList, Keyboard, Platform, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { FlatList, Keyboard, Platform, Text, View, ViewToken } from 'react-native';
 
 import { MessageBubble } from '@/components/market/message-bubble';
 import { MarketMessage } from '@/types';
 
 import { styles } from './styles';
-import { getStableMessageKey, lightBrown } from './utils';
+import { getMessageTimeMs, getStableMessageKey, lightBrown } from './utils';
 
 type ChatListProps = {
   activeChatId: string | null;
   colors: any;
   currentUserId: string | null;
   insetsBottom: number;
-  keyboardVisible: boolean;
   messages: MarketMessage[];
   onOpenOffer: (offer: { postId: string; sellerId: string; price: number; chatId?: string }) => void;
-  onScrollToLatest: (animated?: boolean) => void;
   peerAvatarUri?: string;
+  onLatestVisibleIncomingMessage?: (messageId: string) => void;
   unreadCount: number;
   unreadDividerMessageId: string;
   flatListRef: React.RefObject<FlatList<MarketMessage>>;
@@ -28,14 +27,55 @@ export function ChatList({
   currentUserId,
   flatListRef,
   insetsBottom,
-  keyboardVisible,
   messages,
   onOpenOffer,
-  onScrollToLatest,
   peerAvatarUri,
+  onLatestVisibleIncomingMessage,
   unreadCount,
   unreadDividerMessageId,
 }: ChatListProps) {
+  const currentUserIdRef = useRef(currentUserId);
+  const onLatestVisibleIncomingMessageRef = useRef(onLatestVisibleIncomingMessage);
+
+  useEffect(() => {
+    currentUserIdRef.current = currentUserId;
+  }, [currentUserId]);
+
+  useEffect(() => {
+    onLatestVisibleIncomingMessageRef.current = onLatestVisibleIncomingMessage;
+  }, [onLatestVisibleIncomingMessage]);
+
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      const callback = onLatestVisibleIncomingMessageRef.current;
+      const currentUser = currentUserIdRef.current;
+      if (!callback || !currentUser) return;
+
+      let latestVisibleIncoming: MarketMessage | null = null;
+      viewableItems.forEach((viewable) => {
+        if (!viewable.isViewable) return;
+        const message = viewable.item as MarketMessage;
+        if (!message) return;
+        if (String(message.senderId || '') === currentUser) return;
+        if (
+          !latestVisibleIncoming ||
+          getMessageTimeMs(message.createdAt) > getMessageTimeMs(latestVisibleIncoming.createdAt)
+        ) {
+          latestVisibleIncoming = message;
+        }
+      });
+
+      const latestVisibleIncomingId = String((latestVisibleIncoming as any)?.id || '').trim();
+      if (!latestVisibleIncomingId) return;
+      callback(latestVisibleIncomingId);
+    }
+  );
+
+  const viewabilityConfig = useRef({
+    minimumViewTime: 120,
+    itemVisiblePercentThreshold: 60,
+  });
+
   const renderMessageItem = useCallback(
     ({ item }: { item: MarketMessage }) => {
       const shouldShowUnreadDivider =
@@ -81,17 +121,14 @@ export function ChatList({
       removeClippedSubviews
       contentContainerStyle={[
         styles.messagesContent,
-        { paddingBottom: keyboardVisible ? 110 : insetsBottom + 90 },
+        { paddingBottom: insetsBottom + 90 },
       ]}
       renderItem={renderMessageItem}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
       onScrollBeginDrag={Keyboard.dismiss}
-      onContentSizeChange={() => {
-        if (keyboardVisible) {
-          onScrollToLatest(false);
-        }
-      }}
+      onViewableItemsChanged={onViewableItemsChanged.current}
+      viewabilityConfig={viewabilityConfig.current}
     />
   );
 }

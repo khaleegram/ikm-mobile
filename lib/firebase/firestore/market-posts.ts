@@ -1,36 +1,144 @@
-// Client-side hooks for reading Market Post data (read-only)
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import {
+  FieldPath,
   collection,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  Unsubscribe,
-  limit,
-  startAfter,
-  QueryDocumentSnapshot,
+  doc,
   DocumentData,
+  limit,
+  onSnapshot,
+  orderBy,
+  QueryDocumentSnapshot,
+  query,
+  startAfter,
+  Unsubscribe,
+  where,
 } from 'firebase/firestore';
+
 import { firestore } from '../config';
-import { MarketPost } from '@/types';
-import { doc } from 'firebase/firestore';
+import type { MarketPost } from '@/types';
 import { cacheData, getCachedData } from '@/lib/utils/offline';
 
 const MARKET_POSTS_CACHE_TTL_MS = 30 * 60 * 1000;
 const MARKET_POST_CACHE_TTL_MS = 15 * 60 * 1000;
 
-function asDate(value: any): Date {
+function asDate(value: unknown): Date {
   if (value instanceof Date) return value;
-  if (value && typeof value.toDate === 'function') return value.toDate();
+  if (value && typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
   if (typeof value === 'string' || typeof value === 'number') {
     const parsed = new Date(value);
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
-  return new Date();
+  return new Date(0);
 }
 
-// Get Market Posts with pagination and real-time updates
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    : [];
+}
+
+export function normalizeMarketPostRecord(id: string, data: DocumentData): MarketPost {
+  const videoUrl = String(data.videoUrl || '').trim();
+  const coverImageUrl = String(data.coverImageUrl || '').trim();
+  const soundTitle = String(data.soundMeta?.title || '').trim();
+  const soundSourceUri = String(data.soundMeta?.sourceUri || '').trim();
+  const images = asStringArray(data.images);
+
+  return {
+    id,
+    posterId: String(data.posterId || '').trim(),
+    mediaType: data.mediaType || (videoUrl ? 'video' : 'image_gallery'),
+    images,
+    coverImageUrl: coverImageUrl || undefined,
+    videoUrl: videoUrl || undefined,
+    videoMeta:
+      data.videoMeta || videoUrl
+        ? {
+            durationMs: Number.isFinite(data.videoMeta?.durationMs) ? Number(data.videoMeta.durationMs) : undefined,
+            width: Number.isFinite(data.videoMeta?.width) ? Number(data.videoMeta.width) : undefined,
+            height: Number.isFinite(data.videoMeta?.height) ? Number(data.videoMeta.height) : undefined,
+            aspectRatio: Number.isFinite(data.videoMeta?.aspectRatio)
+              ? Number(data.videoMeta.aspectRatio)
+              : undefined,
+            originalAudioMuted: Boolean(data.videoMeta?.originalAudioMuted),
+          }
+        : undefined,
+    soundMeta:
+      soundTitle || soundSourceUri
+        ? {
+            soundId: String(data.soundMeta?.soundId || '').trim() || undefined,
+            title: soundTitle || 'Untitled sound',
+            sourceUri: soundSourceUri || '',
+            sourceType: data.soundMeta?.sourceType || 'uploaded',
+            artworkUrl: String(data.soundMeta?.artworkUrl || '').trim() || undefined,
+            durationMs: Number.isFinite(data.soundMeta?.durationMs) ? Number(data.soundMeta.durationMs) : undefined,
+            startMs: Number.isFinite(data.soundMeta?.startMs) ? Number(data.soundMeta.startMs) : undefined,
+            soundVolume: Number.isFinite(data.soundMeta?.soundVolume)
+              ? Number(data.soundMeta.soundVolume)
+              : undefined,
+            originalAudioVolume: Number.isFinite(data.soundMeta?.originalAudioVolume)
+              ? Number(data.soundMeta.originalAudioVolume)
+              : undefined,
+            useOriginalVideoAudio: Boolean(data.soundMeta?.useOriginalVideoAudio),
+          }
+        : undefined,
+    hashtags: asStringArray(data.hashtags),
+    price: Number.isFinite(data.price) ? Number(data.price) : undefined,
+    isNegotiable: Boolean(data.isNegotiable),
+    description: String(data.description || '').trim() || undefined,
+    location:
+      data.location && (data.location.state || data.location.city)
+        ? {
+            state: String(data.location.state || '').trim() || undefined,
+            city: String(data.location.city || '').trim() || undefined,
+          }
+        : undefined,
+    contactMethod: data.contactMethod || 'in-app',
+    likes: typeof data.likes === 'number' ? data.likes : 0,
+    views: typeof data.views === 'number' ? data.views : 0,
+    comments: typeof data.comments === 'number' ? data.comments : 0,
+    likedBy: asStringArray(data.likedBy),
+    status: data.status || 'active',
+    createdAt: asDate(data.createdAt),
+    updatedAt: asDate(data.updatedAt),
+    expiresAt: data.expiresAt ? asDate(data.expiresAt) : undefined,
+  };
+}
+
+function normalizeCachedPosts(posts: MarketPost[]): MarketPost[] {
+  return posts.map((item) => ({
+    ...item,
+    createdAt: asDate(item.createdAt),
+    updatedAt: asDate(item.updatedAt),
+    expiresAt: item.expiresAt ? asDate(item.expiresAt) : undefined,
+  }));
+}
+
+function buildPostsCacheUpdater(
+  setPosts: Dispatch<SetStateAction<MarketPost[]>>,
+  setLoading: Dispatch<SetStateAction<boolean>>,
+  setError: Dispatch<SetStateAction<Error | null>>,
+  cacheKey?: string
+) {
+  return (snapshot: { forEach: (callback: (doc: QueryDocumentSnapshot<DocumentData>) => void) => void }) => {
+    const postsList: MarketPost[] = [];
+    snapshot.forEach((documentSnapshot) => {
+      postsList.push(normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data()));
+    });
+    setPosts(postsList);
+    if (cacheKey) {
+      cacheData(cacheKey, postsList, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
+    }
+    setLoading(false);
+    setError(null);
+  };
+}
+
 export function useMarketPosts() {
   const [posts, setPosts] = useState<MarketPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,17 +154,11 @@ export function useMarketPosts() {
     (async () => {
       const cached = await getCachedData<MarketPost[]>(cacheKey);
       if (!isMounted || !cached || cached.length === 0) return;
-      const normalizedCached = cached.map((item) => ({
-        ...item,
-        createdAt: asDate((item as any).createdAt),
-        updatedAt: asDate((item as any).updatedAt),
-        expiresAt: (item as any).expiresAt ? asDate((item as any).expiresAt) : undefined,
-      }));
-      setPosts(normalizedCached);
+      setPosts(normalizeCachedPosts(cached));
       setLoading(false);
     })();
 
-    const q = query(
+    const baseQuery = query(
       collection(firestore, 'marketPosts'),
       where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
@@ -64,43 +166,19 @@ export function useMarketPosts() {
     );
 
     const unsubscribe: Unsubscribe = onSnapshot(
-      q,
+      baseQuery,
       (snapshot) => {
-        const postsList: MarketPost[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          const post: MarketPost = {
-            id: doc.id,
-            posterId: data.posterId || '',
-            images: data.images || [],
-            hashtags: data.hashtags || [],
-            price: data.price,
-            description: data.description,
-            location: data.location,
-            contactMethod: data.contactMethod || 'in-app',
-            isNegotiable: Boolean(data.isNegotiable),
-            likes: typeof data.likes === 'number' ? data.likes : 0,
-            views: typeof data.views === 'number' ? data.views : 0,
-            comments: typeof data.comments === 'number' ? data.comments : 0,
-            likedBy: data.likedBy || [],
-            status: data.status || 'active',
-            createdAt: data.createdAt?.toDate() || new Date(),
-            updatedAt: data.updatedAt?.toDate() || new Date(),
-            expiresAt: data.expiresAt?.toDate(),
-          };
-          postsList.push(post);
-        });
-        
-        // Update lastDocRef
+        const nextPosts: MarketPost[] = snapshot.docs.map((documentSnapshot) =>
+          normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())
+        );
         if (snapshot.docs.length > 0) {
           lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
           setHasMore(snapshot.docs.length === PAGE_SIZE);
         } else {
           setHasMore(false);
         }
-        
-        setPosts(postsList);
-        cacheData(cacheKey, postsList, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
+        setPosts(nextPosts);
+        cacheData(cacheKey, nextPosts, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
         setLoading(false);
         setError(null);
       },
@@ -121,7 +199,7 @@ export function useMarketPosts() {
     if (!hasMore || loading || !lastDocRef.current) return;
 
     setLoading(true);
-    const q = query(
+    const nextQuery = query(
       collection(firestore, 'marketPosts'),
       where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
@@ -130,37 +208,15 @@ export function useMarketPosts() {
     );
 
     const unsubscribe = onSnapshot(
-      q,
+      nextQuery,
       (snapshot) => {
-        const newPosts: MarketPost[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          const post: MarketPost = {
-            id: doc.id,
-            posterId: data.posterId || '',
-            images: data.images || [],
-            hashtags: data.hashtags || [],
-            price: data.price,
-            description: data.description,
-            location: data.location,
-            contactMethod: data.contactMethod || 'in-app',
-            isNegotiable: Boolean(data.isNegotiable),
-            likes: typeof data.likes === 'number' ? data.likes : 0,
-            views: typeof data.views === 'number' ? data.views : 0,
-            comments: typeof data.comments === 'number' ? data.comments : 0,
-            likedBy: data.likedBy || [],
-            status: data.status || 'active',
-            createdAt: data.createdAt?.toDate() || new Date(),
-            updatedAt: data.updatedAt?.toDate() || new Date(),
-            expiresAt: data.expiresAt?.toDate(),
-          };
-          newPosts.push(post);
-        });
-
+        const nextPosts = snapshot.docs.map((documentSnapshot) =>
+          normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())
+        );
         if (snapshot.docs.length > 0) {
           lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
           setHasMore(snapshot.docs.length === PAGE_SIZE);
-          setPosts((prev) => [...prev, ...newPosts]);
+          setPosts((previous) => [...previous, ...nextPosts]);
         } else {
           setHasMore(false);
         }
@@ -181,13 +237,11 @@ export function useMarketPosts() {
     setPosts([]);
     setHasMore(true);
     setLoading(true);
-    // The useEffect will automatically refetch
   };
 
   return { posts, loading, error, loadMore, hasMore, refresh };
 }
 
-// Get user's Market Posts with real-time updates
 export function useUserMarketPosts(userId: string | null) {
   const [posts, setPosts] = useState<MarketPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -206,17 +260,11 @@ export function useUserMarketPosts(userId: string | null) {
     (async () => {
       const cached = await getCachedData<MarketPost[]>(cacheKey);
       if (!isMounted || !cached || cached.length === 0) return;
-      const normalizedCached = cached.map((item) => ({
-        ...item,
-        createdAt: asDate((item as any).createdAt),
-        updatedAt: asDate((item as any).updatedAt),
-        expiresAt: (item as any).expiresAt ? asDate((item as any).expiresAt) : undefined,
-      }));
-      setPosts(normalizedCached);
+      setPosts(normalizeCachedPosts(cached));
       setLoading(false);
     })();
 
-    const q = query(
+    const baseQuery = query(
       collection(firestore, 'marketPosts'),
       where('posterId', '==', userId),
       where('status', '==', 'active'),
@@ -224,37 +272,8 @@ export function useUserMarketPosts(userId: string | null) {
     );
 
     const unsubscribe: Unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const postsList: MarketPost[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          const post: MarketPost = {
-            id: doc.id,
-            posterId: data.posterId || '',
-            images: data.images || [],
-            hashtags: data.hashtags || [],
-            price: data.price,
-            description: data.description,
-            location: data.location,
-            contactMethod: data.contactMethod || 'in-app',
-            isNegotiable: Boolean(data.isNegotiable),
-            likes: typeof data.likes === 'number' ? data.likes : 0,
-            views: typeof data.views === 'number' ? data.views : 0,
-            comments: typeof data.comments === 'number' ? data.comments : 0,
-            likedBy: data.likedBy || [],
-            status: data.status || 'active',
-            createdAt: data.createdAt?.toDate() || new Date(),
-            updatedAt: data.updatedAt?.toDate() || new Date(),
-            expiresAt: data.expiresAt?.toDate(),
-          };
-          postsList.push(post);
-        });
-        setPosts(postsList);
-        cacheData(cacheKey, postsList, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
-        setLoading(false);
-        setError(null);
-      },
+      baseQuery,
+      buildPostsCacheUpdater(setPosts, setLoading, setError, cacheKey),
       (err) => {
         console.error('Error fetching user market posts:', err);
         setError(err);
@@ -271,7 +290,6 @@ export function useUserMarketPosts(userId: string | null) {
   return { posts, loading, error };
 }
 
-// Get user's total likes count (sum of likes on all posts they've liked)
 export function useUserLikesCount(userId: string | null) {
   const [likesCount, setLikesCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -283,14 +301,14 @@ export function useUserLikesCount(userId: string | null) {
       return;
     }
 
-    const q = query(
+    const likesQuery = query(
       collection(firestore, 'marketPosts'),
       where('likedBy', 'array-contains', userId),
       where('status', '==', 'active')
     );
 
     const unsubscribe: Unsubscribe = onSnapshot(
-      q,
+      likesQuery,
       (snapshot) => {
         setLikesCount(snapshot.size);
         setLoading(false);
@@ -307,7 +325,6 @@ export function useUserLikesCount(userId: string | null) {
   return { likesCount, loading };
 }
 
-// Get single Market Post with real-time updates
 export function useMarketPost(postId: string | null) {
   const [post, setPost] = useState<MarketPost | null>(null);
   const [loading, setLoading] = useState(true);
@@ -328,9 +345,9 @@ export function useMarketPost(postId: string | null) {
       if (!isMounted || !cached) return;
       setPost({
         ...cached,
-        createdAt: asDate((cached as any).createdAt),
-        updatedAt: asDate((cached as any).updatedAt),
-        expiresAt: (cached as any).expiresAt ? asDate((cached as any).expiresAt) : undefined,
+        createdAt: asDate(cached.createdAt),
+        updatedAt: asDate(cached.updatedAt),
+        expiresAt: cached.expiresAt ? asDate(cached.expiresAt) : undefined,
       });
       setLoading(false);
     })();
@@ -339,26 +356,7 @@ export function useMarketPost(postId: string | null) {
       doc(firestore, 'marketPosts', postId),
       (snapshot) => {
         if (snapshot.exists()) {
-          const data = snapshot.data();
-          const marketPost: MarketPost = {
-            id: snapshot.id,
-            posterId: data.posterId || '',
-            images: data.images || [],
-            hashtags: data.hashtags || [],
-            price: data.price,
-            description: data.description,
-            location: data.location,
-            contactMethod: data.contactMethod || 'in-app',
-            isNegotiable: Boolean(data.isNegotiable),
-            likes: typeof data.likes === 'number' ? data.likes : 0,
-            views: typeof data.views === 'number' ? data.views : 0,
-            comments: typeof data.comments === 'number' ? data.comments : 0,
-            likedBy: data.likedBy || [],
-            status: data.status || 'active',
-            createdAt: data.createdAt?.toDate() || new Date(),
-            updatedAt: data.updatedAt?.toDate() || new Date(),
-            expiresAt: data.expiresAt?.toDate(),
-          };
+          const marketPost = normalizeMarketPostRecord(snapshot.id, snapshot.data());
           setPost(marketPost);
           cacheData(cacheKey, marketPost, MARKET_POST_CACHE_TTL_MS).catch(() => {});
         } else {
@@ -383,7 +381,6 @@ export function useMarketPost(postId: string | null) {
   return { post, loading, error };
 }
 
-// Track likes for a post
 export function useMarketPostLikes(postId: string | null, userId: string | null) {
   const [likes, setLikes] = useState(0);
   const [likedBy, setLikedBy] = useState<string[]>([]);
@@ -403,7 +400,10 @@ export function useMarketPostLikes(postId: string | null, userId: string | null)
         if (snapshot.exists()) {
           const data = snapshot.data();
           setLikes(typeof data.likes === 'number' ? data.likes : 0);
-          setLikedBy(data.likedBy || []);
+          setLikedBy(asStringArray(data.likedBy));
+        } else {
+          setLikes(0);
+          setLikedBy([]);
         }
         setLoading(false);
       },
@@ -416,12 +416,14 @@ export function useMarketPostLikes(postId: string | null, userId: string | null)
     return () => unsubscribe();
   }, [postId]);
 
-  const isLiked = userId ? likedBy.includes(userId) : false;
-
-  return { likes, likedBy, isLiked, loading };
+  return {
+    likes,
+    likedBy,
+    isLiked: userId ? likedBy.includes(userId) : false,
+    loading,
+  };
 }
 
-// Search Market Posts by hashtag or text
 export function useMarketPostsSearch(searchQuery: string | null) {
   const [posts, setPosts] = useState<MarketPost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -441,118 +443,24 @@ export function useMarketPostsSearch(searchQuery: string | null) {
     const isHashtag = queryLower.startsWith('#');
     const hashtag = isHashtag ? queryLower.slice(1) : queryLower;
 
-    // If it's a hashtag search, use array-contains
     if (isHashtag && hashtag) {
-      const q = query(
+      const hashtagQuery = query(
         collection(firestore, 'marketPosts'),
         where('status', '==', 'active'),
         where('hashtags', 'array-contains', hashtag),
         orderBy('createdAt', 'desc'),
-        limit(50) // Limit search results
+        limit(50)
       );
 
       const unsubscribe: Unsubscribe = onSnapshot(
-        q,
+        hashtagQuery,
         (snapshot) => {
-          const postsList: MarketPost[] = [];
-          snapshot.forEach((doc) => {
-            const data = doc.data();
-            const post: MarketPost = {
-              id: doc.id,
-              posterId: data.posterId || '',
-              images: data.images || [],
-              hashtags: data.hashtags || [],
-              price: data.price,
-              description: data.description,
-              location: data.location,
-              contactMethod: data.contactMethod || 'in-app',
-            isNegotiable: Boolean(data.isNegotiable),
-              likes: typeof data.likes === 'number' ? data.likes : 0,
-              views: typeof data.views === 'number' ? data.views : 0,
-              comments: typeof data.comments === 'number' ? data.comments : 0,
-              likedBy: data.likedBy || [],
-              status: data.status || 'active',
-              createdAt: data.createdAt?.toDate() || new Date(),
-              updatedAt: data.updatedAt?.toDate() || new Date(),
-              expiresAt: data.expiresAt?.toDate(),
-            };
-            postsList.push(post);
-          });
-          setPosts(postsList);
+          setPosts(snapshot.docs.map((documentSnapshot) => normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())));
           setLoading(false);
           setError(null);
         },
         (err) => {
-          console.error('Error searching market posts:', err);
-          setError(err);
-          setLoading(false);
-        }
-      );
-
-      return () => unsubscribe();
-    } else {
-      // Text search - fetch all active posts and filter client-side
-      // Note: For production, consider using Algolia or similar for full-text search
-      const q = query(
-        collection(firestore, 'marketPosts'),
-        where('status', '==', 'active'),
-        orderBy('createdAt', 'desc'),
-        limit(100) // Fetch more for text search filtering
-      );
-
-      const unsubscribe: Unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          const postsList: MarketPost[] = [];
-          const searchTerms = queryLower.split(' ').filter((term) => term.length > 0);
-
-          snapshot.forEach((doc) => {
-            const data = doc.data();
-            const description = (data.description || '').toLowerCase();
-            const locationState = (data.location?.state || '').toLowerCase();
-            const locationCity = (data.location?.city || '').toLowerCase();
-            const hashtags = (data.hashtags || []).map((tag: string) => tag.toLowerCase());
-
-            // Check if any search term matches description, location, or hashtags
-            const matches = searchTerms.some((term) => {
-              return (
-                description.includes(term) ||
-                locationState.includes(term) ||
-                locationCity.includes(term) ||
-                hashtags.some((tag: string) => tag.includes(term))
-              );
-            });
-
-            if (matches) {
-              const post: MarketPost = {
-                id: doc.id,
-                posterId: data.posterId || '',
-                images: data.images || [],
-                hashtags: data.hashtags || [],
-                price: data.price,
-                description: data.description,
-                location: data.location,
-                contactMethod: data.contactMethod || 'in-app',
-            isNegotiable: Boolean(data.isNegotiable),
-                likes: typeof data.likes === 'number' ? data.likes : 0,
-                views: typeof data.views === 'number' ? data.views : 0,
-                comments: typeof data.comments === 'number' ? data.comments : 0,
-                likedBy: data.likedBy || [],
-                status: data.status || 'active',
-                createdAt: data.createdAt?.toDate() || new Date(),
-                updatedAt: data.updatedAt?.toDate() || new Date(),
-                expiresAt: data.expiresAt?.toDate(),
-              };
-              postsList.push(post);
-            }
-          });
-
-          setPosts(postsList);
-          setLoading(false);
-          setError(null);
-        },
-        (err) => {
-          console.error('Error searching market posts:', err);
+          console.error('Error searching market posts by hashtag:', err);
           setError(err);
           setLoading(false);
         }
@@ -560,8 +468,167 @@ export function useMarketPostsSearch(searchQuery: string | null) {
 
       return () => unsubscribe();
     }
+
+    const textSearchQuery = query(
+      collection(firestore, 'marketPosts'),
+      where('status', '==', 'active'),
+      orderBy('createdAt', 'desc'),
+      limit(100)
+    );
+
+    const unsubscribe: Unsubscribe = onSnapshot(
+      textSearchQuery,
+      (snapshot) => {
+        const searchTerms = queryLower.split(' ').filter((term) => term.length > 0);
+        const nextPosts = snapshot.docs
+          .map((documentSnapshot) => normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data()))
+          .filter((post) => {
+            const description = String(post.description || '').toLowerCase();
+            const locationState = String(post.location?.state || '').toLowerCase();
+            const locationCity = String(post.location?.city || '').toLowerCase();
+            const hashtags = (post.hashtags || []).map((tag) => tag.toLowerCase());
+            const soundTitle = String(post.soundMeta?.title || '').toLowerCase();
+
+            return searchTerms.some((term) => {
+              return (
+                description.includes(term) ||
+                locationState.includes(term) ||
+                locationCity.includes(term) ||
+                soundTitle.includes(term) ||
+                hashtags.some((tag) => tag.includes(term))
+              );
+            });
+          });
+
+        setPosts(nextPosts);
+        setLoading(false);
+        setError(null);
+      },
+      (err) => {
+        console.error('Error searching market posts:', err);
+        setError(err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
   }, [searchQuery]);
 
   return { posts, loading, error };
 }
 
+export function useMarketPostsBySound(soundId: string | null) {
+  const [posts, setPosts] = useState<MarketPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!soundId) {
+      setPosts([]);
+      setLoading(false);
+      return;
+    }
+
+    const soundPostsQuery = query(
+      collection(firestore, 'marketPosts'),
+      where('status', '==', 'active'),
+      where('soundMeta.soundId', '==', soundId),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
+
+    const unsubscribe: Unsubscribe = onSnapshot(
+      soundPostsQuery,
+      (snapshot) => {
+        setPosts(snapshot.docs.map((documentSnapshot) => normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())));
+        setLoading(false);
+        setError(null);
+      },
+      (err) => {
+        console.error('Error fetching posts by sound:', err);
+        setError(err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [soundId]);
+
+  return { posts, loading, error };
+}
+
+export function useMarketPostsByPosterIds(posterIds: string[], maxItems: number = 60) {
+  const [posts, setPosts] = useState<MarketPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const cleanIds = Array.from(new Set(posterIds.map((id) => String(id || '').trim()).filter(Boolean))).slice(0, 30);
+    if (cleanIds.length === 0) {
+      setPosts([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    // Firestore `in` supports max 10 values; subscribe to chunks and merge.
+    const chunks: string[][] = [];
+    for (let i = 0; i < cleanIds.length; i += 10) {
+      chunks.push(cleanIds.slice(i, i + 10));
+    }
+
+    const unsubs: Unsubscribe[] = [];
+    const chunkResults = new Map<number, MarketPost[]>();
+
+    const recompute = () => {
+      const combined = Array.from(chunkResults.values()).flat();
+      const dedup = new Map<string, MarketPost>();
+      combined.forEach((post) => {
+        if (post.id) dedup.set(post.id, post);
+      });
+      const sorted = Array.from(dedup.values()).sort((a, b) => {
+        const aTime = a.createdAt instanceof Date ? a.createdAt.getTime() : 0;
+        const bTime = b.createdAt instanceof Date ? b.createdAt.getTime() : 0;
+        return bTime - aTime;
+      });
+      setPosts(sorted.slice(0, Math.max(1, maxItems)));
+      setLoading(false);
+    };
+
+    chunks.forEach((chunk, chunkIndex) => {
+      const q = query(
+        collection(firestore, 'marketPosts'),
+        where('status', '==', 'active'),
+        where(new FieldPath('posterId'), 'in', chunk),
+        orderBy('createdAt', 'desc'),
+        limit(Math.min(50, maxItems))
+      );
+
+      const unsub = onSnapshot(
+        q,
+        (snapshot) => {
+          chunkResults.set(
+            chunkIndex,
+            snapshot.docs.map((docSnap) => normalizeMarketPostRecord(docSnap.id, docSnap.data()))
+          );
+          recompute();
+        },
+        (err) => {
+          console.error('Error fetching market posts by poster ids:', err);
+          setError(err);
+          chunkResults.set(chunkIndex, []);
+          recompute();
+        }
+      );
+      unsubs.push(unsub);
+    });
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+    };
+  }, [maxItems, posterIds]);
+
+  return { posts, loading, error };
+}

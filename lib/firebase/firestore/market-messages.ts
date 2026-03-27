@@ -64,9 +64,9 @@ function firstNonEmptyString(values: unknown[]): string {
 
 function extractMessageText(data: AnyRecord): string {
   return firstNonEmptyString([
-    data.lastMessage,
-    data.message,
     data.text,
+    data.message,
+    data.lastMessage,
     data.body,
     data.lastMessageText,
   ]);
@@ -907,7 +907,7 @@ export function useMarketChat(chatId: string | null) {
           postId: firstNonEmptyString([data.postId, data.marketPostId]),
           type: data.type,
           clientMessageId: asNonEmptyString(data.clientMessageId),
-          message: extractMessageText(data),
+          text: extractMessageText(data),
           imageUrl: data.imageUrl,
           paymentLink: data.paymentLink,
           quoteCard: data.quoteCard,
@@ -1260,7 +1260,7 @@ export function useMarketConversationMessages(userId: string | null, peerId: str
           postId: firstNonEmptyString([data.postId, data.marketPostId]),
           type: data.type,
           clientMessageId: asNonEmptyString(data.clientMessageId),
-          message: extractMessageText(data),
+          text: extractMessageText(data),
           imageUrl: data.imageUrl,
           paymentLink: data.paymentLink,
           quoteCard: data.quoteCard,

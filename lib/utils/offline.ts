@@ -16,6 +16,7 @@ export interface QueuedWrite {
   action: 'create' | 'update' | 'delete';
   data: any;
   timestamp: number;
+  retryCount?: number;
 }
 
 /**
@@ -79,8 +80,34 @@ export async function clearAllCache(): Promise<void> {
 export async function queueWrite(write: QueuedWrite): Promise<void> {
   try {
     const queue = await getWriteQueue();
-    queue.push(write);
-    await AsyncStorage.setItem(QUEUE_PREFIX, JSON.stringify(queue));
+    const nextQueue = [...queue];
+
+    // Avoid duplicate queued market messages with the same client id.
+    if (write.type === 'marketMessage' && write.action === 'create') {
+      const chatId = String(write.data?.chatId || '').trim();
+      const clientMessageId = String(write.data?.clientMessageId || '').trim();
+      if (chatId && clientMessageId) {
+        const existingIndex = nextQueue.findIndex((queued) => {
+          if (queued.type !== 'marketMessage' || queued.action !== 'create') return false;
+          return (
+            String(queued.data?.chatId || '').trim() === chatId &&
+            String(queued.data?.clientMessageId || '').trim() === clientMessageId
+          );
+        });
+        if (existingIndex >= 0) {
+          nextQueue[existingIndex] = {
+            ...nextQueue[existingIndex],
+            ...write,
+            timestamp: write.timestamp || Date.now(),
+          };
+          await AsyncStorage.setItem(QUEUE_PREFIX, JSON.stringify(nextQueue));
+          return;
+        }
+      }
+    }
+
+    nextQueue.push(write);
+    await AsyncStorage.setItem(QUEUE_PREFIX, JSON.stringify(nextQueue));
   } catch (error) {
     console.error('Error queueing write:', error);
   }
@@ -117,6 +144,19 @@ export async function clearWriteQueue(): Promise<void> {
 }
 
 /**
+ * Get queued market messages, optionally scoped to a chat.
+ */
+export async function getQueuedMarketMessages(chatId?: string): Promise<QueuedWrite[]> {
+  const queue = await getWriteQueue();
+  const normalizedChatId = String(chatId || '').trim();
+  return queue.filter((write) => {
+    if (write.type !== 'marketMessage' || write.action !== 'create') return false;
+    if (!normalizedChatId) return true;
+    return String(write.data?.chatId || '').trim() === normalizedChatId;
+  });
+}
+
+/**
  * Check if device is online
  * Note: This is a simple check. Use NetInfo in components for accurate status.
  */
@@ -134,16 +174,21 @@ export async function syncQueuedWrites(
   if (!isOnline()) return;
 
   const queue = await getWriteQueue();
-  const syncPromises = queue.map(async (write) => {
+  const sortedQueue = [...queue].sort((left, right) => {
+    const leftTs = Number(left.timestamp || 0);
+    const rightTs = Number(right.timestamp || 0);
+    return leftTs - rightTs;
+  });
+
+  for (const write of sortedQueue) {
     try {
       await syncFn(write);
       await removeQueuedWrite(write.id);
     } catch (error) {
       console.error(`Error syncing write ${write.id}:`, error);
       // Keep in queue for retry
+      continue;
     }
-  });
-
-  await Promise.all(syncPromises);
+  }
 }
 

@@ -16,6 +16,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { formatRelativeTime } from '@/lib/utils/date-format';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { buildDirectConversationId, resolveDirectConversationPeerId } from '@/lib/api/market-messages';
+import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { SafeImage } from '@/components/safe-image';
 
@@ -41,6 +42,23 @@ function initialsFromName(name: string): string {
   if (parts.length === 0) return '?';
   if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
   return `${parts[0].slice(0, 1)}${parts[1].slice(0, 1)}`.toUpperCase();
+}
+
+function getChatRowKey(item: any): string {
+  const explicitKey = String(item?.id || item?.chatId || '').trim();
+  if (explicitKey) return explicitKey;
+
+  const participants = Array.isArray(item?.participants)
+    ? item.participants.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    : [];
+  if (participants.length > 0) {
+    return `participants:${participants.sort((a: string, b: string) => a.localeCompare(b)).join('|')}`;
+  }
+
+  const fallbackUpdatedAt = String(item?.updatedAt || '').trim();
+  if (fallbackUpdatedAt) return `updated:${fallbackUpdatedAt}`;
+
+  return 'conversation:unknown';
 }
 
 type ChatRowProps = {
@@ -150,6 +168,7 @@ export default function MessagesScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { chats, loading, error } = useMarketChats(user?.uid || null);
+  const { idSet: blockedIds } = useBlockedUserIds(user?.uid || null);
   const [activeFilter, setActiveFilter] = useState<'chats' | 'unread'>('chats');
   const marketLoginRoute = getLoginRouteForVariant('market');
 
@@ -161,12 +180,24 @@ export default function MessagesScreen() {
       }, 0),
     [chats]
   );
+  const visibleChats = useMemo(() => {
+    if (!user?.uid) return chats;
+    return chats.filter((chat) => {
+      const participants = Array.isArray((chat as any)?.participants) ? (chat as any).participants : [];
+      const peerIdFromParticipants =
+        participants.find((p: string) => p && p !== user.uid) ||
+        resolveDirectConversationPeerId(String((chat as any)?.id || (chat as any)?.chatId || ''), user.uid);
+      if (!peerIdFromParticipants) return true;
+      return !blockedIds.has(String(peerIdFromParticipants));
+    });
+  }, [blockedIds, chats, user?.uid]);
+
   const filteredChats = useMemo(() => {
     if (activeFilter === 'unread') {
-      return chats.filter((chat) => Number((chat as any)?.unreadCount || 0) > 0);
+      return visibleChats.filter((chat) => Number((chat as any)?.unreadCount || 0) > 0);
     }
-    return chats;
-  }, [activeFilter, chats]);
+    return visibleChats;
+  }, [activeFilter, visibleChats]);
   const renderChatRow = useCallback(
     ({ item }: { item: any }) => <MemoChatRow item={item} userId={user?.uid || ''} colors={colors} />,
     [colors, user?.uid]
@@ -267,7 +298,7 @@ export default function MessagesScreen() {
     );
   }
 
-  if (chats.length === 0) {
+  if (visibleChats.length === 0) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {renderHeader()}
@@ -299,7 +330,7 @@ export default function MessagesScreen() {
       ) : (
         <FlatList
           data={filteredChats}
-          keyExtractor={(item, index) => String(item.id || item.chatId || `chat-${index}`)}
+          keyExtractor={getChatRowKey}
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }]}
           ItemSeparatorComponent={() => <View style={styles.chatSeparator} />}
           renderItem={renderChatRow}

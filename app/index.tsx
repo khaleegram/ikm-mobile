@@ -3,6 +3,7 @@ import { ActivityIndicator, Alert, View } from 'react-native';
 import { useEffect, useRef } from 'react';
 
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { getAppVariant } from '@/lib/utils/app-variant';
 
@@ -17,6 +18,14 @@ export default function Index() {
 
   const userHasAccess = user ? hasAppAccess(user) : false;
   const isAdmin = user?.isAdmin === true;
+  const { user: marketProfile, loading: marketProfileLoading } = useUserProfile(
+    isMarketApp ? user?.uid || null : null
+  );
+
+  const normalizedMarketPhone = String(marketProfile?.phone || '').trim();
+  const marketPhoneReady =
+    normalizedMarketPhone.length >= 10 &&
+    Boolean(marketProfile?.phoneVerified || marketProfile?.phoneVerifiedAt);
 
   // If a logged-in user opens the seller/admin app but isn't allowed, alert once and sign out once.
   useEffect(() => {
@@ -53,6 +62,18 @@ export default function Index() {
   // Market variant
   // ================
   if (isMarketApp) {
+    if (user && marketProfileLoading) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" />
+        </View>
+      );
+    }
+
+    if (user && !marketPhoneReady) {
+      return <Redirect href="/complete-phone" />;
+    }
+
     return <Redirect href="/(market)" />;
   }
 

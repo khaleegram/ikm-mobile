@@ -84,6 +84,9 @@ const SELLER_FUNCTIONS = {
 // ==================== SHARED CLOUD FUNCTIONS ====================
 const SHARED_FUNCTIONS = {
   // Payment Functions
+  initializePaystackTransaction: 'https://initializepaystacktransaction-q3rjv54uka-uc.a.run.app',
+  verifyPaystackTransaction: 'https://verifypaystacktransaction-q3rjv54uka-uc.a.run.app',
+  paystackWebhook: 'https://paystackwebhook-q3rjv54uka-uc.a.run.app',
   verifyPaymentAndCreateOrder: 'https://verifypaymentandcreateorder-q3rjv54uka-uc.a.run.app',
   findRecentTransactionByEmail: 'https://findrecenttransactionbyemail-q3rjv54uka-uc.a.run.app',
   
@@ -190,6 +193,28 @@ class CloudFunctionsClient {
     } catch {
       return null;
     }
+  }
+
+  private isExpectedPaymentVerificationState(error: CloudFunctionError): boolean {
+    const functionName = String(error?.functionName || '').trim().toLowerCase();
+    if (functionName !== 'verifypaystacktransaction') return false;
+    if (Number(error?.status) !== 400) return false;
+
+    const message = String(error?.message || '').toLowerCase();
+    return (
+      message.includes('payment not successful') ||
+      message.includes('status: abandoned') ||
+      message.includes('abandoned') ||
+      message.includes('pending')
+    );
+  }
+
+  private reportFunctionError(error: CloudFunctionError): void {
+    if (this.isExpectedPaymentVerificationState(error)) {
+      cloudDebug('[Cloud Function] Expected payment verification state:', error);
+      return;
+    }
+    console.error('[Cloud Function] Error response:', error);
   }
 
   /**
@@ -358,7 +383,7 @@ class CloudFunctionsClient {
             }
           }
           
-          console.error('[Cloud Function] Error response:', error);
+          this.reportFunctionError(error);
           throw error;
         }
 
@@ -402,7 +427,7 @@ class CloudFunctionsClient {
             }
           }
           
-          console.error('[Cloud Function] Error response:', error);
+          this.reportFunctionError(error);
           throw error;
         }
 
@@ -1064,14 +1089,52 @@ class CloudFunctionsClient {
    */
   async verifyPaymentAndCreateOrder(data: {
     reference: string;
-    email?: string;
-    amount?: number;
-    [key: string]: any;
+    idempotencyKey: string;
+    cartItems: any[];
+    total: number;
+    deliveryAddress: string;
+    customerInfo: any;
+    discountCode?: string;
+    shippingType?: 'delivery' | 'pickup' | 'contact';
+    shippingPrice?: number;
+    deliveryFeePaidBy?: 'seller' | 'buyer';
   }): Promise<any> {
     return this.request(SHARED_FUNCTIONS.verifyPaymentAndCreateOrder, {
       method: 'POST',
       body: data,
-      requiresAuth: false,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Initialize a Paystack transaction and return checkout URL
+   */
+  async initializePaystackTransaction(data: {
+    amount: number;
+    email: string;
+    callbackUrl: string;
+    metadata?: Record<string, unknown>;
+    reference?: string;
+  }): Promise<any> {
+    return this.request(SHARED_FUNCTIONS.initializePaystackTransaction, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Verify a Paystack transaction by reference
+   */
+  async verifyPaystackTransaction(data: {
+    reference: string;
+    expectedAmount?: number;
+    expectedEmail?: string;
+  }): Promise<any> {
+    return this.request(SHARED_FUNCTIONS.verifyPaystackTransaction, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
     });
   }
 

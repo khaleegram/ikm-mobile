@@ -15,7 +15,8 @@ export default function MarketTabLayout() {
       headerShown: false as const,
       sceneStyle: { backgroundColor: colors.background },
       tabBarStyle: {
-        backgroundColor: colors.background,
+        position: 'absolute' as const,
+        backgroundColor: 'transparent',
         borderTopWidth: 0,
         elevation: 0,
         shadowOpacity: 0,
@@ -62,7 +63,7 @@ export default function MarketTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="messages/index"
+        name="messages"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol
@@ -102,6 +103,9 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="orders/index" options={{ href: null }} />
       <Tabs.Screen name="orders/[id]" options={{ href: null }} />
       <Tabs.Screen name="payouts" options={{ href: null }} />
+      <Tabs.Screen name="delivery-settings" options={{ href: null }} />
+      <Tabs.Screen name="sound/[soundId]" options={{ href: null }} />
+      <Tabs.Screen name="saved-sounds" options={{ href: null }} />
     </Tabs>
   );
 }

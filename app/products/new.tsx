@@ -9,7 +9,14 @@ import { premiumShadow } from '@/lib/theme/styles';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
-import { pickAudio, pickMultipleImages, pickVideo } from '@/lib/utils/image-upload';
+import {
+  pickAudio,
+  pickMultipleImages,
+  pickVideo,
+  uploadAudio,
+  uploadImages,
+  uploadVideo,
+} from '@/lib/utils/image-upload';
 import { ProductCategory } from '@/types';
 import { router } from 'expo-router';
 import { useState } from 'react';
@@ -34,6 +41,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width } = Dimensions.get('window');
 type Step = 1 | 2 | 3;
+
+function inferFileExtension(uri: string, fallback: string): string {
+  const normalized = String(uri || '').split('?')[0];
+  const lastSegment = normalized.split('/').pop() || '';
+  const extension = lastSegment.includes('.') ? lastSegment.split('.').pop() : '';
+  const trimmed = String(extension || '').trim().toLowerCase();
+  return trimmed || fallback;
+}
 
 export default function NewProductScreen() {
   const { user } = useUser();
@@ -296,25 +311,39 @@ export default function NewProductScreen() {
         return;
       }
 
-      // Convert first image to base64 and send to cloud function
-      // Note: Cloud function only supports single imageBase64 (legacy)
-      // TODO: Backend needs to support imageBase64Array for multiple images
-      // Video and audio cannot be sent as base64 - backend needs to support this
       let imageBase64: string | undefined;
+      let imageUrls: string[] | undefined;
+      let videoUrl: string | undefined;
+      let audioDescription: string | undefined;
+      const isNative = Platform.OS === 'ios' || Platform.OS === 'android';
 
       if (selectedImageUris.length > 0) {
-        try {
+        if (isNative) {
+          try {
+            imageUrls = await uploadImages(selectedImageUris, 'products', user.uid);
+          } catch (uploadError: any) {
+            // Fallback path for restricted storage environments.
+            imageBase64 = await convertImageToBase64(selectedImageUris[0]);
+            console.warn('Image URL upload failed, using base64 fallback:', uploadError?.message || uploadError);
+          }
+        } else {
           imageBase64 = await convertImageToBase64(selectedImageUris[0]);
-        } catch (error: any) {
-          console.error('Error converting image to base64:', error);
-          showToast('Failed to process image', 'error');
         }
       }
 
-      // Note: Video and audio are skipped for now because:
-      // 1. Cloud function expects URLs, not base64
-      // 2. Mobile app cannot upload directly due to storage rules
-      // TODO: Backend needs to support videoBase64 and audioBase64
+      if (selectedVideoUri) {
+        const extension = inferFileExtension(selectedVideoUri, 'mp4');
+        const path = `products/${user.uid}/video_${Date.now()}.${extension}`;
+        const uploadedVideo = await uploadVideo(selectedVideoUri, path);
+        videoUrl = uploadedVideo.url;
+      }
+
+      if (selectedAudioUri) {
+        const extension = inferFileExtension(selectedAudioUri, 'm4a');
+        const path = `products/${user.uid}/audio_${Date.now()}.${extension}`;
+        const uploadedAudio = await uploadAudio(selectedAudioUri, path);
+        audioDescription = uploadedAudio.url;
+      }
 
       const productData: any = {
         name: formData.name,
@@ -325,10 +354,10 @@ export default function NewProductScreen() {
         status: 'active',
         sku: formData.sku || undefined,
         category: category,
-        imageBase64, // Send first image as base64 (cloud function will upload to storage)
-        // Note: imageUrls will be set by cloud function after upload
-        videoUrl: undefined, // Not supported - needs backend update for base64
-        audioDescription: undefined, // Not supported - needs backend update for base64
+        imageBase64,
+        imageUrls,
+        videoUrl,
+        audioDescription,
         deliveryFeePaidBy: formData.deliveryFeePaidBy,
         deliveryMethods: formData.deliveryMethods,
       };

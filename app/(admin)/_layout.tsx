@@ -9,6 +9,8 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { getAppVariant } from '@/lib/utils/app-variant';
 
+const lightBrown = '#A67C52';
+
 export default function AdminTabLayout() {
   const { colors } = useTheme();
   const { user, loading } = useUser();
@@ -42,7 +44,7 @@ export default function AdminTabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: colors.primary,
+        tabBarActiveTintColor: Platform.OS === 'ios' ? lightBrown : colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
         headerShown: false,
         tabBarShowLabel: false,
@@ -58,11 +60,11 @@ export default function AdminTabLayout() {
         name="index"
         options={{
           title: 'Dashboard',
-          tabBarIcon: ({ color, focused }) => (
+          tabBarIcon: ({ focused }) => (
             <IconSymbol 
               size={24} 
               name={focused ? "chart.bar.fill" : "chart.bar"} 
-              color={color} 
+              color={focused ? (Platform.OS === 'ios' ? lightBrown : colors.primary) : colors.textSecondary} 
             />
           ),
         }}
@@ -71,11 +73,11 @@ export default function AdminTabLayout() {
         name="users"
         options={{
           title: 'Users',
-          tabBarIcon: ({ color, focused }) => (
+          tabBarIcon: ({ focused }) => (
             <IconSymbol 
               size={24} 
               name={focused ? "person.2.fill" : "person.2"} 
-              color={color} 
+              color={focused ? (Platform.OS === 'ios' ? lightBrown : colors.primary) : colors.textSecondary} 
             />
           ),
         }}
@@ -84,11 +86,11 @@ export default function AdminTabLayout() {
         name="orders"
         options={{
           title: 'Orders',
-          tabBarIcon: ({ color, focused }) => (
+          tabBarIcon: ({ focused }) => (
             <IconSymbol 
               size={24} 
               name={focused ? "bag.fill" : "bag"} 
-              color={color} 
+              color={focused ? (Platform.OS === 'ios' ? lightBrown : colors.primary) : colors.textSecondary} 
             />
           ),
         }}
@@ -97,11 +99,11 @@ export default function AdminTabLayout() {
         name="products"
         options={{
           title: 'Products',
-          tabBarIcon: ({ color, focused }) => (
+          tabBarIcon: ({ focused }) => (
             <IconSymbol 
               size={24} 
               name={focused ? "cube.box.fill" : "cube.box"} 
-              color={color} 
+              color={focused ? (Platform.OS === 'ios' ? lightBrown : colors.primary) : colors.textSecondary} 
             />
           ),
         }}
@@ -110,11 +112,11 @@ export default function AdminTabLayout() {
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color, focused }) => (
+          tabBarIcon: ({ focused }) => (
             <IconSymbol 
               size={24} 
               name={focused ? "gearshape.fill" : "gearshape"} 
-              color={color} 
+              color={focused ? (Platform.OS === 'ios' ? lightBrown : colors.primary) : colors.textSecondary} 
             />
           ),
         }}

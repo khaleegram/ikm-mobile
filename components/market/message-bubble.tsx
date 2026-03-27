@@ -35,7 +35,7 @@ export const MessageBubble = memo(function MessageBubble({
     messageId.startsWith('queued-') ||
     (Boolean(clientMessageId) && messageId === clientMessageId);
   const offerPayload = parseMarketOfferLink(message.paymentLink);
-  const messageText = String(message.message || (message as any).text || '').trim();
+  const messageText = String((message as any).text || message.message || '').trim();
 
   const handlePaymentLink = async () => {
     if (offerPayload && onOpenOffer && !isSent) {

@@ -13,6 +13,8 @@ export interface User {
   firstName?: string;             // First name
   lastName?: string;              // Last name
   phone?: string;                 // Phone number
+  phoneVerified?: boolean;        // true when phone has passed OTP verification
+  phoneVerifiedAt?: Timestamp | Date; // When phone OTP verification was completed
   whatsappNumber?: string;        // WhatsApp number (format: +234...)
   
   // Admin
@@ -49,6 +51,16 @@ export interface User {
     bankCode: string;             // Bank code
     accountNumber: string;        // Account number
     accountName: string;          // Account name
+  };
+
+  // Buyer checkout defaults (market app)
+  marketBuyerPhone?: string;      // Preferred phone for future orders
+  marketBuyerLocation?: {
+    state?: string;               // Preferred delivery state
+    city?: string;                // Preferred delivery city
+    address?: string;             // Preferred address line
+    latitude?: number;            // Last captured device latitude
+    longitude?: number;           // Last captured device longitude
   };
   
   // Onboarding
@@ -566,11 +578,62 @@ export interface Park {
 
 // Market Street Types
 
+export type MarketPostMediaType = 'image_gallery' | 'video';
+export type MarketSoundSourceType = 'original' | 'uploaded' | 'ikm';
+export type MarketSoundRightsStatus = 'owned' | 'licensed' | 'restricted';
+export type MarketSoundStatus = 'active' | 'muted' | 'removed';
+
+export interface MarketSound {
+  id?: string;
+  title: string;
+  createdBy: string;
+  creatorName?: string;
+  sourceType: MarketSoundSourceType;
+  sourceUri: string;
+  artworkUrl?: string;
+  durationMs?: number;
+  usageCount: number;
+  savedCount?: number;
+  rightsStatus: MarketSoundRightsStatus;
+  status: MarketSoundStatus;
+  createdAt: Timestamp | Date;
+  updatedAt: Timestamp | Date;
+}
+
+export interface MarketSoundSave {
+  id?: string;
+  soundId: string;
+  userId: string;
+  createdAt: Timestamp | Date;
+}
+
 // Market Post Collection - separate from business products
 export interface MarketPost {
   id?: string;
   posterId: string;              // Firebase Auth UID
-  images: string[];              // 1-20 image URLs (required)
+  mediaType?: MarketPostMediaType;
+  images: string[];              // 0-20 image URLs for photo posts; optional cover for video posts
+  coverImageUrl?: string;
+  videoUrl?: string;
+  videoMeta?: {
+    durationMs?: number;
+    width?: number;
+    height?: number;
+    aspectRatio?: number;
+    originalAudioMuted?: boolean;
+  };
+  soundMeta?: {
+    soundId?: string;
+    title: string;
+    sourceUri: string;
+    sourceType: MarketSoundSourceType;
+    artworkUrl?: string;
+    durationMs?: number;
+    startMs?: number;
+    soundVolume?: number;
+    originalAudioVolume?: number;
+    useOriginalVideoAudio?: boolean;
+  };
   hashtags?: string[];           // Optional hashtags
   price?: number;                // Optional price (NGN)
   isNegotiable?: boolean;        // Show DM action when priced posts are negotiable
@@ -603,9 +666,10 @@ export interface MarketMessage {
   senderId: string;              // Sender Firebase UID
   receiverId: string;            // Receiver Firebase UID
   postId: string;                // Related Market Post ID
-  message: string;               // Message text
+  text?: string;                 // Canonical message text
+  message?: string;              // Legacy alias (kept for backward compatibility)
   clientMessageId?: string;      // Client-generated ID for deduplication
-  type?: 'text' | 'media' | 'quote';
+  type?: 'text' | 'media' | 'quote' | 'offer';
   imageUrl?: string;             // Optional image in message
   paymentLink?: string;          // Optional payment link
   quoteCard?: {
