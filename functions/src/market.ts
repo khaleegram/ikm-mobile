@@ -1,72 +1,60 @@
-/**
- * Cloud Functions for IKM Marketplace
- * 
- * This file contains all HTTP callable functions that can be used
- * from both the web app and mobile app.
- * 
- * Authentication: Functions use Firebase ID token from Authorization header
- * Format: Authorization: Bearer <firebase-id-token>
- */
-
 import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
-import * as functions from 'firebase-functions';
 import { onRequest } from 'firebase-functions/v2/https';
+import { onObjectFinalized } from 'firebase-functions/v2/storage';
 import cors = require('cors');
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { onObjectFinalized } from 'firebase-functions/v2/storage';
 
-// Initialize Firebase Admin
-admin.initializeApp();
+// Initialize Firebase Admin if not already initialized
+if (admin.apps.length === 0) {
+  admin.initializeApp();
+}
 
 // CORS configuration - allow all origins for mobile/web apps
 const corsHandler = cors({ origin: true });
 
-// Define Firebase Secret for Paystack
-
 // Import utilities
 import {
-    requireAuth,
-    sendError,
-    sendResponse,
+  requireAuth,
+  sendError,
+  sendResponse,
 } from './utils';
-
-// ============================================================================
-// PAYMENT FUNCTIONS
-// ============================================================================
-
-
-
-
-function asNonEmptyString(value: unknown): string {
-  return String(value ?? '').trim();
-}
-
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Utility: Create a safe temporary file path
+ */
 function safeTmpFile(name: string): string {
   const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, '_');
   return path.join(os.tmpdir(), cleaned);
 }
 
+/**
+ * Utility: Parse Market Post ID from video storage path
+ */
 function parseMarketPostIdFromVideoPath(objectName: string): { ownerId: string | null; postId: string | null } {
-  // Expected: marketPosts/{uid}/post_{postId}.mp4 (from mobile app)
+  // Expected: marketPosts/{uid}/post_{postId}.mp4
   const normalized = String(objectName || '').trim();
   const parts = normalized.split('/');
   if (parts.length < 3) return { ownerId: null, postId: null };
   if (parts[0] !== 'marketPosts') return { ownerId: null, postId: null };
+  
   const ownerId = parts[1] || null;
   const fileName = parts.slice(2).join('/');
   const match = fileName.match(/post_([a-zA-Z0-9_-]+)\./);
   const postId = match?.[1] ? String(match[1]).trim() : null;
+  
   return { ownerId, postId };
 }
 
+/**
+ * Utility: Ensure directory exists
+ */
 async function ensureDirExists(dirPath: string) {
   try {
     await fs.mkdir(dirPath, { recursive: true });
@@ -76,13 +64,163 @@ async function ensureDirExists(dirPath: string) {
 }
 
 /**
+ * Utility: Normalize hashtags (array of strings, lowercase, alphanumeric)
+ */
+function normalizeMarketHashtags(rawHashtags: unknown): string[] {
+  if (!Array.isArray(rawHashtags)) {
+    return [];
+  }
+
+  const uniqueTags = new Set<string>();
+
+  for (const value of rawHashtags) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+
+    const normalized = value
+      .trim()
+      .replace(/^#/, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '');
+
+    if (!normalized || normalized.length > 30) {
+      continue;
+    }
+
+    uniqueTags.add(normalized);
+
+    if (uniqueTags.size >= 10) {
+      break;
+    }
+  }
+
+  return Array.from(uniqueTags);
+}
+
+/**
+ * Utility: Parse base64 image data string
+ */
+function parseBase64Image(imageDataUrl: string): {
+  buffer: Buffer;
+  extension: string;
+  contentType: string;
+} {
+  const match = imageDataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,([\s\S]+)$/);
+  if (!match) {
+    throw new Error('Invalid image format. Expected base64 data URL.');
+  }
+
+  const mimeSubtype = match[1].toLowerCase();
+  const base64Payload = match[2];
+  const buffer = Buffer.from(base64Payload, 'base64');
+  if (!buffer.length) {
+    throw new Error('Invalid image payload.');
+  }
+
+  const extensionBase = mimeSubtype.split('+')[0] || 'jpeg';
+  const extension = extensionBase === 'jpeg' ? 'jpg' : extensionBase;
+
+  return {
+    buffer,
+    extension,
+    contentType: `image/${mimeSubtype}`,
+  };
+}
+
+/**
+ * Utility: Upload base64 image to Firebase Storage
+ */
+async function uploadMarketImage(
+  imageDataUrl: string,
+  destinationWithoutExt: string,
+): Promise<string> {
+  const { buffer, extension, contentType } = parseBase64Image(imageDataUrl);
+  const storage = admin.storage();
+  const bucket = storage.bucket();
+  const filePath = `${destinationWithoutExt}.${extension}`;
+  const file = bucket.file(filePath);
+
+  await file.save(buffer, {
+    metadata: {
+      contentType,
+      cacheControl: 'public,max-age=31536000',
+    },
+  });
+  await file.makePublic();
+
+  return `https://storage.googleapis.com/${bucket.name}/${filePath}`;
+}
+
+/**
+ * Utility: Adjust trending hashtags counts
+ */
+async function adjustTrendingHashtags(hashtags: string[], delta: number): Promise<void> {
+  if (!hashtags.length || delta === 0) {
+    return;
+  }
+
+  const firestore = admin.firestore();
+
+  await Promise.all(
+    hashtags.map(async (tag) => {
+      const ref = firestore.collection('trendingHashtags').doc(tag);
+
+      await firestore.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(ref);
+        const existingCount = snapshot.exists ? (snapshot.data()?.count || 0) : 0;
+        const nextCount = existingCount + delta;
+
+        if (nextCount <= 0) {
+          transaction.delete(ref);
+          return;
+        }
+
+        const payload: Record<string, unknown> = {
+          tag,
+          count: nextCount,
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+
+        if (!snapshot.exists) {
+          payload.createdAt = FieldValue.serverTimestamp();
+        }
+
+        transaction.set(ref, payload, { merge: true });
+      });
+    }),
+  );
+}
+
+/**
+ * Utility: Delete collection documents in batches
+ */
+async function deleteCollectionInBatches(
+  baseQuery: admin.firestore.Query<admin.firestore.DocumentData>,
+  batchSize: number = 400,
+): Promise<void> {
+  while (true) {
+    const snapshot = await baseQuery.limit(batchSize).get();
+    if (snapshot.empty) {
+      return;
+    }
+
+    const batch = admin.firestore().batch();
+    snapshot.docs.forEach((docSnapshot) => batch.delete(docSnapshot.ref));
+    await batch.commit();
+
+    if (snapshot.size < batchSize) {
+      return;
+    }
+  }
+}
+
+// ============================================================================
+// STORAGE TRIGGERS
+// ============================================================================
+
+/**
  * Storage trigger: when a Market Street video is uploaded, extract audio to an m4a file
- * and update:
- * - `marketSounds/{soundId}.sourceUri` to point to the extracted audio
- * - `marketPosts/{postId}.soundMeta.sourceUri` to match (for reuse/detail preview)
- *
- * This makes "Original sound" a real reusable audio asset while leaving feed playback
- * free to use the video’s own audio track.
  */
 export const extractMarketSoundFromMarketVideo = onObjectFinalized(
   { cpu: 2, memory: '1GiB', timeoutSeconds: 300 },
@@ -100,7 +238,6 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
     const bucket = admin.storage().bucket(event.data.bucket);
     const firestore = admin.firestore();
 
-    // Load post to find associated sound doc (created by client during publish)
     const postRef = firestore.collection('marketPosts').doc(postId);
     const postSnap = await postRef.get();
     if (!postSnap.exists) return;
@@ -110,7 +247,6 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
     if (!soundId) return;
     if (soundType !== 'original') return;
 
-    // Download video to tmp and extract audio with ffmpeg
     const ffmpegPath = require('ffmpeg-static') as string | null;
     if (!ffmpegPath) {
       console.error('ffmpeg-static not available; cannot extract audio');
@@ -125,7 +261,6 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
     try {
       await bucket.file(objectName).download({ destination: tmpVideoPath });
 
-      // Extract audio track (AAC in m4a container) with a reasonable bitrate.
       await execFileAsync(ffmpegPath, [
         '-y',
         '-i',
@@ -147,7 +282,6 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
         },
       });
 
-      // Signed URL is not desired; use public download URL
       const audioUrl = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
         event.data.bucket
       )}/o/${encodeURIComponent(destPath)}?alt=media`;
@@ -187,24 +321,14 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
   }
 );
 
-
-// ============================================================================
-// ORDER FUNCTIONS
-// ============================================================================
-// ============================================================================
-// SHIPPING FUNCTIONS (PUBLIC - NO AUTH REQUIRED)
-// ============================================================================
-// ============================================================================
-// PAYOUT FUNCTIONS
-// ============================================================================
 // ============================================================================
 // CHAT FUNCTIONS
 // ============================================================================
 
 /**
- * Send order message
+ * Send order message (Market/Order context)
  */
-export const sendOrderMessage = functions.https.onRequest(async (request, response) => {
+export const sendOrderMessage = onRequest(async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
       if (request.method !== 'POST') {
@@ -255,202 +379,11 @@ export const sendOrderMessage = functions.https.onRequest(async (request, respon
 });
 
 // ============================================================================
-// USER FUNCTIONS
-// ============================================================================
-// ============================================================================
-// SEARCH FUNCTIONS (PUBLIC)
-// ============================================================================
-// ============================================================================
-// SELLER FUNCTIONS - PRODUCT MANAGEMENT
-// ============================================================================
-// ============================================================================
-// NORTHERN PRODUCT FUNCTIONS (Category-Specific Products)
-// ============================================================================
-// ============================================================================
-// SELLER FUNCTIONS - DASHBOARD & ANALYTICS
-// ============================================================================
-// ============================================================================
-// SELLER FUNCTIONS - REPORTS
-// ============================================================================
-// ============================================================================
-// SELLER FUNCTIONS - MARKETING (DISCOUNT CODES)
-// ============================================================================
-// ============================================================================
-// SELLER FUNCTIONS - STORE MANAGEMENT
-// ============================================================================
-// ============================================================================
-// SELLER FUNCTIONS - CUSTOMERS
-// ============================================================================
-// ============================================================================
-// ADMIN FUNCTIONS - USER MANAGEMENT
-// ============================================================================
-// ============================================================================
-// ADMIN FUNCTIONS - PLATFORM SETTINGS
-// ============================================================================
-// ============================================================================
-// ADMIN FUNCTIONS - ORDERS & DISPUTES
-// ============================================================================
-// ============================================================================
-// SHIPPING ZONE FUNCTIONS
-// ============================================================================
-// ============================================================================
-// ORDER AVAILABILITY FUNCTIONS
-// ============================================================================
-// ============================================================================
-// PARKS MANAGEMENT FUNCTIONS (ADMIN)
-// ============================================================================
-// ============================================================================
-// EARNINGS FUNCTIONS
-// ============================================================================
-// ============================================================================
-// PAYOUT REQUEST FUNCTIONS
-// ============================================================================
-// ============================================================================
-// SECURITY & ADMIN FUNCTIONS
-// ============================================================================
-// ============================================================================
 // MARKET STREET FUNCTIONS
 // ============================================================================
 
-function normalizeMarketHashtags(rawHashtags: unknown): string[] {
-  if (!Array.isArray(rawHashtags)) {
-    return [];
-  }
-
-  const uniqueTags = new Set<string>();
-
-  for (const value of rawHashtags) {
-    if (typeof value !== 'string') {
-      continue;
-    }
-
-    const normalized = value
-      .trim()
-      .replace(/^#/, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, '');
-
-    if (!normalized || normalized.length > 30) {
-      continue;
-    }
-
-    uniqueTags.add(normalized);
-
-    if (uniqueTags.size >= 10) {
-      break;
-    }
-  }
-
-  return Array.from(uniqueTags);
-}
-
-function parseBase64Image(imageDataUrl: string): {
-  buffer: Buffer;
-  extension: string;
-  contentType: string;
-} {
-  const match = imageDataUrl.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,([\s\S]+)$/);
-  if (!match) {
-    throw new Error('Invalid image format. Expected base64 data URL.');
-  }
-
-  const mimeSubtype = match[1].toLowerCase();
-  const base64Payload = match[2];
-  const buffer = Buffer.from(base64Payload, 'base64');
-  if (!buffer.length) {
-    throw new Error('Invalid image payload.');
-  }
-
-  const extensionBase = mimeSubtype.split('+')[0] || 'jpeg';
-  const extension = extensionBase === 'jpeg' ? 'jpg' : extensionBase;
-
-  return {
-    buffer,
-    extension,
-    contentType: `image/${mimeSubtype}`,
-  };
-}
-
-async function uploadMarketImage(
-  imageDataUrl: string,
-  destinationWithoutExt: string,
-): Promise<string> {
-  const { buffer, extension, contentType } = parseBase64Image(imageDataUrl);
-  const storage = admin.storage();
-  const bucket = storage.bucket();
-  const filePath = `${destinationWithoutExt}.${extension}`;
-  const file = bucket.file(filePath);
-
-  await file.save(buffer, {
-    metadata: {
-      contentType,
-      cacheControl: 'public,max-age=31536000',
-    },
-  });
-  await file.makePublic();
-
-  return `https://storage.googleapis.com/${bucket.name}/${filePath}`;
-}
-
-async function adjustTrendingHashtags(hashtags: string[], delta: number): Promise<void> {
-  if (!hashtags.length || delta === 0) {
-    return;
-  }
-
-  const firestore = admin.firestore();
-
-  await Promise.all(
-    hashtags.map(async (tag) => {
-      const ref = firestore.collection('trendingHashtags').doc(tag);
-
-      await firestore.runTransaction(async (transaction) => {
-        const snapshot = await transaction.get(ref);
-        const existingCount = snapshot.exists ? (snapshot.data()?.count || 0) : 0;
-        const nextCount = existingCount + delta;
-
-        if (nextCount <= 0) {
-          transaction.delete(ref);
-          return;
-        }
-
-        const payload: Record<string, unknown> = {
-          tag,
-          count: nextCount,
-          updatedAt: FieldValue.serverTimestamp(),
-        };
-
-        if (!snapshot.exists) {
-          payload.createdAt = FieldValue.serverTimestamp();
-        }
-
-        transaction.set(ref, payload, { merge: true });
-      });
-    }),
-  );
-}
-
-async function deleteCollectionInBatches(
-  baseQuery: admin.firestore.Query<admin.firestore.DocumentData>,
-  batchSize: number = 400,
-): Promise<void> {
-  while (true) {
-    const snapshot = await baseQuery.limit(batchSize).get();
-    if (snapshot.empty) {
-      return;
-    }
-
-    const batch = admin.firestore().batch();
-    snapshot.docs.forEach((docSnapshot) => batch.delete(docSnapshot.ref));
-    await batch.commit();
-
-    if (snapshot.size < batchSize) {
-      return;
-    }
-  }
-}
-
 /**
- * Create Market Post with image uploads
+ * Create Market Post
  */
 export const createMarketPost = onRequest(async (request, response) => {
   return corsHandler(request, response, async () => {
@@ -475,8 +408,7 @@ export const createMarketPost = onRequest(async (request, response) => {
         return sendError(response, 'Images are required (1-20 images)', 400);
       }
 
-      const cleanDescription =
-        typeof description === 'string' ? description.trim() : '';
+      const cleanDescription = typeof description === 'string' ? description.trim() : '';
       if (cleanDescription.length > 1000) {
         return sendError(response, 'Description is too long (max 1000 characters)', 400);
       }
@@ -490,8 +422,7 @@ export const createMarketPost = onRequest(async (request, response) => {
         cleanPrice = parsedPrice;
       }
 
-      const cleanContactMethod =
-        contactMethod === 'whatsapp' ? 'whatsapp' : 'in-app';
+      const cleanContactMethod = contactMethod === 'whatsapp' ? 'whatsapp' : 'in-app';
 
       let cleanLocation: { state?: string; city?: string } | undefined;
       if (location && typeof location === 'object') {
@@ -513,7 +444,6 @@ export const createMarketPost = onRequest(async (request, response) => {
           if (typeof image !== 'string' || !image.startsWith('data:image/')) {
             throw new Error(`Invalid image at position ${index + 1}`);
           }
-
           const destination = `marketPosts/${postRef.id}/${Date.now()}_${index + 1}`;
           return uploadMarketImage(image, destination);
         }),
@@ -533,15 +463,9 @@ export const createMarketPost = onRequest(async (request, response) => {
         updatedAt: FieldValue.serverTimestamp(),
       };
 
-      if (cleanPrice !== undefined) {
-        postPayload.price = cleanPrice;
-      }
-      if (cleanDescription) {
-        postPayload.description = cleanDescription;
-      }
-      if (cleanLocation) {
-        postPayload.location = cleanLocation;
-      }
+      if (cleanPrice !== undefined) postPayload.price = cleanPrice;
+      if (cleanDescription) postPayload.description = cleanDescription;
+      if (cleanLocation) postPayload.location = cleanLocation;
 
       await postRef.set(postPayload);
 
@@ -659,9 +583,6 @@ export const deleteMarketPost = onRequest(async (request, response) => {
 
       const postData = postDoc.data() || {};
       const posterId = typeof postData.posterId === 'string' ? postData.posterId : '';
-      if (!posterId) {
-        return sendError(response, 'Invalid post owner', 400);
-      }
 
       if (posterId !== auth.uid && !auth.isAdmin) {
         return sendError(response, 'Forbidden: You can only delete your own posts', 403);
@@ -717,7 +638,7 @@ export const deleteMarketPost = onRequest(async (request, response) => {
 });
 
 /**
- * Increment post views (public endpoint)
+ * Increment post views
  */
 export const incrementPostViews = onRequest(async (request, response) => {
   return corsHandler(request, response, async () => {
@@ -733,9 +654,9 @@ export const incrementPostViews = onRequest(async (request, response) => {
 
       const firestore = admin.firestore();
       const postRef = firestore.collection('marketPosts').doc(postId);
-      const postDoc = await postRef.get();
+      const postSnapshot = await postRef.get();
 
-      if (!postDoc.exists) {
+      if (!postSnapshot.exists) {
         return sendError(response, 'Post not found', 404);
       }
 
@@ -843,27 +764,20 @@ export const deleteMarketComment = onRequest(async (request, response) => {
         }
 
         const commentData = commentDoc.data() || {};
-        const commentOwnerId =
-          typeof commentData.userId === 'string' ? commentData.userId : '';
-
-        if (!commentOwnerId) {
-          throw new Error('Invalid comment owner');
-        }
+        const commentOwnerId = String(commentData.userId || '');
 
         if (commentOwnerId !== auth.uid && !auth.isAdmin) {
           throw new Error('Forbidden: You can only delete your own comments');
         }
 
-        const postId = typeof commentData.postId === 'string' ? commentData.postId : '';
+        const postId = String(commentData.postId || '');
         if (!postId) {
           throw new Error('Invalid post reference');
         }
 
         const postRef = firestore.collection('marketPosts').doc(postId);
         const postDoc = await transaction.get(postRef);
-        const currentComments = postDoc.exists && typeof postDoc.data()?.comments === 'number'
-          ? postDoc.data()!.comments
-          : 0;
+        const currentComments = postDoc.exists ? (postDoc.data()?.comments || 0) : 0;
 
         transaction.delete(commentRef);
 
@@ -881,12 +795,8 @@ export const deleteMarketComment = onRequest(async (request, response) => {
       });
     } catch (error: any) {
       console.error('Error in deleteMarketComment:', error);
-      if (error.message === 'Comment not found') {
-        return sendError(response, error.message, 404);
-      }
-      if (error.message?.startsWith('Forbidden')) {
-        return sendError(response, error.message, 403);
-      }
+      if (error.message === 'Comment not found') return sendError(response, error.message, 404);
+      if (error.message?.startsWith('Forbidden')) return sendError(response, error.message, 403);
       return sendError(response, error.message || 'Internal server error', 500);
     }
   });
@@ -916,14 +826,12 @@ export const createMarketChat = onRequest(async (request, response) => {
       }
 
       const postData = postDoc.data() || {};
-      const finalPosterId =
-        typeof posterId === 'string' && posterId.trim()
-          ? posterId.trim()
-          : (typeof postData.posterId === 'string' ? postData.posterId : '');
-      const finalBuyerId =
-        typeof buyerId === 'string' && buyerId.trim()
-          ? buyerId.trim()
-          : auth.uid;
+      const finalPosterId = typeof posterId === 'string' && posterId.trim() 
+        ? posterId.trim() 
+        : (postData.posterId || '');
+      const finalBuyerId = typeof buyerId === 'string' && buyerId.trim() 
+        ? buyerId.trim() 
+        : auth.uid;
 
       if (!finalPosterId || !finalBuyerId) {
         return sendError(response, 'Invalid chat participants', 400);
@@ -945,19 +853,13 @@ export const createMarketChat = onRequest(async (request, response) => {
         return sendResponse(response, {
           success: true,
           chatId,
-          chat: {
-            id: chatId,
-            ...existingChatDoc.data(),
-          },
+          chat: { id: chatId, ...existingChatDoc.data() },
         });
       }
 
       const posterUserDoc = await firestore.collection('users').doc(finalPosterId).get();
       const posterUserData = posterUserDoc.data() || {};
-      const posterName =
-        (typeof posterUserData.storeName === 'string' && posterUserData.storeName) ||
-        (typeof posterUserData.displayName === 'string' && posterUserData.displayName) ||
-        'Seller';
+      const posterName = posterUserData.storeName || posterUserData.displayName || 'Seller';
 
       await chatRef.set({
         chatId,
@@ -978,10 +880,7 @@ export const createMarketChat = onRequest(async (request, response) => {
       return sendResponse(response, {
         success: true,
         chatId,
-        chat: {
-          id: chatId,
-          ...createdChatDoc.data(),
-        },
+        chat: { id: chatId, ...createdChatDoc.data() },
       });
     } catch (error: any) {
       console.error('Error in createMarketChat:', error);
@@ -1001,12 +900,7 @@ export const sendMarketMessage = onRequest(async (request, response) => {
       }
 
       const auth = await requireAuth(request.headers.authorization || null);
-      const {
-        chatId,
-        message,
-        imageUrl,
-        paymentLink,
-      } = request.body || {};
+      const { chatId, message, imageUrl, paymentLink } = request.body || {};
 
       if (!chatId || typeof chatId !== 'string') {
         return sendError(response, 'Chat ID is required', 400);
@@ -1014,27 +908,9 @@ export const sendMarketMessage = onRequest(async (request, response) => {
 
       const cleanMessage = typeof message === 'string' ? message.trim() : '';
       const cleanImage = typeof imageUrl === 'string' ? imageUrl.trim() : '';
-      const cleanPaymentLink = typeof paymentLink === 'string' ? paymentLink.trim() : '';
 
       if (!cleanMessage && !cleanImage) {
         return sendError(response, 'Message or image is required', 400);
-      }
-
-      if (cleanMessage.length > 1000) {
-        return sendError(response, 'Message is too long (max 1000 characters)', 400);
-      }
-
-      let normalizedPaymentLink: string | undefined;
-      if (cleanPaymentLink) {
-        try {
-          const parsed = new URL(cleanPaymentLink);
-          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-            return sendError(response, 'Invalid payment link URL', 400);
-          }
-          normalizedPaymentLink = cleanPaymentLink;
-        } catch {
-          return sendError(response, 'Invalid payment link URL', 400);
-        }
       }
 
       const firestore = admin.firestore();
@@ -1042,78 +918,21 @@ export const sendMarketMessage = onRequest(async (request, response) => {
       let chatDoc = await chatRef.get();
 
       if (!chatDoc.exists) {
-        const segments = chatId.split('_').filter(Boolean);
-        let inferredBuyerId = auth.uid;
-        let inferredPosterId = '';
-        let inferredPostId = '';
-
-        if (segments.length >= 3) {
-          inferredBuyerId = segments[0];
-          inferredPosterId = segments[1];
-          inferredPostId = segments.slice(2).join('_');
-        } else if (segments.length === 2) {
-          inferredPosterId = segments[0];
-          inferredPostId = segments[1];
-        } else {
-          return sendError(response, 'Chat not found', 404);
-        }
-
-        if (!inferredPostId || !inferredPosterId) {
-          return sendError(response, 'Invalid chat metadata', 400);
-        }
-
-        if (auth.uid !== inferredBuyerId && auth.uid !== inferredPosterId) {
-          inferredBuyerId = auth.uid;
-        }
-
-        const participants = Array.from(new Set([inferredBuyerId, inferredPosterId]));
-        if (participants.length < 2) {
-          return sendError(response, 'Invalid chat participants', 400);
-        }
-
-        const postDoc = await firestore.collection('marketPosts').doc(inferredPostId).get();
-        if (!postDoc.exists) {
-          return sendError(response, 'Related post not found', 404);
-        }
-
-        await chatRef.set({
-          chatId,
-          postId: inferredPostId,
-          buyerId: inferredBuyerId,
-          posterId: inferredPosterId,
-          participants,
-          lastMessage: '',
-          lastMessageAt: null,
-          unreadCount: 0,
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-        }, { merge: true });
-
-        chatDoc = await chatRef.get();
+        return sendError(response, 'Chat not found', 404);
       }
 
       const chatData = chatDoc.data() || {};
-      const participants = Array.isArray(chatData.participants)
-        ? chatData.participants.filter((id): id is string => typeof id === 'string')
-        : [];
+      const participants = Array.isArray(chatData.participants) ? chatData.participants : [];
 
       if (!participants.includes(auth.uid)) {
         return sendError(response, 'Forbidden: You are not part of this chat', 403);
       }
 
       const receiverId = participants.find((id) => id !== auth.uid);
-      if (!receiverId) {
-        return sendError(response, 'Invalid chat participants', 400);
-      }
-
-      const postId = typeof chatData.postId === 'string' ? chatData.postId : '';
-      if (!postId) {
-        return sendError(response, 'Invalid chat post reference', 400);
-      }
-
+      const postId = chatData.postId || '';
       const messageRef = chatRef.collection('messages').doc();
-      let uploadedImageUrl: string | undefined;
 
+      let uploadedImageUrl: string | undefined;
       if (cleanImage) {
         if (cleanImage.startsWith('data:image/')) {
           uploadedImageUrl = await uploadMarketImage(
@@ -1135,25 +954,20 @@ export const sendMarketMessage = onRequest(async (request, response) => {
         createdAt: FieldValue.serverTimestamp(),
       };
 
-      if (uploadedImageUrl) {
-        messagePayload.imageUrl = uploadedImageUrl;
-      }
-      if (normalizedPaymentLink) {
-        messagePayload.paymentLink = normalizedPaymentLink;
-      }
+      if (uploadedImageUrl) messagePayload.imageUrl = uploadedImageUrl;
+      if (paymentLink) messagePayload.paymentLink = paymentLink;
 
       await messageRef.set(messagePayload);
 
-      await chatRef.set({
+      await chatRef.update({
         lastMessage: cleanMessage || (uploadedImageUrl ? 'Image' : 'Message'),
         lastMessageAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
+      });
 
       return sendResponse(response, {
         success: true,
         messageId: messageRef.id,
-        message: 'Message sent successfully',
       });
     } catch (error: any) {
       console.error('Error in sendMarketMessage:', error);
@@ -1162,7 +976,11 @@ export const sendMarketMessage = onRequest(async (request, response) => {
   });
 });
 
-// ============================================================================
-// KEEP HELLO WORLD FOR TESTING
-// ============================================================================
-// Force redeploy to pick up config changes
+/**
+ * Hello World for testing
+ */
+export const helloWorld = onRequest(async (request, response) => {
+  return corsHandler(request, response, async () => {
+    sendResponse(response, { message: "Hello from IKM Market Street!" });
+  });
+});

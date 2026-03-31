@@ -1,8 +1,11 @@
-// Products API client
-// Handles creation and updates of products with category-specific fields
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { Product, ProductCategory } from '@/types';
+
+const NORTHERN_PRODUCT_FUNCTIONS = {
+  createProductWithCategory: 'https://createnorthernproduct-q3rjv54uka-uc.a.run.app',
+  updateProductWithCategory: 'https://updatenorthernproduct-q3rjv54uka-uc.a.run.app',
+};
 
 export interface CreateProductData {
   name: string;
@@ -111,63 +114,65 @@ export const productApi = {
         imageBase64 = await convertImageToBase64(data.imageUrl);
       }
 
-      const response = await cloudFunctions.createNorthernProduct({
-        name: data.name,
-        description: data.description,
-        price: data.price,
-        compareAtPrice: data.compareAtPrice,
-        stock: data.stock,
-        sku: data.sku,
-        category: data.category,
-        status: data.status || 'draft',
-        imageBase64, // Legacy support
-        imageUrls: data.imageUrls,
-        videoUrl: data.videoUrl,
-        audioDescription: data.audioDescription,
-        
-        // Category-specific fields
-        volume: data.volume,
-        fragranceType: data.fragranceType,
-        container: data.container,
-        sizeType: data.sizeType,
-        abayaLength: data.abayaLength,
-        standardSize: data.standardSize,
-        setIncludes: data.setIncludes,
-        material: data.material,
-        packaging: data.packaging,
-        quantity: data.quantity,
-        taste: data.taste,
-        materialType: data.materialType,
-        customMaterialType: data.customMaterialType,
-        fabricLength: data.fabricLength,
-        quality: data.quality,
-        // Skincare fields
-        skincareBrand: data.skincareBrand,
-        skincareType: data.skincareType,
-        skincareSize: data.skincareSize,
-        // Haircare fields
-        haircareType: data.haircareType,
-        haircareBrand: data.haircareBrand,
-        haircareSize: data.haircareSize,
-        haircarePackageItems: data.haircarePackageItems,
-        // Islamic fields
-        islamicType: data.islamicType,
-        islamicSize: data.islamicSize,
-        islamicMaterial: data.islamicMaterial,
-        // Electronics fields
-        brand: data.brand,
-        model: data.model,
-        // Delivery settings
-        deliveryFeePaidBy: data.deliveryFeePaidBy,
-        deliveryMethods: data.deliveryMethods,
+      const response = await coreCloudClient.request<any>(NORTHERN_PRODUCT_FUNCTIONS.createProductWithCategory, {
+        method: 'POST',
+        body: {
+          name: data.name,
+          description: data.description,
+          price: data.price,
+          compareAtPrice: data.compareAtPrice,
+          stock: data.stock,
+          sku: data.sku,
+          category: data.category,
+          status: data.status || 'draft',
+          imageBase64, // Legacy support
+          imageUrls: data.imageUrls,
+          videoUrl: data.videoUrl,
+          audioDescription: data.audioDescription,
+          
+          // Category-specific fields
+          volume: data.volume,
+          fragranceType: data.fragranceType,
+          container: (data as any).containerType || (data as any).container,
+          sizeType: data.sizeType,
+          abayaLength: data.abayaLength,
+          standardSize: data.standardSize,
+          setIncludes: data.setIncludes,
+          material: data.material,
+          packaging: (data as any).packagingType || (data as any).packaging,
+          quantity: data.quantity,
+          taste: data.taste,
+          materialType: data.materialType,
+          customMaterialType: data.customMaterialType,
+          fabricLength: data.fabricLength,
+          quality: data.quality,
+          // Skincare fields
+          skincareBrand: (data as any).skincareBrand,
+          skincareType: (data as any).skincareType,
+          skincareSize: (data as any).skincareSize,
+          // Haircare fields
+          haircareType: (data as any).hairCareType || (data as any).haircareType,
+          haircareBrand: (data as any).haircareBrand,
+          haircareSize: (data as any).size || (data as any).haircareSize,
+          haircarePackageItems: data.haircarePackageItems,
+          // Islamic fields
+          islamicType: (data as any).islamicProductType || (data as any).islamicType,
+          islamicSize: (data as any).islamicSize,
+          islamicMaterial: (data as any).islamicMaterial,
+          // Electronics fields
+          brand: data.brand,
+          model: data.model,
+          // Delivery settings
+          deliveryFeePaidBy: (data as any).deliveryFeePaidBy,
+          deliveryMethods: (data as any).deliveryMethods,
+        },
+        requiresAuth: true,
       });
 
       if (!response.success) {
         throw new Error(response.message || 'Failed to create product');
       }
 
-      // Return the created product (you may need to fetch it separately)
-      // For now, return a partial product with the ID
       return {
         id: response.productId,
         sellerId: '', // Will be set by backend
@@ -198,63 +203,66 @@ export const productApi = {
         imageBase64 = await convertImageToBase64(data.imageUrl);
       }
 
-      const response = await cloudFunctions.updateNorthernProduct({
-        productId,
-        name: data.name,
-        description: data.description,
-        price: data.price,
-        compareAtPrice: data.compareAtPrice,
-        stock: data.stock,
-        sku: data.sku,
-        category: data.category,
-        status: data.status,
-        imageBase64, // Legacy support
-        imageUrls: data.imageUrls,
-        videoUrl: data.videoUrl,
-        audioDescription: data.audioDescription,
-        
-        // Category-specific fields
-        volume: data.volume,
-        fragranceType: data.fragranceType,
-        container: data.container,
-        sizeType: data.sizeType,
-        abayaLength: data.abayaLength,
-        standardSize: data.standardSize,
-        setIncludes: data.setIncludes,
-        material: data.material,
-        packaging: data.packaging,
-        quantity: data.quantity,
-        taste: data.taste,
-        materialType: data.materialType,
-        customMaterialType: data.customMaterialType,
-        fabricLength: data.fabricLength,
-        quality: data.quality,
-        // Skincare fields
-        skincareBrand: data.skincareBrand,
-        skincareType: data.skincareType,
-        skincareSize: data.skincareSize,
-        // Haircare fields
-        haircareType: data.haircareType,
-        haircareBrand: data.haircareBrand,
-        haircareSize: data.haircareSize,
-        haircarePackageItems: data.haircarePackageItems,
-        // Islamic fields
-        islamicType: data.islamicType,
-        islamicSize: data.islamicSize,
-        islamicMaterial: data.islamicMaterial,
-        // Electronics fields
-        brand: data.brand,
-        model: data.model,
-        // Delivery settings
-        deliveryFeePaidBy: data.deliveryFeePaidBy,
-        deliveryMethods: data.deliveryMethods,
+      const response = await coreCloudClient.request<any>(NORTHERN_PRODUCT_FUNCTIONS.updateProductWithCategory, {
+        method: 'POST',
+        body: {
+          productId,
+          name: data.name,
+          description: data.description,
+          price: data.price,
+          compareAtPrice: data.compareAtPrice,
+          stock: data.stock,
+          sku: data.sku,
+          category: data.category,
+          status: data.status,
+          imageBase64, // Legacy support
+          imageUrls: data.imageUrls,
+          videoUrl: data.videoUrl,
+          audioDescription: data.audioDescription,
+          
+          // Category-specific fields
+          volume: data.volume,
+          fragranceType: data.fragranceType,
+          container: data.container,
+          sizeType: data.sizeType,
+          abayaLength: data.abayaLength,
+          standardSize: data.standardSize,
+          setIncludes: data.setIncludes,
+          material: data.material,
+          packaging: data.packaging,
+          quantity: data.quantity,
+          taste: data.taste,
+          materialType: data.materialType,
+          customMaterialType: data.customMaterialType,
+          fabricLength: data.fabricLength,
+          quality: data.quality,
+          // Skincare fields
+          skincareBrand: data.skincareBrand,
+          skincareType: data.skincareType,
+          skincareSize: data.skincareSize,
+          // Haircare fields
+          haircareType: data.haircareType,
+          haircareBrand: data.haircareBrand,
+          haircareSize: data.haircareSize,
+          haircarePackageItems: data.haircarePackageItems,
+          // Islamic fields
+          islamicType: data.islamicType,
+          islamicSize: data.islamicSize,
+          islamicMaterial: data.islamicMaterial,
+          // Electronics fields
+          brand: data.brand,
+          model: data.model,
+          // Delivery settings
+          deliveryFeePaidBy: data.deliveryFeePaidBy,
+          deliveryMethods: data.deliveryMethods,
+        },
+        requiresAuth: true,
       });
 
       if (!response.success) {
         throw new Error(response.message || 'Failed to update product');
       }
 
-      // Return updated product (you may need to fetch it separately)
       return {
         id: productId,
         ...data,
@@ -266,4 +274,5 @@ export const productApi = {
     }
   },
 };
+
 

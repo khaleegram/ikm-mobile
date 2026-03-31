@@ -1,8 +1,11 @@
-// Products API client
-// Handles creation and updates of products with category-specific fields
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { Product, ProductCategory } from '@/types';
+
+const PRODUCT_CATEGORY_FUNCTIONS = {
+  createProductWithCategory: 'https://createnorthernproduct-q3rjv54uka-uc.a.run.app',
+  updateProductWithCategory: 'https://updatenorthernproduct-q3rjv54uka-uc.a.run.app',
+};
 
 export interface CreateProductData {
   name: string;
@@ -22,27 +25,54 @@ export interface CreateProductData {
   // Category-specific fields
   volume?: string;
   fragranceType?: string;
-  containerType?: string;
-  sizeType?: 'standard' | 'custom';
+  container?: string;
+  containerType?: string; // Legacy
+  sizeType?: 'standard' | 'custom' | 'free-size' | 'abaya-length';
   abayaLength?: string;
   standardSize?: string;
-  setIncludes?: string[];
+  setIncludes?: string[] | string;
   material?: string;
-  packagingType?: string;
+  packaging?: string;
+  packagingType?: string; // Legacy
   quantity?: number;
   taste?: string;
   materialType?: string;
   customMaterialType?: string;
   fabricLength?: string;
   quality?: string;
-  brand?: string;
-  productType?: string;
-  size?: string;
-  hairCareType?: string;
+  
+  // Skincare fields
+  skincareBrand?: string;
+  skincareType?: string;
+  skincareSize?: string;
+  
+  // Haircare fields
+  hairCareType?: string; // Legacy
+  haircareType?: string;
+  haircareBrand?: string;
+  size?: string; // Legacy
+  haircareSize?: string;
   haircarePackageItems?: string[];
-  islamicProductType?: string;
+  
+  // Islamic fields
+  islamicProductType?: string; // Legacy
+  islamicType?: string;
+  islamicSize?: string;
+  islamicMaterial?: string;
+  
+  // Electronics fields
+  brand?: string;
   model?: string;
+  
+  // Delivery settings
+  deliveryFeePaidBy?: 'seller' | 'buyer';
+  deliveryMethods?: {
+    localDispatch?: { enabled: boolean };
+    waybill?: { enabled: boolean };
+    pickup?: { enabled: boolean; landmark?: string };
+  };
 }
+
 
 export interface UpdateProductData {
   productId?: string;
@@ -114,63 +144,65 @@ export const productApi = {
         imageBase64 = await convertImageToBase64(data.imageUrl);
       }
 
-      const response = await cloudFunctions.createProductWithCategory({
-        name: data.name,
-        description: data.description,
-        price: data.price,
-        compareAtPrice: data.compareAtPrice,
-        stock: data.stock,
-        sku: data.sku,
-        category: data.category,
-        status: data.status || 'draft',
-        imageBase64, // Send base64 image (cloud function will upload to storage)
-        imageUrls: data.imageUrls,
-        videoUrl: data.videoUrl,
-        audioDescription: data.audioDescription,
-        
-        // Category-specific fields
-        volume: data.volume,
-        fragranceType: data.fragranceType,
-        container: data.container,
-        sizeType: data.sizeType,
-        abayaLength: data.abayaLength,
-        standardSize: data.standardSize,
-        setIncludes: data.setIncludes,
-        material: data.material,
-        packaging: data.packaging,
-        quantity: data.quantity,
-        taste: data.taste,
-        materialType: data.materialType,
-        customMaterialType: data.customMaterialType,
-        fabricLength: data.fabricLength,
-        quality: data.quality,
-        // Skincare fields
-        skincareBrand: data.skincareBrand,
-        skincareType: data.skincareType,
-        skincareSize: data.skincareSize,
-        // Haircare fields
-        haircareType: data.haircareType,
-        haircareBrand: data.haircareBrand,
-        haircareSize: data.haircareSize,
-        haircarePackageItems: data.haircarePackageItems,
-        // Islamic fields
-        islamicType: data.islamicType,
-        islamicSize: data.islamicSize,
-        islamicMaterial: data.islamicMaterial,
-        // Electronics fields
-        brand: data.brand,
-        model: data.model,
-        // Delivery settings
-        deliveryFeePaidBy: data.deliveryFeePaidBy,
-        deliveryMethods: data.deliveryMethods,
+      const response = await coreCloudClient.request<any>(PRODUCT_CATEGORY_FUNCTIONS.createProductWithCategory, {
+        method: 'POST',
+        body: {
+          name: data.name,
+          description: data.description,
+          price: data.price,
+          compareAtPrice: data.compareAtPrice,
+          stock: data.stock,
+          sku: data.sku,
+          category: data.category,
+          status: data.status || 'draft',
+          imageBase64, // Send base64 image (cloud function will upload to storage)
+          imageUrls: data.imageUrls,
+          videoUrl: data.videoUrl,
+          audioDescription: data.audioDescription,
+          
+          // Category-specific fields
+          volume: data.volume,
+          fragranceType: data.fragranceType,
+          container: data.container,
+          sizeType: data.sizeType,
+          abayaLength: data.abayaLength,
+          standardSize: data.standardSize,
+          setIncludes: data.setIncludes,
+          material: data.material,
+          packaging: data.packaging,
+          quantity: data.quantity,
+          taste: data.taste,
+          materialType: data.materialType,
+          customMaterialType: data.customMaterialType,
+          fabricLength: data.fabricLength,
+          quality: data.quality,
+          // Skincare fields
+          skincareBrand: data.skincareBrand,
+          skincareType: data.skincareType,
+          skincareSize: data.skincareSize,
+          // Haircare fields
+          haircareType: data.haircareType,
+          haircareBrand: data.haircareBrand,
+          haircareSize: data.haircareSize,
+          haircarePackageItems: data.haircarePackageItems,
+          // Islamic fields
+          islamicType: data.islamicType,
+          islamicSize: data.islamicSize,
+          islamicMaterial: data.islamicMaterial,
+          // Electronics fields
+          brand: data.brand,
+          model: data.model,
+          // Delivery settings
+          deliveryFeePaidBy: data.deliveryFeePaidBy,
+          deliveryMethods: data.deliveryMethods,
+        },
+        requiresAuth: true,
       });
 
       if (!response.success) {
         throw new Error(response.message || 'Failed to create product');
       }
 
-      // Return the created product (you may need to fetch it separately)
-      // For now, return a partial product with the ID
       return {
         id: response.productId,
         sellerId: '', // Will be set by backend
@@ -202,63 +234,66 @@ export const productApi = {
         imageBase64 = await convertImageToBase64(data.imageUrl);
       }
 
-      const response = await cloudFunctions.updateProductWithCategory({
-        productId,
-        name: data.name,
-        description: data.description,
-        price: data.price,
-        compareAtPrice: data.compareAtPrice,
-        stock: data.stock,
-        sku: data.sku,
-        category: data.category,
-        status: data.status,
-        imageBase64, // Send base64 image if provided (cloud function will upload to storage)
-        imageUrls: data.imageUrls, // Existing + new URLs (cloud function will merge)
-        videoUrl: data.videoUrl,
-        audioDescription: data.audioDescription,
-        
-        // Category-specific fields
-        volume: data.volume,
-        fragranceType: data.fragranceType,
-        container: data.container,
-        sizeType: data.sizeType,
-        abayaLength: data.abayaLength,
-        standardSize: data.standardSize,
-        setIncludes: data.setIncludes,
-        material: data.material,
-        packaging: data.packaging,
-        quantity: data.quantity,
-        taste: data.taste,
-        materialType: data.materialType,
-        customMaterialType: data.customMaterialType,
-        fabricLength: data.fabricLength,
-        quality: data.quality,
-        // Skincare fields
-        skincareBrand: data.skincareBrand,
-        skincareType: data.skincareType,
-        skincareSize: data.skincareSize,
-        // Haircare fields
-        haircareType: data.haircareType,
-        haircareBrand: data.haircareBrand,
-        haircareSize: data.haircareSize,
-        haircarePackageItems: data.haircarePackageItems,
-        // Islamic fields
-        islamicType: data.islamicType,
-        islamicSize: data.islamicSize,
-        islamicMaterial: data.islamicMaterial,
-        // Electronics fields
-        brand: data.brand,
-        model: data.model,
-        // Delivery settings
-        deliveryFeePaidBy: data.deliveryFeePaidBy,
-        deliveryMethods: data.deliveryMethods,
+      const response = await coreCloudClient.request<any>(PRODUCT_CATEGORY_FUNCTIONS.updateProductWithCategory, {
+        method: 'POST',
+        body: {
+          productId,
+          name: data.name,
+          description: data.description,
+          price: data.price,
+          compareAtPrice: data.compareAtPrice,
+          stock: data.stock,
+          sku: data.sku,
+          category: data.category,
+          status: data.status,
+          imageBase64, // Send base64 image if provided (cloud function will upload to storage)
+          imageUrls: data.imageUrls, // Existing + new URLs (cloud function will merge)
+          videoUrl: data.videoUrl,
+          audioDescription: data.audioDescription,
+          
+          // Category-specific fields
+          volume: data.volume,
+          fragranceType: data.fragranceType,
+          container: data.container,
+          sizeType: data.sizeType,
+          abayaLength: data.abayaLength,
+          standardSize: data.standardSize,
+          setIncludes: data.setIncludes,
+          material: data.material,
+          packaging: data.packaging,
+          quantity: data.quantity,
+          taste: data.taste,
+          materialType: data.materialType,
+          customMaterialType: data.customMaterialType,
+          fabricLength: data.fabricLength,
+          quality: data.quality,
+          // Skincare fields
+          skincareBrand: data.skincareBrand,
+          skincareType: data.skincareType,
+          skincareSize: data.skincareSize,
+          // Haircare fields
+          haircareType: data.haircareType,
+          haircareBrand: data.haircareBrand,
+          haircareSize: data.haircareSize,
+          haircarePackageItems: data.haircarePackageItems,
+          // Islamic fields
+          islamicType: data.islamicType,
+          islamicSize: data.islamicSize,
+          islamicMaterial: data.islamicMaterial,
+          // Electronics fields
+          brand: data.brand,
+          model: data.model,
+          // Delivery settings
+          deliveryFeePaidBy: data.deliveryFeePaidBy,
+          deliveryMethods: data.deliveryMethods,
+        },
+        requiresAuth: true,
       });
 
       if (!response.success) {
         throw new Error(response.message || 'Failed to update product');
       }
 
-      // Return updated product (you may need to fetch it separately)
       return {
         id: productId,
         ...data,
@@ -270,4 +305,5 @@ export const productApi = {
     }
   },
 };
+
 

@@ -1,0 +1,14 @@
+
+> build
+> tsc
+
+src/market.ts(45,10): error TS6133: 'asNonEmptyString' is declared but its value is never read.
+src/orders.ts(43,10): error TS6133: 'asNonEmptyString' is declared but its value is never read.
+src/orders.ts(773,10): error TS6133: 'parseBase64Image' is declared but its value is never read.
+src/payments.ts(1780,10): error TS6133: 'parseBase64Image' is declared but its value is never read.
+src/products.ts(41,10): error TS6133: 'asNonEmptyString' is declared but its value is never read.
+src/products.ts(840,10): error TS6133: 'parseBase64Image' is declared but its value is never read.
+src/settings.ts(42,10): error TS6133: 'asNonEmptyString' is declared but its value is never read.
+src/settings.ts(2018,10): error TS6133: 'parseBase64Image' is declared but its value is never read.
+src/users.ts(42,10): error TS6133: 'asNonEmptyString' is declared but its value is never read.
+src/users.ts(428,10): error TS6133: 'parseBase64Image' is declared but its value is never read.

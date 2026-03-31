@@ -17,6 +17,15 @@ const ADMIN_FUNCTIONS = {
   resolveDispute: 'https://resolvedispute-q3rjv54uka-uc.a.run.app',
   getAllPayouts: 'https://getallpayouts-q3rjv54uka-uc.a.run.app',
   updateOrderStatus: 'https://updateorderstatus-q3rjv54uka-uc.a.run.app',
+  getAccessLogs: 'https://getaccesslogs-q3rjv54uka-uc.a.run.app',
+  getFailedLogins: 'https://getfailedlogins-q3rjv54uka-uc.a.run.app',
+  getApiKeys: 'https://getapikeys-q3rjv54uka-uc.a.run.app',
+  createApiKey: 'https://createapikey-q3rjv54uka-uc.a.run.app',
+  revokeApiKey: 'https://revokeapikey-q3rjv54uka-uc.a.run.app',
+  getSecuritySettings: 'https://getsecuritysettings-q3rjv54uka-uc.a.run.app',
+  updateSecuritySettings: 'https://updatesecuritysettings-q3rjv54uka-uc.a.run.app',
+  getAuditTrail: 'https://getaudittrail-q3rjv54uka-uc.a.run.app',
+  getFirestoreRules: 'https://getfirestorerules-q3rjv54uka-uc.a.run.app',
 };
 
 export interface UpdateUserRoleData {
@@ -30,6 +39,32 @@ export interface PlatformSettings {
   autoReleaseDays?: number;
   platformFee?: number;
   currency?: string;
+}
+
+export interface SecuritySettings {
+  twoFactorEnabled: boolean;
+  passwordPolicy: 'standard' | 'strict';
+  sessionTimeout: number;
+  ipWhitelist?: string[];
+}
+
+export interface AccessLog {
+  id: string;
+  userId: string;
+  action: string;
+  status: 'success' | 'failure';
+  ip: string;
+  userAgent: string;
+  timestamp: string;
+}
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  key: string;
+  permissions: string[];
+  lastUsedAt?: string;
+  createdAt: string;
 }
 
 export const adminApi = {
@@ -178,4 +213,85 @@ export const adminApi = {
       requiresAuth: true,
     });
   },
+
+  // Security & Logs
+  getAccessLogs: async (limit: number = 100): Promise<AccessLog[]> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.getAccessLogs, {
+      method: 'POST',
+      body: { limit },
+      requiresAuth: true,
+    });
+    return response.logs as AccessLog[];
+  },
+
+  getFailedLogins: async (limit: number = 100): Promise<AccessLog[]> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.getFailedLogins, {
+      method: 'POST',
+      body: { limit },
+      requiresAuth: true,
+    });
+    return response.logs as AccessLog[];
+  },
+
+  getApiKeys: async (): Promise<ApiKey[]> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.getApiKeys, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
+    return response.keys as ApiKey[];
+  },
+
+  createApiKey: async (name: string, permissions: string[]): Promise<ApiKey> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.createApiKey, {
+      method: 'POST',
+      body: { name, permissions },
+      requiresAuth: true,
+    });
+    return response.key as ApiKey;
+  },
+
+  revokeApiKey: async (keyId: string): Promise<void> => {
+    await coreCloudClient.request(ADMIN_FUNCTIONS.revokeApiKey, {
+      method: 'POST',
+      body: { keyId },
+      requiresAuth: true,
+    });
+  },
+
+  getSecuritySettings: async (): Promise<SecuritySettings> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.getSecuritySettings, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
+    return response.settings as SecuritySettings;
+  },
+
+  updateSecuritySettings: async (settings: Partial<SecuritySettings>): Promise<void> => {
+    await coreCloudClient.request(ADMIN_FUNCTIONS.updateSecuritySettings, {
+      method: 'POST',
+      body: { settings },
+      requiresAuth: true,
+    });
+  },
+
+  getAuditTrail: async (data?: { limit?: number, action?: string, userId?: string }): Promise<any[]> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.getAuditTrail, {
+      method: 'POST',
+      body: data || {},
+      requiresAuth: true,
+    });
+    return response.trail as any[];
+  },
+
+  getFirestoreRules: async (): Promise<string> => {
+    const response = await coreCloudClient.request<any>(ADMIN_FUNCTIONS.getFirestoreRules, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
+    return response.rules as string;
+  },
 };
+

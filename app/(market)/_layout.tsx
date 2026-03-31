@@ -3,7 +3,19 @@ import React, { useCallback, useMemo } from 'react';
 
 import { CustomTabBar } from '@/components/custom-tab-bar';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import {
+  useMarketChatMessageNotifications,
+  useMarketChatNotificationTapNavigation,
+} from '@/lib/hooks/use-market-chat-notifications';
 import { useTheme } from '@/lib/theme/theme-context';
+
+function MarketChatNotificationsBridge() {
+  const { user } = useUser();
+  useMarketChatMessageNotifications(user?.uid ?? null);
+  useMarketChatNotificationTapNavigation();
+  return null;
+}
 
 export default function MarketTabLayout() {
   const { colors } = useTheme();
@@ -25,7 +37,9 @@ export default function MarketTabLayout() {
   }, [colors.background]);
 
   return (
-    <Tabs tabBar={renderTabBar} screenOptions={screenOptions}>
+    <>
+      <MarketChatNotificationsBridge />
+      <Tabs tabBar={renderTabBar} screenOptions={screenOptions}>
       <Tabs.Screen
         name="index"
         options={{
@@ -107,5 +121,6 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="sound/[soundId]" options={{ href: null }} />
       <Tabs.Screen name="saved-sounds" options={{ href: null }} />
     </Tabs>
+    </>
   );
 }

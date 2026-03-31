@@ -56,6 +56,10 @@ export default function NotificationsScreen() {
       router.push(`../orders/${notification.orderId}` as any);
     } else if (notification.productId) {
       router.push(`../products/${notification.productId}` as any);
+    } else if (notification.chatId) {
+      const peer = String(notification.peerId || '').trim();
+      const qs = peer ? `?peerId=${encodeURIComponent(peer)}` : '';
+      router.push(`/(market)/messages/${encodeURIComponent(notification.chatId)}${qs}` as any);
     }
   };
 
@@ -69,6 +73,8 @@ export default function NotificationsScreen() {
         return 'xmark.circle.fill';
       case 'low_stock':
         return 'exclamationmark.triangle.fill';
+      case 'chat_message':
+        return 'message.fill';
       default:
         return 'bell.fill';
     }

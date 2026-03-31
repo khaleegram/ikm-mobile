@@ -1,0 +1,407 @@
+[
+  {
+    "name": "extractMarketSoundFromMarketVideo",
+    "section": "GENERAL",
+    "line": 122
+  },
+  {
+    "name": "initializePaystackTransaction",
+    "section": "GENERAL",
+    "line": 271
+  },
+  {
+    "name": "verifyPaystackTransaction",
+    "section": "GENERAL",
+    "line": 369
+  },
+  {
+    "name": "paystackWebhook",
+    "section": "GENERAL",
+    "line": 542
+  },
+  {
+    "name": "verifyPaymentAndCreateOrder",
+    "section": "GENERAL",
+    "line": 600
+  },
+  {
+    "name": "findRecentTransactionByEmail",
+    "section": "GENERAL",
+    "line": 1161
+  },
+  {
+    "name": "updateOrderStatus",
+    "section": "ORDER",
+    "line": 1239
+  },
+  {
+    "name": "markOrderAsSent",
+    "section": "GENERAL",
+    "line": 1330
+  },
+  {
+    "name": "markOrderAsReceived",
+    "section": "GENERAL",
+    "line": 1397
+  },
+  {
+    "name": "getOrdersByCustomer",
+    "section": "GENERAL",
+    "line": 1480
+  },
+  {
+    "name": "getOrdersBySeller",
+    "section": "GENERAL",
+    "line": 1531
+  },
+  {
+    "name": "calculateShippingOptions",
+    "section": "USER",
+    "line": 1586
+  },
+  {
+    "name": "getBanksList",
+    "section": "GENERAL",
+    "line": 1703
+  },
+  {
+    "name": "resolveAccountNumber",
+    "section": "GENERAL",
+    "line": 1754
+  },
+  {
+    "name": "savePayoutDetails",
+    "section": "GENERAL",
+    "line": 1814
+  },
+  {
+    "name": "sendOrderMessage",
+    "section": "CHAT",
+    "line": 1866
+  },
+  {
+    "name": "linkGuestOrdersToAccount",
+    "section": "USER",
+    "line": 1923
+  },
+  {
+    "name": "searchProducts",
+    "section": "GENERAL",
+    "line": 1985
+  },
+  {
+    "name": "getSellerProducts",
+    "section": "POST",
+    "line": 2046
+  },
+  {
+    "name": "getProduct",
+    "section": "GENERAL",
+    "line": 2107
+  },
+  {
+    "name": "createProduct",
+    "section": "GENERAL",
+    "line": 2142
+  },
+  {
+    "name": "updateProduct",
+    "section": "GENERAL",
+    "line": 2261
+  },
+  {
+    "name": "deleteProduct",
+    "section": "GENERAL",
+    "line": 2375
+  },
+  {
+    "name": "createNorthernProduct",
+    "section": "POST",
+    "line": 2425
+  },
+  {
+    "name": "updateNorthernProduct",
+    "section": "GENERAL",
+    "line": 2562
+  },
+  {
+    "name": "getDashboardStats",
+    "section": "GENERAL",
+    "line": 2712
+  },
+  {
+    "name": "getSellerAnalytics",
+    "section": "GENERAL",
+    "line": 2795
+  },
+  {
+    "name": "generateSalesReport",
+    "section": "GENERAL",
+    "line": 2888
+  },
+  {
+    "name": "generateCustomerReport",
+    "section": "GENERAL",
+    "line": 2972
+  },
+  {
+    "name": "createDiscountCode",
+    "section": "GENERAL",
+    "line": 3095
+  },
+  {
+    "name": "getDiscountCodes",
+    "section": "GENERAL",
+    "line": 3171
+  },
+  {
+    "name": "updateDiscountCode",
+    "section": "GENERAL",
+    "line": 3214
+  },
+  {
+    "name": "deleteDiscountCode",
+    "section": "GENERAL",
+    "line": 3269
+  },
+  {
+    "name": "getStoreSettings",
+    "section": "GENERAL",
+    "line": 3319
+  },
+  {
+    "name": "updateStoreSettings",
+    "section": "GENERAL",
+    "line": 3357
+  },
+  {
+    "name": "getCustomers",
+    "section": "GENERAL",
+    "line": 3455
+  },
+  {
+    "name": "getAllUsers",
+    "section": "USER",
+    "line": 3560
+  },
+  {
+    "name": "grantAdminRole",
+    "section": "GENERAL",
+    "line": 3613
+  },
+  {
+    "name": "revokeAdminRole",
+    "section": "GENERAL",
+    "line": 3654
+  },
+  {
+    "name": "getPlatformSettings",
+    "section": "GENERAL",
+    "line": 3707
+  },
+  {
+    "name": "updatePlatformSettings",
+    "section": "GENERAL",
+    "line": 3748
+  },
+  {
+    "name": "getAllOrders",
+    "section": "ORDER",
+    "line": 3802
+  },
+  {
+    "name": "resolveDispute",
+    "section": "GENERAL",
+    "line": 3855
+  },
+  {
+    "name": "getPublicShippingZones",
+    "section": "GENERAL",
+    "line": 3919
+  },
+  {
+    "name": "getShippingZones",
+    "section": "GENERAL",
+    "line": 3959
+  },
+  {
+    "name": "createShippingZone",
+    "section": "GENERAL",
+    "line": 4001
+  },
+  {
+    "name": "updateShippingZone",
+    "section": "GENERAL",
+    "line": 4048
+  },
+  {
+    "name": "deleteShippingZone",
+    "section": "GENERAL",
+    "line": 4103
+  },
+  {
+    "name": "getShippingSettings",
+    "section": "GENERAL",
+    "line": 4149
+  },
+  {
+    "name": "updateShippingSettings",
+    "section": "GENERAL",
+    "line": 4195
+  },
+  {
+    "name": "markOrderAsNotAvailable",
+    "section": "ORDER",
+    "line": 4257
+  },
+  {
+    "name": "respondToAvailabilityCheck",
+    "section": "GENERAL",
+    "line": 4331
+  },
+  {
+    "name": "getAllParks",
+    "section": "GENERAL",
+    "line": 4451
+  },
+  {
+    "name": "getParksByState",
+    "section": "GENERAL",
+    "line": 4491
+  },
+  {
+    "name": "createPark",
+    "section": "GENERAL",
+    "line": 4536
+  },
+  {
+    "name": "updatePark",
+    "section": "GENERAL",
+    "line": 4578
+  },
+  {
+    "name": "deletePark",
+    "section": "GENERAL",
+    "line": 4624
+  },
+  {
+    "name": "initializeParks",
+    "section": "GENERAL",
+    "line": 4661
+  },
+  {
+    "name": "calculateSellerEarnings",
+    "section": "GENERAL",
+    "line": 4728
+  },
+  {
+    "name": "getSellerTransactions",
+    "section": "GENERAL",
+    "line": 4833
+  },
+  {
+    "name": "requestPayout",
+    "section": "GENERAL",
+    "line": 4937
+  },
+  {
+    "name": "cancelPayoutRequest",
+    "section": "GENERAL",
+    "line": 5073
+  },
+  {
+    "name": "getAllPayouts",
+    "section": "GENERAL",
+    "line": 5122
+  },
+  {
+    "name": "getAccessLogs",
+    "section": "GENERAL",
+    "line": 5193
+  },
+  {
+    "name": "getFailedLogins",
+    "section": "GENERAL",
+    "line": 5235
+  },
+  {
+    "name": "getApiKeys",
+    "section": "GENERAL",
+    "line": 5270
+  },
+  {
+    "name": "createApiKey",
+    "section": "GENERAL",
+    "line": 5303
+  },
+  {
+    "name": "revokeApiKey",
+    "section": "GENERAL",
+    "line": 5356
+  },
+  {
+    "name": "getSecuritySettings",
+    "section": "GENERAL",
+    "line": 5387
+  },
+  {
+    "name": "updateSecuritySettings",
+    "section": "GENERAL",
+    "line": 5431
+  },
+  {
+    "name": "getAuditTrail",
+    "section": "GENERAL",
+    "line": 5462
+  },
+  {
+    "name": "getFirestoreRules",
+    "section": "GENERAL",
+    "line": 5514
+  },
+  {
+    "name": "createMarketPost",
+    "section": "GENERAL",
+    "line": 5682
+  },
+  {
+    "name": "likeMarketPost",
+    "section": "GENERAL",
+    "line": 5799
+  },
+  {
+    "name": "deleteMarketPost",
+    "section": "GENERAL",
+    "line": 5866
+  },
+  {
+    "name": "incrementPostViews",
+    "section": "GENERAL",
+    "line": 5949
+  },
+  {
+    "name": "createMarketComment",
+    "section": "GENERAL",
+    "line": 5987
+  },
+  {
+    "name": "deleteMarketComment",
+    "section": "GENERAL",
+    "line": 6049
+  },
+  {
+    "name": "createMarketChat",
+    "section": "GENERAL",
+    "line": 6125
+  },
+  {
+    "name": "sendMarketMessage",
+    "section": "GENERAL",
+    "line": 6223
+  },
+  {
+    "name": "helloWorld",
+    "section": "GENERAL",
+    "line": 6396
+  }
+]
