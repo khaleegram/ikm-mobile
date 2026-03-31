@@ -1,4 +1,12 @@
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
+
+const PAYMENT_FUNCTIONS = {
+  initializePaystackTransaction: 'https://initializepaystacktransaction-q3rjv54uka-uc.a.run.app',
+  verifyPaystackTransaction: 'https://verifypaystacktransaction-q3rjv54uka-uc.a.run.app',
+  paystackWebhook: 'https://paystackwebhook-q3rjv54uka-uc.a.run.app',
+  verifyPaymentAndCreateOrder: 'https://verifypaymentandcreateorder-q3rjv54uka-uc.a.run.app',
+  findRecentTransactionByEmail: 'https://findrecenttransactionbyemail-q3rjv54uka-uc.a.run.app',
+};
 
 type InitializePaymentInput = {
   amount: number; // NGN
@@ -63,12 +71,16 @@ export const paymentsApi = {
 
     const requestedReference = asNonEmptyString(input.reference) || buildDefaultReference();
 
-    const initialized = await cloudFunctions.initializePaystackTransaction({
-      amount: normalizedAmount,
-      email: normalizedEmail,
-      callbackUrl: normalizedCallbackUrl,
-      metadata: input.metadata,
-      reference: requestedReference,
+    const initialized = await coreCloudClient.request<any>(PAYMENT_FUNCTIONS.initializePaystackTransaction, {
+      method: 'POST',
+      body: {
+        amount: normalizedAmount,
+        email: normalizedEmail,
+        callbackUrl: normalizedCallbackUrl,
+        metadata: input.metadata,
+        reference: requestedReference,
+      },
+      requiresAuth: true,
     });
 
     const authorizationUrl =
@@ -116,8 +128,12 @@ export const paymentsApi = {
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
-        const verification = await cloudFunctions.verifyPaystackTransaction({
-          reference: normalizedReference,
+        const verification = await coreCloudClient.request<any>(PAYMENT_FUNCTIONS.verifyPaystackTransaction, {
+          method: 'POST',
+          body: {
+            reference: normalizedReference,
+          },
+          requiresAuth: true,
         });
 
         const verifiedReference = asNonEmptyString(verification?.reference) || normalizedReference;
@@ -143,12 +159,14 @@ export const paymentsApi = {
         };
       } catch (verifyError) {
         // Backward-compatible fallback while verifyPaystackTransaction is being deployed.
-        const fallback = await cloudFunctions
-          .findRecentTransactionByEmail({
+        const fallback = await coreCloudClient.request<any>(PAYMENT_FUNCTIONS.findRecentTransactionByEmail, {
+          method: 'POST',
+          body: {
             email: normalizedEmail,
             amount: normalizedAmount,
-          })
-          .catch(() => null);
+          },
+          requiresAuth: true,
+        }).catch(() => null);
 
         const fallbackReference = asNonEmptyString(fallback?.reference);
         if (fallbackReference && fallbackReference === normalizedReference) {
@@ -183,3 +201,4 @@ export const paymentsApi = {
     throw new Error('Payment could not be verified yet. Please try again in a moment.');
   },
 };
+

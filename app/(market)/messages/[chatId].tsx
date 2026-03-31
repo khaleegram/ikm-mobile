@@ -1,4 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
@@ -35,6 +36,7 @@ import { useChatMessages } from './chat-detail/use-chat-messages';
 import { useChatRoute } from './chat-detail/use-chat-route';
 import { useOfferLogic } from './chat-detail/use-offer-logic';
 import { buildClientMessageId, lightBrown } from './chat-detail/utils';
+import { useMarketChatStore } from '@/lib/stores/marketChatStore';
 
 export default function ChatDetailScreen() {
   const { user } = useUser();
@@ -43,6 +45,7 @@ export default function ChatDetailScreen() {
   const marketLoginRoute = getLoginRouteForVariant('market');
   const userId = user?.uid || null;
   const { idSet: blockedIds } = useBlockedUserIds(userId);
+  const setActiveMarketConversationId = useMarketChatStore((state) => state.setActiveMarketConversationId);
 
   const {
     activeChatId,
@@ -53,6 +56,14 @@ export default function ChatDetailScreen() {
     goBackToInbox,
     syncRouteChatId,
   } = useChatRoute(userId);
+
+  useFocusEffect(
+    useCallback(() => {
+      const openId = String(directConversationId || activeChatId || '').trim();
+      setActiveMarketConversationId(openId || null);
+      return () => setActiveMarketConversationId(null);
+    }, [activeChatId, directConversationId])
+  );
 
   const {
     contextPostId,

@@ -26,7 +26,9 @@ Notifications.setNotificationHandler({
 export interface NotificationData {
   orderId?: string;
   productId?: string;
-  type: 'new_order' | 'order_update' | 'order_cancelled' | 'low_stock' | 'general';
+  chatId?: string;
+  peerId?: string;
+  type: 'new_order' | 'order_update' | 'order_cancelled' | 'low_stock' | 'chat_message' | 'general';
   status?: string;
   amount?: number;
   [key: string]: any;
@@ -71,6 +73,13 @@ function getNotificationConfig(type: NotificationData['type']): NotificationConf
         priority: Notifications.AndroidNotificationPriority.DEFAULT,
         color: '#FFC107',
         icon: '⚠️',
+      };
+    case 'chat_message':
+      return {
+        sound: true,
+        priority: Notifications.AndroidNotificationPriority.HIGH,
+        color: '#A67C52',
+        icon: '💬',
       };
     default:
       return {
@@ -288,6 +297,8 @@ export async function scheduleNotification(
       channelId = 'orders';
     } else if (data.type === 'low_stock') {
       channelId = 'alerts';
+    } else if (data.type === 'chat_message') {
+      channelId = 'messages';
     }
   }
 
@@ -332,6 +343,8 @@ export async function scheduleCustomNotification(
     channelId = 'orders';
   } else if (data.type === 'low_stock') {
     channelId = 'alerts';
+  } else if (data.type === 'chat_message') {
+    channelId = 'messages';
   }
 
   return await Notifications.scheduleNotificationAsync({

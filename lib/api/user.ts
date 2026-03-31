@@ -1,10 +1,17 @@
 // User API endpoints
 // Cloud-Functions-first: reads come from Firestore, writes go through Cloud Functions.
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { User, StoreSettings } from '@/types';
 import { doc, getDoc } from 'firebase/firestore';
 import { firestore } from '@/lib/firebase/config';
+
+const USER_FUNCTIONS = {
+  getStoreSettings: 'https://getstoresettings-q3rjv54uka-uc.a.run.app',
+  updateStoreSettings: 'https://updatestoresettings-q3rjv54uka-uc.a.run.app',
+  getCustomers: 'https://getcustomers-q3rjv54uka-uc.a.run.app',
+  linkGuestOrdersToAccount: 'https://linkguestorderstoaccount-q3rjv54uka-uc.a.run.app',
+};
 
 export interface UpdateUserProfileData {
   displayName?: string;
@@ -99,8 +106,6 @@ export const userApi = {
 
   // Update user profile
   updateProfile: async (userId: string, data: UpdateUserProfileData): Promise<User> => {
-    // Reuse the same Cloud Function used for store updates (server-side validates and writes).
-    // Convert logo/banner to base64 only when local URIs are passed.
     let logoBase64: string | undefined;
     let bannerBase64: string | undefined;
 
@@ -127,22 +132,24 @@ export const userApi = {
       bannerBase64 = maybeBanner;
     }
 
-    await cloudFunctions.updateStoreSettings({
-      sellerId: userId,
-      updateData: {
-        ...data,
-        ...(logoBase64 ? { logoBase64 } : {}),
-        ...(bannerBase64 ? { bannerBase64 } : {}),
+    await coreCloudClient.request(USER_FUNCTIONS.updateStoreSettings, {
+      method: 'POST',
+      body: {
+        sellerId: userId,
+        updateData: {
+          ...data,
+          ...(logoBase64 ? { logoBase64 } : {}),
+          ...(bannerBase64 ? { bannerBase64 } : {}),
+        },
       },
+      requiresAuth: true,
     });
 
-    // Best-effort: return latest user doc.
     return userApi.getProfile(userId);
   },
 
-  // Update store settings (uses Cloud Function)
+  // Update store settings
   updateStoreSettings: async (userId: string, settings: StoreSettings): Promise<User> => {
-    // Convert logo and banner to base64 if they are local files
     let logoBase64: string | undefined;
     let bannerBase64: string | undefined;
 
@@ -151,7 +158,6 @@ export const userApi = {
         logoBase64 = await convertImageToBase64(settings.storeLogoUrl);
       } catch (error: any) {
         console.error('Failed to convert logo to base64:', error);
-        // Continue without logo if conversion fails
       }
     } else if (settings.storeLogoUrl && settings.storeLogoUrl.startsWith('data:')) {
       logoBase64 = settings.storeLogoUrl;
@@ -162,28 +168,49 @@ export const userApi = {
         bannerBase64 = await convertImageToBase64(settings.storeBannerUrl);
       } catch (error: any) {
         console.error('Failed to convert banner to base64:', error);
-        // Continue without banner if conversion fails
       }
     } else if (settings.storeBannerUrl && settings.storeBannerUrl.startsWith('data:')) {
       bannerBase64 = settings.storeBannerUrl;
     }
 
-    await cloudFunctions.updateStoreSettings({
-      sellerId: userId,
-      updateData: {
-        storeName: settings.storeName,
-        storeDescription: settings.storeDescription,
-        logoBase64,
-        bannerBase64,
-        phone: settings.phone,
-        email: settings.email,
-        // Include other store settings fields
-        ...settings,
+    const { 
+      storeLogoUrl, 
+      storeBannerUrl, 
+      storeName, 
+      storeDescription, 
+      phone, 
+      email, 
+      ...rest 
+    } = settings;
+
+    await coreCloudClient.request(USER_FUNCTIONS.updateStoreSettings, {
+      method: 'POST',
+      body: {
+        sellerId: userId,
+        updateData: {
+          storeName,
+          storeDescription,
+          logoBase64,
+          bannerBase64,
+          phone,
+          email,
+          ...rest,
+        },
       },
+      requiresAuth: true,
     });
 
-    // Best-effort: return latest user doc (store may also live in /stores and is read via hooks).
+
     return userApi.getProfile(userId);
   },
-};
 
+  // Get customers
+  getCustomers: async (userId: string): Promise<any[]> => {
+    const response = await coreCloudClient.request<{ success: boolean; customers: any[] }>(USER_FUNCTIONS.getCustomers, {
+      method: 'POST',
+      body: { sellerId: userId },
+      requiresAuth: true,
+    });
+    return response.customers;
+  },
+};

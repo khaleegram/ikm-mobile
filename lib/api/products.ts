@@ -4,18 +4,26 @@
 // The Cloud Function MUST convert 'price' → 'initialPrice' when writing to Firestore.
 // Client-side code uses 'price' for consistency with TypeScript types.
 //
+import { coreCloudClient } from './core-cloud-client';
 import { Product } from '@/types';
-import { cloudFunctions } from './cloud-functions';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
+
+const PRODUCT_FUNCTIONS = {
+  getSellerProducts: 'https://getsellerproducts-q3rjv54uka-uc.a.run.app',
+  getProduct: 'https://getproduct-q3rjv54uka-uc.a.run.app',
+  createProduct: 'https://createproduct-q3rjv54uka-uc.a.run.app',
+  updateProduct: 'https://updateproduct-q3rjv54uka-uc.a.run.app',
+  deleteProduct: 'https://deleteproduct-q3rjv54uka-uc.a.run.app',
+};
 
 export interface CreateProductData {
   name: string;
   description?: string;
-  price: number; // Cloud Function converts this to 'initialPrice' for Firestore
+  price: number; 
   compareAtPrice?: number;
   stock: number;
   sku?: string;
-  imageUrl?: string; // Local URI - will be converted to base64
+  imageUrl?: string;
   category?: string;
   status?: 'active' | 'draft' | 'inactive';
   variants?: Array<{
@@ -33,11 +41,11 @@ export interface CreateProductData {
 export interface UpdateProductData {
   name?: string;
   description?: string;
-  price?: number; // Cloud Function converts this to 'initialPrice' for Firestore if provided
+  price?: number;
   compareAtPrice?: number;
   stock?: number;
   sku?: string;
-  imageUrl?: string; // Local URI - will be converted to base64 if provided
+  imageUrl?: string;
   category?: string;
   status?: 'active' | 'draft' | 'inactive';
   variants?: Array<{
@@ -54,9 +62,8 @@ export interface UpdateProductData {
 }
 
 export const productApi = {
-  // Create product (uses Cloud Function)
+  // Create product
   create: async (data: CreateProductData): Promise<Product> => {
-    // Convert image URI to base64 if provided
     let imageBase64: string | undefined;
     if (data.imageUrl && (data.imageUrl.startsWith('file://') || data.imageUrl.startsWith('asset://'))) {
       try {
@@ -66,11 +73,9 @@ export const productApi = {
         throw new Error(`Failed to process image: ${error.message}`);
       }
     } else if (data.imageUrl && data.imageUrl.startsWith('data:')) {
-      // Already base64
       imageBase64 = data.imageUrl;
     }
 
-    // Prepare variants (remove id field if present)
     const variants = data.variants?.map(v => ({
       name: v.name,
       options: v.options.map(opt => ({
@@ -81,27 +86,33 @@ export const productApi = {
       })),
     }));
 
-    const response = await cloudFunctions.createProduct({
-      name: data.name,
-      description: data.description,
-      price: data.price,
-      compareAtPrice: data.compareAtPrice,
-      stock: data.stock,
-      sku: data.sku,
-      category: data.category,
-      status: data.status || 'draft',
-      allowShipping: true,
-      imageBase64,
-      variants,
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      productId: string;
+      product: any;
+    }>(PRODUCT_FUNCTIONS.createProduct, {
+      method: 'POST',
+      body: {
+        name: data.name,
+        description: data.description,
+        price: data.price,
+        compareAtPrice: data.compareAtPrice,
+        stock: data.stock,
+        sku: data.sku,
+        category: data.category,
+        status: data.status || 'draft',
+        allowShipping: true,
+        imageBase64,
+        variants,
+      },
+      requiresAuth: true,
     });
 
-    // Return the product from response
     return response.product as Product;
   },
 
-  // Update product (uses Cloud Function)
+  // Update product
   update: async (productId: string, data: UpdateProductData): Promise<Product> => {
-    // Convert image URI to base64 if provided and it's a local file
     let imageBase64: string | undefined;
     if (data.imageUrl && (data.imageUrl.startsWith('file://') || data.imageUrl.startsWith('asset://'))) {
       try {
@@ -111,11 +122,9 @@ export const productApi = {
         throw new Error(`Failed to process image: ${error.message}`);
       }
     } else if (data.imageUrl && data.imageUrl.startsWith('data:')) {
-      // Already base64
       imageBase64 = data.imageUrl;
     }
 
-    // Prepare variants (remove id field if present)
     const variants = data.variants?.map(v => ({
       name: v.name,
       options: v.options.map(opt => ({
@@ -126,22 +135,24 @@ export const productApi = {
       })),
     }));
 
-    const response = await cloudFunctions.updateProduct({
-      productId,
-      name: data.name,
-      description: data.description,
-      price: data.price,
-      compareAtPrice: data.compareAtPrice,
-      stock: data.stock,
-      sku: data.sku,
-      category: data.category,
-      status: data.status,
-      imageBase64,
-      variants,
+    await coreCloudClient.request(PRODUCT_FUNCTIONS.updateProduct, {
+      method: 'POST',
+      body: {
+        productId,
+        name: data.name,
+        description: data.description,
+        price: data.price,
+        compareAtPrice: data.compareAtPrice,
+        stock: data.stock,
+        sku: data.sku,
+        category: data.category,
+        status: data.status,
+        imageBase64,
+        variants,
+      },
+      requiresAuth: true,
     });
 
-    // Return updated product (might need to fetch it separately or return from response)
-    // For now, return a minimal Product object - you might want to fetch it from Firestore
     return {
       id: productId,
       sellerId: '',
@@ -152,9 +163,49 @@ export const productApi = {
     } as Product;
   },
 
-  // Delete product (uses Cloud Function)
+  // Delete product
   delete: async (productId: string): Promise<void> => {
-    await cloudFunctions.deleteProduct(productId);
+    await coreCloudClient.request(PRODUCT_FUNCTIONS.deleteProduct, {
+      method: 'POST',
+      body: { productId },
+      requiresAuth: true,
+    });
+  },
+
+  // Get seller products
+  getSellerProducts: async (data?: {
+    sellerId?: string;
+    limit?: number;
+    startAfter?: string;
+    status?: 'active' | 'draft' | 'inactive';
+  }): Promise<{ products: Product[]; hasMore: boolean }> => {
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      products: any[];
+      hasMore: boolean;
+    }>(PRODUCT_FUNCTIONS.getSellerProducts, {
+      method: 'POST',
+      body: data || {},
+      requiresAuth: true,
+    });
+    return {
+      products: response.products as Product[],
+      hasMore: response.hasMore,
+    };
+  },
+
+  // Get single product
+  getProduct: async (productId: string): Promise<Product> => {
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      product: any;
+    }>(PRODUCT_FUNCTIONS.getProduct, {
+      method: 'POST',
+      body: { productId },
+      requiresAuth: false,
+    });
+    return response.product as Product;
   },
 };
+
 

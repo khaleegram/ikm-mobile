@@ -1,3 +1,4 @@
+import { coreCloudClient } from './core-cloud-client';
 import type { MarketPost, MarketSound } from '@/types';
 import {
   collection,
@@ -8,7 +9,6 @@ import {
 } from 'firebase/firestore';
 
 import { auth, firestore } from '@/lib/firebase/config';
-import { cloudFunctions } from './cloud-functions';
 import {
   buildOriginalSoundTitle,
   buildUploadedSoundTitle,
@@ -20,6 +20,13 @@ import {
   uploadImages,
   uploadVideo,
 } from '@/lib/utils/image-upload';
+
+const MARKET_POST_FUNCTIONS = {
+  likeMarketPost: 'https://likemarketpost-q3rjv54uka-uc.a.run.app',
+  deleteMarketPost: 'https://deletemarketpost-q3rjv54uka-uc.a.run.app',
+  incrementPostViews: 'https://incrementpostviews-q3rjv54uka-uc.a.run.app',
+};
+
 
 export interface CreateMarketPostSoundSelection {
   mode?: 'original' | 'existing' | 'uploaded' | 'none';
@@ -200,8 +207,10 @@ export const marketPostsApi = {
 
       if (soundMode === 'existing' && soundSelection.existingSound?.id) {
         const existingSound = soundSelection.existingSound;
+        const soundId = existingSound.id!; // Checked in if condition
+        
         soundMeta = {
-          soundId: existingSound.id,
+          soundId,
           title: existingSound.title,
           sourceUri: existingSound.sourceUri,
           sourceType: existingSound.sourceType,
@@ -214,7 +223,7 @@ export const marketPostsApi = {
         };
 
         batch.set(
-          doc(firestore, 'marketSounds', existingSound.id),
+          doc(firestore, 'marketSounds', soundId),
           {
             usageCount: increment(1),
             updatedAt: serverTimestamp(),
@@ -359,7 +368,11 @@ export const marketPostsApi = {
   },
 
   async like(postId: string): Promise<{ likes: number; isLiked: boolean }> {
-    const response = await cloudFunctions.likeMarketPost(postId);
+    const response = await coreCloudClient.request<any>(MARKET_POST_FUNCTIONS.likeMarketPost, {
+      method: 'POST',
+      body: { postId },
+      requiresAuth: true,
+    });
     return {
       likes: response.likes,
       isLiked: response.isLiked,
@@ -367,14 +380,23 @@ export const marketPostsApi = {
   },
 
   async delete(postId: string): Promise<void> {
-    await cloudFunctions.deleteMarketPost(postId);
+    await coreCloudClient.request(MARKET_POST_FUNCTIONS.deleteMarketPost, {
+      method: 'POST',
+      body: { postId },
+      requiresAuth: true,
+    });
   },
 
   async incrementViews(postId: string): Promise<void> {
     try {
-      await cloudFunctions.incrementPostViews(postId);
+      await coreCloudClient.request(MARKET_POST_FUNCTIONS.incrementPostViews, {
+        method: 'POST',
+        body: { postId },
+        requiresAuth: true,
+      });
     } catch (error: any) {
       console.warn('Failed to increment views:', error);
     }
   },
 };
+

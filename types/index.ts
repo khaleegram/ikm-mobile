@@ -450,10 +450,12 @@ export interface Notification {
   userId: string;                 // User ID (seller who receives the notification)
   title: string;                  // Notification title
   message: string;                // Notification message/body
-  type: 'new_order' | 'order_update' | 'order_cancelled' | 'low_stock' | 'general';
+  type: 'new_order' | 'order_update' | 'order_cancelled' | 'low_stock' | 'chat_message' | 'general';
   read: boolean;                  // Whether notification has been read
   orderId?: string;               // Related order ID (if applicable)
   productId?: string;             // Related product ID (if applicable)
+  chatId?: string;                // Market conversation id (chat_message)
+  peerId?: string;                // Other participant uid (chat_message)
   status?: string;                // Order status (for order_update type)
   amount?: number;                // Order amount (for new_order type)
   createdAt?: Timestamp | Date;   // Notification creation date
@@ -466,6 +468,8 @@ export interface StoreSettings {
   storeDescription?: string;
   storeLogoUrl?: string;
   storeBannerUrl?: string;
+  phone?: string;
+  email?: string;
   storeLocation?: {
     state?: string;
     lga?: string;
@@ -480,6 +484,7 @@ export interface StoreSettings {
     privacy?: string;
   };
 }
+
 
 // Discount Code Collection
 export interface DiscountCode {

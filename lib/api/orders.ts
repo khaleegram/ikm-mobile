@@ -3,44 +3,99 @@
 // NOTE: Firestore rules require order status to be 'Processing' (capital P) for new orders.
 // All status values must match exactly: 'Processing', 'Sent', 'Received', 'Completed', 'Cancelled', 'Disputed'
 //
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { Order, OrderStatus } from '@/types';
 
+const ORDER_FUNCTIONS = {
+  updateOrderStatus: 'https://updateorderstatus-q3rjv54uka-uc.a.run.app',
+  markOrderAsSent: 'https://markorderassent-q3rjv54uka-uc.a.run.app',
+  markOrderAsReceived: 'https://markorderasreceived-q3rjv54uka-uc.a.run.app',
+  getOrdersByCustomer: 'https://getordersbycustomer-q3rjv54uka-uc.a.run.app',
+  getOrdersBySeller: 'https://getordersbyseller-q3rjv54uka-uc.a.run.app',
+  markOrderAsNotAvailable: 'https://markorderasnotavailable-q3rjv54uka-uc.a.run.app',
+  respondToAvailabilityCheck: 'https://respondtoavailabilitycheck-q3rjv54uka-uc.a.run.app',
+};
+
 export const orderApi = {
-  // Update order status (uses Cloud Function)
+  // Update order status
   updateStatus: async (
     orderId: string,
     status: OrderStatus
   ): Promise<Order> => {
-    return cloudFunctions.updateOrderStatus({ orderId, status });
+    return coreCloudClient.request<Order>(ORDER_FUNCTIONS.updateOrderStatus, {
+      method: 'POST',
+      body: { orderId, status },
+      requiresAuth: true,
+    });
   },
 
-  // Mark order as sent with optional photo (uses Cloud Function)
+  // Mark order as sent with optional photo
   markAsSent: async (
     orderId: string,
-    photoUrl?: string
+    photoUrl?: string,
+    waybillParkId?: string,
+    waybillParkName?: string
   ): Promise<Order> => {
-    return cloudFunctions.markOrderAsSent({ orderId, photoUrl });
+    return coreCloudClient.request<Order>(ORDER_FUNCTIONS.markOrderAsSent, {
+      method: 'POST',
+      body: { orderId, photoUrl, waybillParkId, waybillParkName },
+      requiresAuth: true,
+    });
   },
 
-  // Mark order as received with optional photo (uses Cloud Function)
+  // Mark order as received
   markAsReceived: async (
-    orderId: string,
-    photoUrl?: string
+    orderId: string
   ): Promise<Order> => {
-    return cloudFunctions.markOrderAsReceived({ orderId, photoUrl });
+    return coreCloudClient.request<Order>(ORDER_FUNCTIONS.markOrderAsReceived, {
+      method: 'POST',
+      body: { orderId },
+      requiresAuth: true,
+    });
   },
 
-  // Get order details (still uses Firestore hook, but can use Cloud Function if needed)
-  getOrder: async (orderId: string): Promise<Order> => {
-    // For now, we use Firestore hooks for reading orders
-    // If you have a getOrder Cloud Function, we can use it here
-    throw new Error('Use useOrder hook from lib/firebase/firestore/orders.ts for reading orders');
+  // Mark order as not available
+  markAsNotAvailable: async (data: {
+    orderId: string;
+    reason?: string;
+    waitTimeDays?: number;
+  }): Promise<Order> => {
+    return coreCloudClient.request<Order>(ORDER_FUNCTIONS.markOrderAsNotAvailable, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
   },
 
-  // Get orders by seller (uses Cloud Function)
+  // Respond to availability check
+  respondToAvailability: async (data: {
+    orderId: string;
+    response: 'wait' | 'cancel';
+  }): Promise<Order> => {
+    return coreCloudClient.request<Order>(ORDER_FUNCTIONS.respondToAvailabilityCheck, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
+  },
+
+  // Get orders by seller
   getOrdersBySeller: async (): Promise<Order[]> => {
-    return cloudFunctions.getOrdersBySeller();
+    return coreCloudClient.request<Order[]>(ORDER_FUNCTIONS.getOrdersBySeller, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
+  },
+
+  // Get orders by customer
+  getOrdersByCustomer: async (): Promise<Order[]> => {
+    return coreCloudClient.request<Order[]>(ORDER_FUNCTIONS.getOrdersByCustomer, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
   },
 };
+
 

@@ -1,7 +1,12 @@
 // Parks API client
 // Handles fetching parks for waybill deliveries
+import { coreCloudClient } from './core-cloud-client';
 import { Park } from '@/types';
-import { cloudFunctions } from './cloud-functions';
+
+const PARK_FUNCTIONS = {
+  getAllParks: 'https://getallparks-q3rjv54uka-uc.a.run.app',
+  getParksByState: 'https://getparksbystate-q3rjv54uka-uc.a.run.app',
+};
 
 export const parksApi = {
   /**
@@ -9,7 +14,11 @@ export const parksApi = {
    */
   getAll: async (): Promise<Park[]> => {
     try {
-      const response = await cloudFunctions.getAllParks();
+      const response = await coreCloudClient.request<{ success: boolean; parks: any[] }>(PARK_FUNCTIONS.getAllParks, {
+        method: 'POST',
+        body: {},
+        requiresAuth: true,
+      });
       if (!response.success) {
         throw new Error('Failed to fetch parks');
       }
@@ -31,7 +40,11 @@ export const parksApi = {
    */
   getByState: async (state: string): Promise<Park[]> => {
     try {
-      const response = await cloudFunctions.getParksByState(state);
+      const response = await coreCloudClient.request<{ success: boolean; parks: any[] }>(PARK_FUNCTIONS.getParksByState, {
+        method: 'POST',
+        body: { state },
+        requiresAuth: true,
+      });
       if (!response.success) {
         throw new Error('Failed to fetch parks by state');
       }
@@ -60,4 +73,5 @@ export const parksApi = {
     }
   },
 };
+
 

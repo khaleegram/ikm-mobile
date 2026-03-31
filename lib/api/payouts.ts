@@ -1,6 +1,13 @@
 // Payouts API endpoints - Uses Cloud Functions
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { Payout } from '@/types';
+
+const PAYOUT_FUNCTIONS = {
+  getBanksList: 'https://getbankslist-q3rjv54uka-uc.a.run.app',
+  resolveAccountNumber: 'https://resolveaccountnumber-q3rjv54uka-uc.a.run.app',
+  savePayoutDetails: 'https://savepayoutdetails-q3rjv54uka-uc.a.run.app',
+  requestPayout: 'https://requestpayout-q3rjv54uka-uc.a.run.app',
+};
 
 export interface PayoutDetails {
   bankName: string;
@@ -16,32 +23,47 @@ export interface ResolveAccountResponse {
 }
 
 export const payoutsApi = {
-  // Get list of Nigerian banks (uses Cloud Function)
+  // Get list of Nigerian banks
   getBanksList: async (): Promise<{ name: string; code: string; [key: string]: any }[]> => {
-    const response = await cloudFunctions.getBanksList();
+    const response = await coreCloudClient.request<{ success: boolean; banks: any[] }>(PAYOUT_FUNCTIONS.getBanksList, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
     return response.banks || [];
   },
 
-  // Resolve bank account number to account name (uses Cloud Function)
+  // Resolve bank account number to account name
   resolveAccountNumber: async (accountNumber: string, bankCode: string): Promise<ResolveAccountResponse> => {
-    return cloudFunctions.resolveAccountNumber({ accountNumber, bankCode });
+    return coreCloudClient.request<ResolveAccountResponse>(PAYOUT_FUNCTIONS.resolveAccountNumber, {
+      method: 'POST',
+      body: { accountNumber, bankCode },
+      requiresAuth: true,
+    });
   },
 
-  // Save payout bank account details (uses Cloud Function)
+  // Save payout bank account details
   savePayoutDetails: async (sellerId: string, details: PayoutDetails): Promise<void> => {
-    await cloudFunctions.savePayoutDetails({
-      ...details,
-      sellerId, // Include sellerId if your Cloud Function needs it
+    await coreCloudClient.request(PAYOUT_FUNCTIONS.savePayoutDetails, {
+      method: 'POST',
+      body: {
+        ...details,
+        sellerId,
+      },
+      requiresAuth: true,
     });
   },
 
-  // Request payout (if you have a Cloud Function for this, we can add it)
+  // Request payout
   requestPayout: async (sellerId: string, amount: number): Promise<Payout> => {
-    const response = await cloudFunctions.requestPayout({
-      amount,
-      sellerId,
+    const response = await coreCloudClient.request<Payout>(PAYOUT_FUNCTIONS.requestPayout, {
+      method: 'POST',
+      body: {
+        amount,
+        sellerId,
+      },
+      requiresAuth: true,
     });
-    return response as Payout;
+    return response;
   },
 };
-

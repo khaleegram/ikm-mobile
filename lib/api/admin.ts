@@ -4,8 +4,20 @@
 // Firestore rules: allow write: if false (no direct client writes allowed)
 // All platform_settings writes must be server-side only.
 //
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { User, Order, OrderStatus } from '@/types';
+
+const ADMIN_FUNCTIONS = {
+  getAllUsers: 'https://getallusers-q3rjv54uka-uc.a.run.app',
+  grantAdminRole: 'https://grantadminrole-q3rjv54uka-uc.a.run.app',
+  revokeAdminRole: 'https://revokeadminrole-q3rjv54uka-uc.a.run.app',
+  getPlatformSettings: 'https://getplatformsettings-q3rjv54uka-uc.a.run.app',
+  updatePlatformSettings: 'https://updateplatformsettings-q3rjv54uka-uc.a.run.app',
+  getAllOrders: 'https://getallorders-q3rjv54uka-uc.a.run.app',
+  resolveDispute: 'https://resolvedispute-q3rjv54uka-uc.a.run.app',
+  getAllPayouts: 'https://getallpayouts-q3rjv54uka-uc.a.run.app',
+  updateOrderStatus: 'https://updateorderstatus-q3rjv54uka-uc.a.run.app',
+};
 
 export interface UpdateUserRoleData {
   role?: 'user' | 'customer' | 'seller' | 'admin';
@@ -21,7 +33,7 @@ export interface PlatformSettings {
 }
 
 export const adminApi = {
-  // Get all users (paginated) - Uses Cloud Function
+  // Get all users (paginated)
   getAllUsers: async (data?: {
     limit?: number;
     startAfter?: string;
@@ -30,43 +42,72 @@ export const adminApi = {
     users: User[];
     hasMore: boolean;
   }> => {
-    const response = await cloudFunctions.getAllUsers(data);
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      users: any[];
+      hasMore: boolean;
+    }>(ADMIN_FUNCTIONS.getAllUsers, {
+      method: 'POST',
+      body: data || {},
+      requiresAuth: true,
+    });
     return {
       users: response.users as User[],
       hasMore: response.hasMore,
     };
   },
 
-  // Update user role - Uses grantAdminRole/revokeAdminRole Cloud Functions
+  // Update user role
   updateUserRole: async (userId: string, data: UpdateUserRoleData): Promise<User> => {
     if (data.isAdmin === true || data.role === 'admin') {
-      // Grant admin role
-      await cloudFunctions.grantAdminRole(userId);
+      await coreCloudClient.request(ADMIN_FUNCTIONS.grantAdminRole, {
+        method: 'POST',
+        body: { userId },
+        requiresAuth: true,
+      });
     } else if (data.isAdmin === false) {
-      // Revoke admin role (only if explicitly set to false)
-      await cloudFunctions.revokeAdminRole(userId);
+      await coreCloudClient.request(ADMIN_FUNCTIONS.revokeAdminRole, {
+        method: 'POST',
+        body: { userId },
+        requiresAuth: true,
+      });
     }
-    
-    // For role changes (seller/user), we might need a separate Cloud Function
-    // For now, if you have a Cloud Function for this, add it here
-    // Otherwise, return a placeholder - the role change will be reflected in Firestore
-    
-    return {} as User; // Return will be updated when role changes are reflected
+    return {} as User;
   },
 
-  // Grant admin role - Uses Cloud Function
+  // Grant admin role
   grantAdminRole: async (userId: string): Promise<void> => {
-    await cloudFunctions.grantAdminRole(userId);
+    await coreCloudClient.request(ADMIN_FUNCTIONS.grantAdminRole, {
+      method: 'POST',
+      body: { userId },
+      requiresAuth: true,
+    });
   },
 
-  // Revoke admin role - Uses Cloud Function
+  // Revoke admin role
   revokeAdminRole: async (userId: string): Promise<void> => {
-    await cloudFunctions.revokeAdminRole(userId);
+    await coreCloudClient.request(ADMIN_FUNCTIONS.revokeAdminRole, {
+      method: 'POST',
+      body: { userId },
+      requiresAuth: true,
+    });
   },
 
-  // Get platform settings - Uses Cloud Function
+  // Get platform settings
   getPlatformSettings: async (): Promise<PlatformSettings> => {
-    const response = await cloudFunctions.getPlatformSettings();
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      settings: {
+        platformCommissionRate: number;
+        minimumPayoutAmount: number;
+        platformFee: number;
+        currency: string;
+      };
+    }>(ADMIN_FUNCTIONS.getPlatformSettings, {
+      method: 'POST',
+      body: {},
+      requiresAuth: true,
+    });
     return {
       commissionRate: response.settings.platformCommissionRate,
       minPayoutAmount: response.settings.minimumPayoutAmount,
@@ -75,19 +116,24 @@ export const adminApi = {
     };
   },
 
-  // Update platform settings - Uses Cloud Function
+  // Update platform settings
   updatePlatformSettings: async (settings: PlatformSettings): Promise<PlatformSettings> => {
-    await cloudFunctions.updatePlatformSettings({
-      platformCommissionRate: settings.commissionRate,
-      minimumPayoutAmount: settings.minPayoutAmount,
-      platformFee: settings.platformFee,
-      currency: settings.currency,
+    await coreCloudClient.request(ADMIN_FUNCTIONS.updatePlatformSettings, {
+      method: 'POST',
+      body: { 
+        settings: {
+          platformCommissionRate: settings.commissionRate,
+          minimumPayoutAmount: settings.minPayoutAmount,
+          platformFee: settings.platformFee,
+          currency: settings.currency,
+        }
+      },
+      requiresAuth: true,
     });
-    // Return updated settings
     return settings;
   },
 
-  // Get all orders - Uses Cloud Function
+  // Get all orders (paginated)
   getAllOrders: async (data?: {
     limit?: number;
     startAfter?: string;
@@ -96,25 +142,40 @@ export const adminApi = {
     orders: Order[];
     hasMore: boolean;
   }> => {
-    const response = await cloudFunctions.getAllOrders(data);
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      orders: any[];
+      hasMore: boolean;
+    }>(ADMIN_FUNCTIONS.getAllOrders, {
+      method: 'POST',
+      body: data || {},
+      requiresAuth: true,
+    });
     return {
       orders: response.orders as Order[],
       hasMore: response.hasMore,
     };
   },
 
-  // Resolve dispute - Uses Cloud Function
+  // Resolve dispute
   resolveDispute: async (data: {
     orderId: string;
     resolution: 'refund' | 'release';
     refundAmount?: number;
   }): Promise<void> => {
-    await cloudFunctions.resolveDispute(data);
+    await coreCloudClient.request(ADMIN_FUNCTIONS.resolveDispute, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
   },
 
-  // Update order status (admin override) - Uses Cloud Function
+  // Update order status (admin override)
   updateOrderStatus: async (orderId: string, status: OrderStatus): Promise<Order> => {
-    return cloudFunctions.updateOrderStatus({ orderId, status });
+    return coreCloudClient.request<Order>(ADMIN_FUNCTIONS.updateOrderStatus, {
+      method: 'POST',
+      body: { orderId, status },
+      requiresAuth: true,
+    });
   },
 };
-

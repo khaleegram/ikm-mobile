@@ -49,6 +49,8 @@ export function useNotifications(userId: string | null) {
             read: data.read || false,
             orderId: data.orderId,
             productId: data.productId,
+            chatId: data.chatId,
+            peerId: data.peerId,
             status: data.status,
             amount: data.amount,
             createdAt: data.createdAt?.toDate() || new Date(),

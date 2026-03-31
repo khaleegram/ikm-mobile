@@ -1,17 +1,25 @@
-// Market Comment API endpoints - Uses Cloud Functions
+import { coreCloudClient } from './core-cloud-client';
 import { MarketComment } from '@/types';
-import { cloudFunctions } from './cloud-functions';
+
+const MARKET_COMMENT_FUNCTIONS = {
+  createMarketComment: 'https://createmarketcomment-q3rjv54uka-uc.a.run.app',
+  deleteMarketComment: 'https://deletemarketcomment-q3rjv54uka-uc.a.run.app',
+};
 
 export const marketCommentsApi = {
-  // Create comment (uses Cloud Function)
+  // Create comment
   create: async (postId: string, comment: string): Promise<MarketComment> => {
     if (!comment.trim()) {
       throw new Error('Comment cannot be empty');
     }
 
-    const response = await cloudFunctions.createMarketComment({
-      postId,
-      comment: comment.trim(),
+    const response = await coreCloudClient.request<{ success: boolean; commentId: string }>(MARKET_COMMENT_FUNCTIONS.createMarketComment, {
+      method: 'POST',
+      body: {
+        postId,
+        comment: comment.trim(),
+      },
+      requiresAuth: true,
     });
 
     return {
@@ -23,8 +31,13 @@ export const marketCommentsApi = {
     } as MarketComment;
   },
 
-  // Delete comment (uses Cloud Function)
+  // Delete comment
   delete: async (commentId: string): Promise<void> => {
-    await cloudFunctions.deleteMarketComment(commentId);
+    await coreCloudClient.request(MARKET_COMMENT_FUNCTIONS.deleteMarketComment, {
+      method: 'POST',
+      body: { commentId },
+      requiresAuth: true,
+    });
   },
 };
+

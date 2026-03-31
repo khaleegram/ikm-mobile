@@ -1,7 +1,13 @@
 // Shipping API endpoints
 // Cloud-Functions-first (no standalone REST backend configured).
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { ShippingZone } from '@/types';
+
+const SHIPPING_FUNCTIONS = {
+  createShippingZone: 'https://createshippingzone-q3rjv54uka-uc.a.run.app',
+  updateShippingZone: 'https://updateshippingzone-q3rjv54uka-uc.a.run.app',
+  deleteShippingZone: 'https://deleteshippingzone-q3rjv54uka-uc.a.run.app',
+};
 
 export interface CreateShippingZoneData {
   name: string;
@@ -12,12 +18,19 @@ export interface CreateShippingZoneData {
 
 export const shippingApi = {
   createShippingZone: async (sellerId: string, data: CreateShippingZoneData): Promise<ShippingZone> => {
-    const res = await cloudFunctions.createShippingZone({
-      sellerId,
-      ...data,
+    const res = await coreCloudClient.request<{
+      success: boolean;
+      zoneId: string;
+      id: string;
+    }>(SHIPPING_FUNCTIONS.createShippingZone, {
+      method: 'POST',
+      body: {
+        sellerId,
+        ...data,
+      },
+      requiresAuth: true,
     });
 
-    // Firestore listeners are the source of truth; return a best-effort object.
     const now = new Date();
     return {
       id: res?.zoneId || res?.id,
@@ -32,10 +45,14 @@ export const shippingApi = {
   },
 
   updateShippingZone: async (sellerId: string, zoneId: string, data: Partial<ShippingZone>): Promise<ShippingZone> => {
-    await cloudFunctions.updateShippingZone({
-      sellerId,
-      zoneId,
-      ...data,
+    await coreCloudClient.request(SHIPPING_FUNCTIONS.updateShippingZone, {
+      method: 'POST',
+      body: {
+        sellerId,
+        zoneId,
+        ...data,
+      },
+      requiresAuth: true,
     });
 
     const now = new Date();
@@ -52,7 +69,12 @@ export const shippingApi = {
   },
 
   deleteShippingZone: async (sellerId: string, zoneId: string): Promise<void> => {
-    await cloudFunctions.deleteShippingZone({ sellerId, zoneId });
+    await coreCloudClient.request(SHIPPING_FUNCTIONS.deleteShippingZone, {
+      method: 'POST',
+      body: { sellerId, zoneId },
+      requiresAuth: true,
+    });
   },
 };
+
 

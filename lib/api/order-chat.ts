@@ -1,6 +1,10 @@
-// Order chat API endpoints - Uses Cloud Functions
-import { cloudFunctions } from './cloud-functions';
+import { coreCloudClient } from './core-cloud-client';
 import { OrderMessage } from '@/types';
+
+const CHAT_FUNCTIONS = {
+  sendOrderMessage: 'https://sendordermessage-q3rjv54uka-uc.a.run.app',
+  markOrderMessagesAsRead: 'https://markordermessagesasread-q3rjv54uka-uc.a.run.app',
+};
 
 export interface SendMessageData {
   orderId: string;
@@ -8,20 +12,26 @@ export interface SendMessageData {
 }
 
 export const orderChatApi = {
-  // Send a message in order chat (uses Cloud Function)
+  // Send a message in order chat
   sendMessage: async (data: SendMessageData): Promise<OrderMessage> => {
-    return cloudFunctions.sendOrderMessage({
-      orderId: data.orderId,
-      message: data.message,
+    return coreCloudClient.request<OrderMessage>(CHAT_FUNCTIONS.sendOrderMessage, {
+      method: 'POST',
+      body: {
+        orderId: data.orderId,
+        message: data.message,
+      },
+      requiresAuth: true,
     });
   },
 
-  // Mark messages as read (still uses Firestore directly for now)
-  // If you have a Cloud Function for this, we can add it
+  // Mark messages as read
   markAsRead: async (orderId: string, messageIds: string[]): Promise<void> => {
-    // For now, this can be handled client-side via Firestore update
-    // If you have a Cloud Function, we can use it here
-    throw new Error('Mark as read is handled via Firestore hooks. If you have a Cloud Function, let me know!');
+    await coreCloudClient.request(CHAT_FUNCTIONS.markOrderMessagesAsRead, {
+      method: 'POST',
+      body: { orderId, messageIds },
+      requiresAuth: true,
+    });
   },
 };
+
 
