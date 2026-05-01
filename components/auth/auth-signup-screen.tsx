@@ -1,11 +1,13 @@
+import { SmartPhoneField } from '@/components/ui/smart-phone-field';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { auth, firestore } from '@/lib/firebase/config';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { AppVariant } from '@/lib/utils/app-variant';
 import { haptics } from '@/lib/utils/haptics';
+import { getMarketBranding } from '@/lib/market-branding';
 import { toNameCase } from '@/lib/utils/name-case';
-import { generateOtpCode, isValidPhoneNumber, normalizePhoneInput } from '@/lib/utils/phone';
+import { isValidPhoneNumber, normalizePhoneInput } from '@/lib/utils/phone';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
@@ -38,63 +40,20 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [otpCode, setOtpCode] = useState('');
-  const [pendingOtpCode, setPendingOtpCode] = useState('');
-  const [otpVerified, setOtpVerified] = useState(false);
 
   const copy = useMemo(() => {
-    if (variant === 'seller') {
-      return {
-        title: 'Create Account',
-        subtitle: 'Join and start selling',
-      };
-    }
     return {
       title: 'Create Account',
-      subtitle: 'Join Market Street',
+      subtitle: getMarketBranding().signupJoinSubtitle,
     };
-  }, [variant]);
+  }, []);
 
   const isValidName = displayName.trim().length >= 2;
   const isValidEmail = email.includes('@') && email.includes('.');
-  const normalizedPhone = normalizePhoneInput(phone);
+  const normalizedPhone = useMemo(() => normalizePhoneInput(phone), [phone]);
   const isValidPhone = isValidPhoneNumber(normalizedPhone);
   const isValidPassword = password.length >= 6;
   const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
-
-  const handleSendOtp = () => {
-    if (!isValidPhone) {
-      Alert.alert('Invalid Phone', 'Enter a valid phone number to continue.');
-      return;
-    }
-
-    const code = generateOtpCode();
-    setPendingOtpCode(code);
-    setOtpCode('');
-    setOtpVerified(false);
-    haptics.medium();
-    Alert.alert(
-      'OTP Sent',
-      `Use this OTP to continue: ${code}\n\nReplace this test flow with your SMS provider in production.`
-    );
-  };
-
-  const handleVerifyOtp = () => {
-    if (!pendingOtpCode) {
-      Alert.alert('Send OTP First', 'Tap "Send OTP" to receive a verification code.');
-      return;
-    }
-
-    if (String(otpCode || '').trim() !== pendingOtpCode) {
-      haptics.error();
-      Alert.alert('Invalid OTP', 'The code you entered is incorrect.');
-      return;
-    }
-
-    haptics.success();
-    setOtpVerified(true);
-    Alert.alert('Phone Verified', 'Your phone number has been verified.');
-  };
 
   const handleSignup = async () => {
     const normalizedDisplayName = toNameCase(displayName);
@@ -111,11 +70,6 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
 
     if (!isValidPhone) {
       Alert.alert('Error', 'Enter a valid phone number');
-      return;
-    }
-
-    if (!otpVerified) {
-      Alert.alert('Verify Phone', 'You must verify your phone number with OTP before signing up.');
       return;
     }
 
@@ -145,8 +99,6 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
         email: email.trim(),
         displayName: normalizedDisplayName,
         phone: normalizedPhone,
-        phoneVerified: true,
-        phoneVerifiedAt: serverTimestamp(),
         marketBuyerPhone: normalizedPhone,
         role,
         isAdmin: false,
@@ -156,7 +108,7 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
 
       await user.getIdToken(true);
       haptics.success();
-      router.replace('/');
+      router.replace('/' as any);
     } catch (error: any) {
       haptics.error();
       Alert.alert('Signup Failed', error.message || 'An error occurred');
@@ -239,72 +191,31 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
               <View
                 style={[
                   styles.inputWrapper,
+                  styles.phoneFieldWrapper,
                   {
                     backgroundColor: colors.backgroundSecondary,
-                    borderColor: isValidPhone ? colors.success : colors.cardBorder,
+                    borderWidth: 0,
                   },
                 ]}>
                 <IconSymbol name="phone.fill" size={20} color={colors.textSecondary} style={{ marginRight: 12 }} />
-                <TextInput
-                  style={[styles.input, { color: colors.text }]}
-                  placeholder="Enter your phone number"
-                  placeholderTextColor={colors.textSecondary}
-                  value={phone}
-                  onChangeText={(value) => {
-                    setPhone(value);
-                    setOtpVerified(false);
-                    setPendingOtpCode('');
-                    setOtpCode('');
-                  }}
-                  keyboardType="phone-pad"
-                />
+                <View style={styles.phoneFieldInner}>
+                  <SmartPhoneField
+                    value={phone}
+                    onChange={setPhone}
+                    colors={{
+                      text: colors.text,
+                      textSecondary: colors.textSecondary,
+                      border: colors.cardBorder,
+                      background: colors.card,
+                      backgroundSecondary: colors.backgroundSecondary,
+                      card: colors.card,
+                    }}
+                    accentColor={colors.primary}
+                    borderColor={isValidPhone ? colors.success : colors.cardBorder}
+                    placeholder="Mobile number"
+                  />
+                </View>
                 {isValidPhone && <IconSymbol name="checkmark.circle.fill" size={24} color={colors.success} />}
-              </View>
-            </View>
-
-            <View style={styles.otpActions}>
-              <TouchableOpacity
-                style={[styles.otpButton, { borderColor: colors.cardBorder }]}
-                onPress={handleSendOtp}
-                activeOpacity={0.8}>
-                <Text style={[styles.otpButtonText, { color: colors.text }]}>
-                  {pendingOtpCode ? 'Resend OTP' : 'Send OTP'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.otpButton, { borderColor: otpVerified ? colors.success : colors.cardBorder }]}
-                onPress={handleVerifyOtp}
-                activeOpacity={0.8}>
-                <Text style={[styles.otpButtonText, { color: otpVerified ? colors.success : colors.text }]}>
-                  {otpVerified ? 'Verified' : 'Verify OTP'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.inputContainer}>
-              <Text style={[styles.inputLabel, { color: colors.text }]}>OTP Code</Text>
-              <View
-                style={[
-                  styles.inputWrapper,
-                  {
-                    backgroundColor: colors.backgroundSecondary,
-                    borderColor: otpVerified ? colors.success : colors.cardBorder,
-                  },
-                ]}>
-                <IconSymbol name="lock.shield.fill" size={20} color={colors.textSecondary} style={{ marginRight: 12 }} />
-                <TextInput
-                  style={[styles.input, { color: colors.text }]}
-                  placeholder="Enter 6-digit OTP"
-                  placeholderTextColor={colors.textSecondary}
-                  value={otpCode}
-                  onChangeText={(value) => {
-                    setOtpCode(value.replace(/\D/g, '').slice(0, 6));
-                    if (otpVerified) setOtpVerified(false);
-                  }}
-                  keyboardType="number-pad"
-                  maxLength={6}
-                />
-                {otpVerified && <IconSymbol name="checkmark.circle.fill" size={24} color={colors.success} />}
               </View>
             </View>
 
@@ -454,25 +365,6 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     inputContainer: {
       marginBottom: 20,
     },
-    otpActions: {
-      flexDirection: 'row',
-      gap: 10,
-      marginBottom: 20,
-    },
-    otpButton: {
-      flex: 1,
-      minHeight: 44,
-      borderRadius: 10,
-      borderWidth: 1,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: 'transparent',
-      paddingHorizontal: 10,
-    },
-    otpButtonText: {
-      fontSize: 13,
-      fontWeight: '700',
-    },
     inputLabel: {
       fontSize: 14,
       fontWeight: '600',
@@ -484,6 +376,14 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       borderRadius: 12,
       paddingHorizontal: 16,
       borderWidth: 1,
+    },
+    phoneFieldWrapper: {
+      alignItems: 'center',
+      paddingVertical: 6,
+    },
+    phoneFieldInner: {
+      flex: 1,
+      minWidth: 0,
     },
     input: {
       flex: 1,

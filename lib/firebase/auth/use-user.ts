@@ -11,6 +11,7 @@ export interface AuthUser {
   uid: string;
   email: string | null;
   displayName: string | null;
+  phoneNumber: string | null;
   isAdmin: boolean;
   isSeller: boolean; // User has seller setup (storeName or products)
   idToken: string | null;
@@ -40,6 +41,7 @@ export function useUser() {
                 uid: session.uid,
                 email: session.email,
                 displayName: session.displayName,
+                phoneNumber: currentUser.phoneNumber,
                 isAdmin: session.isAdmin || false,
                 isSeller: session.isSeller || false, // Use cached seller status
                 idToken: null, // Will be fetched below
@@ -84,8 +86,11 @@ export function useUser() {
                   }
                 : currentUserRef.current;
               if (updatedUser && updatedUser !== currentUserRef.current) {
-                currentUserRef.current = updatedUser;
-                setUser(updatedUser);
+                currentUserRef.current = {
+                  ...updatedUser,
+                  phoneNumber: firebaseUser.phoneNumber,
+                };
+                setUser(currentUserRef.current);
               }
               setLoading(false);
               return;
@@ -144,6 +149,7 @@ export function useUser() {
             uid: firebaseUser.uid,
             email: firebaseUser.email,
             displayName: firebaseUser.displayName,
+            phoneNumber: firebaseUser.phoneNumber,
             isAdmin,
             isSeller,
             idToken,
@@ -175,6 +181,7 @@ export function useUser() {
                     uid: session.uid,
                     email: session.email,
                     displayName: session.displayName,
+                    phoneNumber: firebaseUser.phoneNumber,
                     isAdmin: session.isAdmin || false,
                     isSeller: session.isSeller || false,
                     idToken: null,

@@ -6,6 +6,8 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { getAppVariant } from '@/lib/utils/app-variant';
+import { useConfirmedMissingMarketPhone } from '@/lib/hooks/use-phone-gate-settled';
+import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 
 export default function Index() {
   const { user, loading, signOut } = useUser();
@@ -22,10 +24,8 @@ export default function Index() {
     isMarketApp ? user?.uid || null : null
   );
 
-  const normalizedMarketPhone = String(marketProfile?.phone || '').trim();
-  const marketPhoneReady =
-    normalizedMarketPhone.length >= 10 &&
-    Boolean(marketProfile?.phoneVerified || marketProfile?.phoneVerifiedAt);
+  const marketPhoneReady = isMarketPhoneGateSatisfied(marketProfile);
+  const marketMissingPhoneConfirmed = useConfirmedMissingMarketPhone(marketPhoneReady);
 
   // If a logged-in user opens the seller/admin app but isn't allowed, alert once and sign out once.
   useEffect(() => {
@@ -62,6 +62,15 @@ export default function Index() {
   // Market variant
   // ================
   if (isMarketApp) {
+    // Wait for auth hydration to avoid redirect bouncing/flashing.
+    if (loading) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" />
+        </View>
+      );
+    }
+
     if (user && marketProfileLoading) {
       return (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -70,7 +79,15 @@ export default function Index() {
       );
     }
 
-    if (user && !marketPhoneReady) {
+    if (user && !marketPhoneReady && !marketMissingPhoneConfirmed) {
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" />
+        </View>
+      );
+    }
+
+    if (user && !marketPhoneReady && marketMissingPhoneConfirmed) {
       return <Redirect href="/complete-phone" />;
     }
 

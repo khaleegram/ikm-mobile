@@ -5,13 +5,19 @@ import { ActivityIndicator, View } from 'react-native';
 import { CustomTabBar } from '@/components/custom-tab-bar';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
+import { useConfirmedMissingMarketPhone } from '@/lib/hooks/use-phone-gate-settled';
+import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getAppVariant } from '@/lib/utils/app-variant';
 
 export default function TabLayout() {
   const { colors } = useTheme();
   const { user, loading } = useUser();
+  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid || null);
+  const phoneReady = isMarketPhoneGateSatisfied(profile);
+  const missingPhoneConfirmed = useConfirmedMissingMarketPhone(phoneReady);
 
   // Seller app only.
   if (getAppVariant() !== 'seller') {
@@ -29,6 +35,26 @@ export default function TabLayout() {
 
   if (!user) {
     return <Redirect href="/(auth)/seller-login" />;
+  }
+
+  if (profileLoading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (!phoneReady && !missingPhoneConfirmed) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (!phoneReady && missingPhoneConfirmed) {
+    return <Redirect href="/complete-phone" />;
   }
 
   if (!hasAppAccess(user)) {

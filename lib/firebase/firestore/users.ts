@@ -49,6 +49,12 @@ export function useUserProfile(userId: string | null) {
             marketBuyerLocation: data.marketBuyerLocation,
             onboardingCompleted: data.onboardingCompleted,
             isGuest: data.isGuest,
+            
+            // Social Identity
+            bio: data.bio || '',
+            followerCount: data.followerCount || 0,
+            followingCount: data.followingCount || 0,
+            
             createdAt: data.createdAt?.toDate() || new Date(),
             updatedAt: data.updatedAt?.toDate() || new Date(),
           };
@@ -115,6 +121,9 @@ export function usePublicUserProfile(userId: string | null) {
               : undefined,
             businessType: data.businessType,
             storePolicies: data.storePolicies,
+            bio: data.bio || '',
+            followerCount: data.followerCount || 0,
+            followingCount: data.followingCount || 0,
           } as PublicUser);
         } else {
           setUser(null);
@@ -133,5 +142,18 @@ export function usePublicUserProfile(userId: string | null) {
   }, [userId]);
 
   return { user, loading, error };
+}
+
+// Hardened Update Helper for User Profile (Identity Layer)
+export async function updateUserProfile(
+  userId: string, 
+  data: Partial<Pick<User, 'displayName' | 'bio' | 'phone'>>
+) {
+  const { updateDoc, serverTimestamp } = await import('firebase/firestore');
+  const ref = doc(firestore, 'users', userId);
+  await updateDoc(ref, {
+    ...data,
+    updatedAt: serverTimestamp(),
+  });
 }
 

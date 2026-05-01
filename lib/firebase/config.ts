@@ -31,6 +31,25 @@ const firebaseConfig = {
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || 'your-app-id',
 };
 
+/** Web client options — must match Console & must include a real `authDomain` for phone reCAPTCHA WebView. */
+export const firebaseWebOptions = {
+  apiKey: firebaseConfig.apiKey,
+  authDomain: firebaseConfig.authDomain,
+  projectId: firebaseConfig.projectId,
+  storageBucket: firebaseConfig.storageBucket,
+  messagingSenderId: firebaseConfig.messagingSenderId,
+  appId: firebaseConfig.appId,
+};
+
+export function hasValidFirebaseWebOptions(): boolean {
+  const { projectId, apiKey, authDomain } = firebaseWebOptions;
+  if (!projectId || !apiKey || !authDomain) return false;
+  if (projectId === 'your-project-id' || apiKey === 'your-api-key' || authDomain === 'your-auth-domain') {
+    return false;
+  }
+  return true;
+}
+
 // Initialize Firebase
 let app: FirebaseApp;
 let auth: Auth;
