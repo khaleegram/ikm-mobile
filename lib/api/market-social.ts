@@ -1,5 +1,14 @@
 import { auth, firestore } from '@/lib/firebase/config';
-import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  increment,
+  serverTimestamp,
+  setDoc,
+  writeBatch,
+} from 'firebase/firestore';
 
 function requireAuthenticatedUserId(): string {
   const userId = auth.currentUser?.uid;
@@ -26,24 +35,64 @@ export const marketSocialApi = {
     if (!followedId) throw new Error('User not found.');
     if (followedId === followerId) throw new Error('You cannot follow yourself.');
 
-    const ref = doc(firestore, 'marketFollows', followDocId(followerId, followedId));
-    const existing = await getDoc(ref);
-    if (existing.exists()) return;
+    const marketFollowRef = doc(firestore, 'marketFollows', followDocId(followerId, followedId));
+    const marketExisting = await getDoc(marketFollowRef);
+    if (marketExisting.exists()) return;
 
-    await setDoc(ref, {
+    const followerProfile = await getDoc(doc(firestore, 'users', followerId));
+    const followedProfile = await getDoc(doc(firestore, 'users', followedId));
+    if (!followerProfile.exists() || !followedProfile.exists()) {
+      throw new Error('Profile still syncing. Try again in a moment.');
+    }
+
+    const batch = writeBatch(firestore);
+    batch.set(marketFollowRef, {
       followerId,
       followedId,
       createdAt: serverTimestamp(),
     });
+    batch.update(doc(firestore, 'users', followerId), {
+      followingCount: increment(1),
+      updatedAt: serverTimestamp(),
+    });
+    batch.update(doc(firestore, 'users', followedId), {
+      followerCount: increment(1),
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
   },
 
   async unfollowUser(targetUserId: string) {
     const followerId = requireAuthenticatedUserId();
     const followedId = normalizeUid(targetUserId);
     if (!followedId) return;
-    await deleteDoc(doc(firestore, 'marketFollows', followDocId(followerId, followedId)));
+
+    const marketFollowRef = doc(firestore, 'marketFollows', followDocId(followerId, followedId));
+    const edge = await getDoc(marketFollowRef);
+    if (!edge.exists()) return;
+
+    const batch = writeBatch(firestore);
+    batch.delete(marketFollowRef);
+    batch.update(doc(firestore, 'users', followerId), {
+      followingCount: increment(-1),
+      updatedAt: serverTimestamp(),
+    });
+    batch.update(doc(firestore, 'users', followedId), {
+      followerCount: increment(-1),
+      updatedAt: serverTimestamp(),
+    });
+    await batch.commit();
   },
 
+  /**
+   * Set follow state explicitly — avoids races with optimistic UI vs stale "current" state.
+   */
+  async setFollowState(targetUserId: string, shouldFollow: boolean) {
+    if (shouldFollow) return this.followUser(targetUserId);
+    return this.unfollowUser(targetUserId);
+  },
+
+  /** @deprecated Prefer setFollowState (explicit intent). */
   async toggleFollowUser(targetUserId: string, isFollowing: boolean) {
     if (isFollowing) return this.unfollowUser(targetUserId);
     return this.followUser(targetUserId);
@@ -64,6 +113,10 @@ export const marketSocialApi = {
     // Also remove follow both ways (clean up social graph)
     batch.delete(doc(firestore, 'marketFollows', followDocId(blockerId, blockedId)));
     batch.delete(doc(firestore, 'marketFollows', followDocId(blockedId, blockerId)));
+    batch.delete(doc(firestore, `following/${blockerId}/list`, blockedId));
+    batch.delete(doc(firestore, `following/${blockedId}/list`, blockerId));
+    batch.delete(doc(firestore, `followers/${blockedId}/list`, blockerId));
+    batch.delete(doc(firestore, `followers/${blockerId}/list`, blockedId));
     await batch.commit();
   },
 

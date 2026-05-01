@@ -13,8 +13,8 @@ export interface User {
   firstName?: string;             // First name
   lastName?: string;              // Last name
   phone?: string;                 // Phone number
-  phoneVerified?: boolean;        // true when phone has passed OTP verification
-  phoneVerifiedAt?: Timestamp | Date; // When phone OTP verification was completed
+  phoneVerified?: boolean;        // legacy: OTP verification (optional; contact phone no longer requires this)
+  phoneVerifiedAt?: Timestamp | Date;
   whatsappNumber?: string;        // WhatsApp number (format: +234...)
   
   // Admin
@@ -72,6 +72,11 @@ export interface User {
   // Seller Type (for Market Street)
   sellerType?: SellerType;        // 'business' | 'street' | 'both' (optional for backward compatibility)
   
+  // Social & Identity
+  bio?: string;                   // 160 char limit bio
+  followerCount?: number;
+  followingCount?: number;
+  
   // Timestamps
   createdAt?: Timestamp | Date;          // Account creation date
   updatedAt?: Timestamp | Date;          // Last update date
@@ -97,6 +102,11 @@ export interface PublicUser {
     refunds?: string;
     privacy?: string;
   };
+  
+  // Social
+  bio?: string;
+  followerCount?: number;
+  followingCount?: number;
 }
 
 // Store Collection - separate from users

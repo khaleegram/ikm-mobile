@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -13,6 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
+import { FlashList } from '@shopify/flash-list';
 
 import { CommentItem } from '@/components/market/comment-item';
 import { AnimatedPressable } from '@/components/animated-pressable';
@@ -28,6 +28,24 @@ import type { MarketComment } from '@/types';
 
 const lightBrown = '#A67C52';
 
+function CommentsSkeleton({ count = 5, colors }: { count?: number; colors: any }) {
+  const SKELETON_COLOR = colors.border;
+  return (
+    <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 16, gap: 20 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <View key={i} style={{ flexDirection: 'row', gap: 12 }}>
+          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: SKELETON_COLOR, opacity: 0.5 }} />
+          <View style={{ flex: 1, gap: 8, paddingTop: 4 }}>
+            <View style={{ width: 120, height: 14, backgroundColor: SKELETON_COLOR, opacity: 0.5, borderRadius: 4 }} />
+            <View style={{ width: '80%', height: 12, backgroundColor: SKELETON_COLOR, opacity: 0.3, borderRadius: 4 }} />
+            <View style={{ width: '60%', height: 12, backgroundColor: SKELETON_COLOR, opacity: 0.3, borderRadius: 4 }} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export default function PostDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { colors } = useTheme();
@@ -36,7 +54,7 @@ export default function PostDetailScreen() {
   const { comments, loading: commentsLoading } = useMarketPostComments(id as string);
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
-  const commentsListRef = useRef<FlatList<MarketComment>>(null);
+  const commentsListRef = useRef<FlashList<MarketComment>>(null);
   const marketLoginRoute = getLoginRouteForVariant('market');
 
   const orderedComments = useMemo(() => [...comments].reverse(), [comments]);
@@ -114,40 +132,35 @@ export default function PostDetailScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
           <IconSymbol name="arrow.left" size={24} color={colors.text} />
         </TouchableOpacity>
-        {/* Comments-only screen: no post actions/likes/count overlay here. */}
         <Text style={[styles.headerTitle, { color: colors.text }]}>Comments</Text>
         <View style={styles.headerButton} />
       </View>
 
-      <FlatList
-        ref={commentsListRef}
-        data={orderedComments}
-        keyExtractor={(item) => item.id || Math.random().toString()}
-        renderItem={({ item }) => <CommentItem comment={item} />}
-        keyboardShouldPersistTaps="always"
-        keyboardDismissMode="none"
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={[
-          styles.commentsListContent,
-          {
-            paddingBottom: insets.bottom + 88,
-          },
-        ]}
-        ListEmptyComponent={
-          commentsLoading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="small" color={lightBrown} />
-            </View>
-          ) : (
-            <View style={styles.emptyComments}>
-              <IconSymbol name="message" size={48} color={colors.textSecondary} />
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                No comments yet. Be the first to comment!
-              </Text>
-            </View>
-          )
-        }
-      />
+      <View style={{ flex: 1, paddingBottom: insets.bottom + 88 }}>
+        {commentsLoading && orderedComments.length === 0 ? (
+           <CommentsSkeleton count={7} colors={colors} />
+        ) : (
+          <FlashList
+            ref={commentsListRef}
+            data={orderedComments}
+            keyExtractor={(item) => item.id || Math.random().toString()}
+            renderItem={({ item }) => <CommentItem comment={item} />}
+            estimatedItemSize={85}
+            keyboardShouldPersistTaps="always"
+            keyboardDismissMode="none"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.commentsListContent}
+            ListEmptyComponent={
+              <View style={styles.emptyComments}>
+                <IconSymbol name="message" size={48} color={colors.textSecondary} />
+                <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+                  No comments yet. Be the first to comment!
+                </Text>
+              </View>
+            }
+          />
+        )}
+      </View>
 
       <View
         style={[
@@ -156,6 +169,10 @@ export default function PostDetailScreen() {
             backgroundColor: colors.card,
             borderTopColor: colors.border,
             paddingBottom: insets.bottom + 12,
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
           },
         ]}>
         <View
@@ -228,20 +245,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   commentsListContent: {
-    flexGrow: 1,
     paddingHorizontal: 16,
     paddingTop: 10,
-  },
-  loadingContainer: {
-    paddingVertical: 40,
-    alignItems: 'center',
+    paddingBottom: 20,
   },
   emptyComments: {
-    flex: 1,
     minHeight: 220,
     justifyContent: 'center',
     alignItems: 'center',
     gap: 12,
+    marginTop: 40,
   },
   emptyText: {
     fontSize: 14,

@@ -11,6 +11,8 @@ admin.initializeApp();
 // Export modules
 export * from './admin';
 export * from './dashboard';
+// Follow counts: updated client-side in batch with `marketFollows` (+ Firestore rules).
+// Do not re-enable ./market-social triggers here — they would double-increment counts.
 export * from './market';
 export * from './orders';
 export * from './payments';

@@ -13,10 +13,20 @@ import { haptics } from '@/lib/utils/haptics';
 interface CommentItemProps {
   comment: MarketComment;
   onDeleted?: () => void;
+  darkMode?: boolean;
 }
 
-export function CommentItem({ comment, onDeleted }: CommentItemProps) {
-  const { colors } = useTheme();
+export function CommentItem({ comment, onDeleted, darkMode }: CommentItemProps) {
+  const { colors: themeColors } = useTheme();
+  const colors = darkMode
+    ? {
+        ...themeColors,
+        text: '#FFFFFF',
+        textSecondary: 'rgba(255,255,255,0.55)',
+        backgroundSecondary: 'rgba(255,255,255,0.12)',
+        border: 'rgba(255,255,255,0.08)',
+      }
+    : themeColors;
   const { user } = useUser();
   const { user: commenter } = usePublicUserProfile(comment.userId);
   const isOwner = user?.uid === comment.userId;

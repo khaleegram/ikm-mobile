@@ -17,6 +17,7 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { auth } from '@/lib/firebase/config';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getMarketBranding } from '@/lib/market-branding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
@@ -24,10 +25,12 @@ import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { showToast } from '@/components/toast';
+import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 
 const lightBrown = '#A67C52';
 
 export default function SettingsScreen() {
+  const marketBrand = getMarketBranding();
   const { colors, colorScheme, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
   const { user, signOut: signOutUser } = useUser();
@@ -39,10 +42,10 @@ export default function SettingsScreen() {
   const normalizedPhone = React.useMemo(() => {
     return String((profile as any)?.marketBuyerPhone || profile?.phone || '').trim();
   }, [profile]);
-  const phoneVerified = React.useMemo(() => {
-    if (!normalizedPhone || normalizedPhone.length < 10) return false;
-    return Boolean(profile?.phoneVerified || profile?.phoneVerifiedAt);
-  }, [normalizedPhone, profile?.phoneVerified, profile?.phoneVerifiedAt]);
+  const phoneComplete = React.useMemo(
+    () => isMarketPhoneGateSatisfied(profile ?? null),
+    [profile],
+  );
 
   React.useEffect(() => {
     if (profile) {
@@ -253,27 +256,23 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Phone Verification */}
+        {/* Phone (contact) */}
         <TouchableOpacity
           style={styles.settingRow}
           onPress={() => {
             haptics.light();
-            if (phoneVerified) {
-              showToast('Phone already verified.', 'info');
-              return;
-            }
-            router.push('/complete-phone' as any);
+            router.push('/complete-phone?edit=1' as any);
           }}>
           <View style={styles.settingLeft}>
             <IconSymbol name="phone.fill" size={20} color={colors.text} />
             <View>
               <Text style={[styles.settingLabel, { color: colors.text }]}>Phone</Text>
               <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
-                {normalizedPhone || 'Not verified'}
+                {normalizedPhone || 'Not set'}
               </Text>
             </View>
           </View>
-          {phoneVerified ? (
+          {phoneComplete ? (
             <IconSymbol name="checkmark.circle.fill" size={18} color={colors.success} />
           ) : (
             <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
@@ -380,7 +379,7 @@ export default function SettingsScreen() {
           }}>
           <View style={styles.settingLeft}>
             <IconSymbol name="shippingbox.fill" size={20} color={colors.text} />
-            <Text style={[styles.settingLabel, { color: colors.text }]}>Market Orders</Text>
+            <Text style={[styles.settingLabel, { color: colors.text }]}>{marketBrand.ordersNavLabel}</Text>
           </View>
           <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
         </TouchableOpacity>

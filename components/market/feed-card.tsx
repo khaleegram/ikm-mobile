@@ -41,6 +41,13 @@ export const FeedCard = React.memo(function FeedCard({
   const [isLiking, setIsLiking] = useState(false);
   const cardHeight = itemHeight ?? height;
   const isVideo = isVideoMarketPost(post);
+  const aspectRatio =
+    Number.isFinite(post.videoMeta?.aspectRatio) && Number(post.videoMeta?.aspectRatio) > 0
+      ? Number(post.videoMeta?.aspectRatio)
+      : undefined;
+  const computedVideoHeight = aspectRatio
+    ? Math.min(cardHeight, width / aspectRatio)
+    : cardHeight;
 
   const handleLike = useCallback(async () => {
     if (!user) {
@@ -118,21 +125,23 @@ export const FeedCard = React.memo(function FeedCard({
   return (
     <View style={[styles.container, { width, height: cardHeight }]}>
       {isVideo && post.videoUrl ? (
-        <MarketVideoSurface
-          active={isActive}
-          videoUri={post.videoUrl}
-          externalSoundUri={
-            post.soundMeta?.sourceType === 'original'
-              ? undefined
-              : post.soundMeta?.sourceUri
-                ? post.soundMeta.sourceUri
-                : undefined
-          }
-          externalSoundVolume={post.soundMeta?.soundVolume}
-          originalAudioVolume={post.soundMeta?.originalAudioVolume}
-          soundStartMs={post.soundMeta?.startMs}
-          useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
-        />
+        <View style={[styles.videoFrame, { height: computedVideoHeight }]}>
+          <MarketVideoSurface
+            active={isActive}
+            videoUri={post.videoUrl}
+            externalSoundUri={
+              post.soundMeta?.sourceType === 'original'
+                ? undefined
+                : post.soundMeta?.sourceUri
+                  ? post.soundMeta.sourceUri
+                  : undefined
+            }
+            externalSoundVolume={post.soundMeta?.soundVolume}
+            originalAudioVolume={post.soundMeta?.originalAudioVolume}
+            soundStartMs={post.soundMeta?.startMs}
+            useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
+          />
+        </View>
       ) : (
         <ScrollView
           ref={scrollViewRef}
@@ -212,6 +221,12 @@ const styles = StyleSheet.create({
   image: {
     width,
     resizeMode: 'cover',
+  },
+  videoFrame: {
+    width,
+    maxHeight: height,
+    overflow: 'hidden',
+    backgroundColor: '#000',
   },
   paginationContainer: {
     position: 'absolute',

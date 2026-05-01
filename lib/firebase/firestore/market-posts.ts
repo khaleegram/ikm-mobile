@@ -139,17 +139,22 @@ function buildPostsCacheUpdater(
   };
 }
 
+const MARKET_FEED_PAGE_SIZE = 15;
+
 export function useMarketPosts() {
   const [posts, setPosts] = useState<MarketPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [hasMore, setHasMore] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
   const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const PAGE_SIZE = 15;
 
   useEffect(() => {
     let isMounted = true;
     const cacheKey = 'market_posts_feed';
+
+    setLoading(true);
+    setError(null);
 
     (async () => {
       const cached = await getCachedData<MarketPost[]>(cacheKey);
@@ -162,7 +167,7 @@ export function useMarketPosts() {
       collection(firestore, 'marketPosts'),
       where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
-      limit(PAGE_SIZE)
+      limit(MARKET_FEED_PAGE_SIZE)
     );
 
     const unsubscribe: Unsubscribe = onSnapshot(
@@ -173,8 +178,9 @@ export function useMarketPosts() {
         );
         if (snapshot.docs.length > 0) {
           lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
-          setHasMore(snapshot.docs.length === PAGE_SIZE);
+          setHasMore(snapshot.docs.length === MARKET_FEED_PAGE_SIZE);
         } else {
+          lastDocRef.current = null;
           setHasMore(false);
         }
         setPosts(nextPosts);
@@ -193,7 +199,7 @@ export function useMarketPosts() {
       isMounted = false;
       unsubscribe();
     };
-  }, []);
+  }, [refreshKey]);
 
   const loadMore = () => {
     if (!hasMore || loading || !lastDocRef.current) return;
@@ -204,7 +210,7 @@ export function useMarketPosts() {
       where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
       startAfter(lastDocRef.current),
-      limit(PAGE_SIZE)
+      limit(MARKET_FEED_PAGE_SIZE)
     );
 
     const unsubscribe = onSnapshot(
@@ -215,7 +221,7 @@ export function useMarketPosts() {
         );
         if (snapshot.docs.length > 0) {
           lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
-          setHasMore(snapshot.docs.length === PAGE_SIZE);
+          setHasMore(snapshot.docs.length === MARKET_FEED_PAGE_SIZE);
           setPosts((previous) => [...previous, ...nextPosts]);
         } else {
           setHasMore(false);
@@ -234,9 +240,9 @@ export function useMarketPosts() {
 
   const refresh = () => {
     lastDocRef.current = null;
-    setPosts([]);
     setHasMore(true);
-    setLoading(true);
+    setError(null);
+    setRefreshKey((previous) => previous + 1);
   };
 
   return { posts, loading, error, loadMore, hasMore, refresh };
@@ -631,4 +637,28 @@ export function useMarketPostsByPosterIds(posterIds: string[], maxItems: number 
   }, [maxItems, posterIds]);
 
   return { posts, loading, error };
+}
+
+// Atomic pure JS subscription to avoid React mount leaks
+export function subscribeToMarketPosts(onPostsUpdate: (posts: MarketPost[]) => void): Unsubscribe {
+  const q = query(
+    collection(firestore, 'marketPosts'),
+    where('status', '==', 'active'),
+    orderBy('createdAt', 'desc'),
+    limit(20)
+  );
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const postsList: MarketPost[] = [];
+      snapshot.forEach((documentSnapshot) => {
+        postsList.push(normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data()));
+      });
+      onPostsUpdate(postsList);
+    },
+    (err) => {
+      console.error('Error in atomic market posts sub:', err);
+    }
+  );
 }
