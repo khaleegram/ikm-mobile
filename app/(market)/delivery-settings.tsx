@@ -36,10 +36,8 @@ export default function MarketDeliverySettingsScreen() {
 
   const [saving, setSaving] = useState(false);
   const [capturingLocation, setCapturingLocation] = useState(false);
-  const [statePickerVisible, setStatePickerVisible] = useState(false);
-  const [cityPickerVisible, setCityPickerVisible] = useState(false);
-  const [stateSearch, setStateSearch] = useState('');
-  const [citySearch, setCitySearch] = useState('');
+  const [locationPickerVisible, setLocationPickerVisible] = useState(false);
+  const [locationSearch, setLocationSearch] = useState('');
 
   const phone = String((profile as any)?.marketBuyerPhone || profile?.phone || '').trim();
   const savedLocation = useMemo(() => {
@@ -77,32 +75,21 @@ export default function MarketDeliverySettingsScreen() {
     }));
   }, [savedLocation.latitude, savedLocation.longitude]);
 
-  const filteredStates = useMemo(() => {
-    const query = stateSearch.trim().toLowerCase();
-    if (!query) return NIGERIA_STATES;
-    return NIGERIA_STATES.filter((item) => item.toLowerCase().includes(query));
-  }, [stateSearch]);
+  const ALL_LOCATIONS = useMemo(() => {
+    const list: Array<{ city: string; state: string; label: string }> = [];
+    NIGERIA_LOCATION_OPTIONS.forEach(opt => {
+      list.push({ city: opt.city, state: opt.state, label: `${opt.city}, ${opt.state}` });
+    });
+    const unique = new Map<string, typeof list[0]>();
+    list.forEach(i => unique.set(i.label, i));
+    return [...unique.values()].sort((a,b) => a.label.localeCompare(b.label));
+  }, []);
 
-  const availableCities = useMemo(() => {
-    if (!deliveryState) return [];
-    const cities = NIGERIA_LOCATION_OPTIONS.filter((entry) => entry.state === deliveryState).map(
-      (entry) => entry.city
-    );
-    return [...new Set(cities)].sort((a, b) => a.localeCompare(b));
-  }, [deliveryState]);
-
-  const filteredCities = useMemo(() => {
-    const query = citySearch.trim().toLowerCase();
-    if (!query) return availableCities;
-    return availableCities.filter((item) => item.toLowerCase().includes(query));
-  }, [availableCities, citySearch]);
-
-  React.useEffect(() => {
-    if (!deliveryCity) return;
-    if (!availableCities.includes(deliveryCity)) {
-      setDeliveryCity('');
-    }
-  }, [availableCities, deliveryCity]);
+  const filteredLocations = useMemo(() => {
+    const queryValue = locationSearch.trim().toLowerCase();
+    if (!queryValue) return ALL_LOCATIONS;
+    return ALL_LOCATIONS.filter((loc) => loc.label.toLowerCase().includes(queryValue));
+  }, [ALL_LOCATIONS, locationSearch]);
 
   const handleUseDeviceLocation = async () => {
     if (!user?.uid) return;
@@ -234,7 +221,7 @@ export default function MarketDeliverySettingsScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.label, { color: colors.text }]}>Delivery State</Text>
+          <Text style={[styles.label, { color: colors.text }]}>Delivery Location</Text>
           <TouchableOpacity
             style={[
               styles.locationPicker,
@@ -243,31 +230,11 @@ export default function MarketDeliverySettingsScreen() {
                 backgroundColor: colors.backgroundSecondary,
               },
             ]}
-            onPress={() => setStatePickerVisible(true)}>
-            <IconSymbol name="location.fill" size={16} color={lightBrown} />
-            <Text
-              style={[styles.locationPickerText, { color: deliveryState ? colors.text : colors.textSecondary }]}>
-              {deliveryState || 'Select delivery state'}
-            </Text>
-            <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
-          </TouchableOpacity>
-
-          <Text style={[styles.label, { color: colors.text, marginTop: 12 }]}>Delivery City</Text>
-          <TouchableOpacity
-            style={[
-              styles.locationPicker,
-              {
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-                opacity: deliveryState ? 1 : 0.7,
-              },
-            ]}
-            disabled={!deliveryState}
-            onPress={() => setCityPickerVisible(true)}>
+            onPress={() => setLocationPickerVisible(true)}>
             <IconSymbol name="location.fill" size={16} color={lightBrown} />
             <Text
               style={[styles.locationPickerText, { color: deliveryCity ? colors.text : colors.textSecondary }]}>
-              {deliveryState ? deliveryCity || 'Select delivery city' : 'Select state first'}
+              {deliveryCity && deliveryState ? `${deliveryCity}, ${deliveryState}` : 'Search city or area'}
             </Text>
             <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
           </TouchableOpacity>
@@ -324,11 +291,11 @@ export default function MarketDeliverySettingsScreen() {
       </View>
 
       <Modal
-        visible={statePickerVisible}
+        visible={locationPickerVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => setStatePickerVisible(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setStatePickerVisible(false)}>
+        onRequestClose={() => setLocationPickerVisible(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setLocationPickerVisible(false)}>
           <Pressable
             style={[
               styles.modalSheet,
@@ -340,8 +307,8 @@ export default function MarketDeliverySettingsScreen() {
             ]}
             onPress={(event) => event.stopPropagation()}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>Select Delivery State</Text>
-              <TouchableOpacity onPress={() => setStatePickerVisible(false)}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>Select Location</Text>
+              <TouchableOpacity onPress={() => setLocationPickerVisible(false)}>
                 <IconSymbol name="xmark" size={18} color={colors.text} />
               </TouchableOpacity>
             </View>
@@ -356,17 +323,18 @@ export default function MarketDeliverySettingsScreen() {
               ]}>
               <IconSymbol name="magnifyingglass" size={15} color={colors.textSecondary} />
               <TextInput
-                value={stateSearch}
-                onChangeText={setStateSearch}
-                placeholder="Search state"
+                value={locationSearch}
+                onChangeText={setLocationSearch}
+                placeholder="Search your city or area..."
                 placeholderTextColor={colors.textSecondary}
                 style={[styles.searchInput, { color: colors.text }]}
+                autoCapitalize="words"
               />
             </View>
 
             <FlatList
-              data={filteredStates}
-              keyExtractor={(item) => item}
+              data={filteredLocations}
+              keyExtractor={(item) => item.label}
               keyboardShouldPersistTaps="always"
               contentContainerStyle={styles.modalListContent}
               renderItem={({ item }) => (
@@ -374,80 +342,18 @@ export default function MarketDeliverySettingsScreen() {
                   style={[styles.modalRowItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
                     haptics.light();
-                    setDeliveryState(item);
-                    setStateSearch('');
-                    setStatePickerVisible(false);
+                    setDeliveryState(item.state);
+                    setDeliveryCity(item.city);
+                    setLocationSearch('');
+                    setLocationPickerVisible(false);
                   }}>
-                  <Text style={[styles.modalRowText, { color: colors.text }]}>{item}</Text>
-                </TouchableOpacity>
-              )}
-            />
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal
-        visible={cityPickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setCityPickerVisible(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setCityPickerVisible(false)}>
-          <Pressable
-            style={[
-              styles.modalSheet,
-              {
-                backgroundColor: colors.card,
-                borderTopColor: colors.border,
-                paddingBottom: insets.bottom + 12,
-              },
-            ]}
-            onPress={(event) => event.stopPropagation()}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>Select Delivery City</Text>
-              <TouchableOpacity onPress={() => setCityPickerVisible(false)}>
-                <IconSymbol name="xmark" size={18} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <View
-              style={[
-                styles.searchWrap,
-                {
-                  borderColor: colors.border,
-                  backgroundColor: colors.backgroundSecondary,
-                },
-              ]}>
-              <IconSymbol name="magnifyingglass" size={15} color={colors.textSecondary} />
-              <TextInput
-                value={citySearch}
-                onChangeText={setCitySearch}
-                placeholder="Search city"
-                placeholderTextColor={colors.textSecondary}
-                style={[styles.searchInput, { color: colors.text }]}
-              />
-            </View>
-
-            <FlatList
-              data={filteredCities}
-              keyExtractor={(item) => item}
-              keyboardShouldPersistTaps="always"
-              contentContainerStyle={styles.modalListContent}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[styles.modalRowItem, { borderBottomColor: colors.border }]}
-                  onPress={() => {
-                    haptics.light();
-                    setDeliveryCity(item);
-                    setCitySearch('');
-                    setCityPickerVisible(false);
-                  }}>
-                  <Text style={[styles.modalRowText, { color: colors.text }]}>{item}</Text>
+                  <Text style={[styles.modalRowText, { color: colors.text }]}>{item.label}</Text>
                 </TouchableOpacity>
               )}
               ListEmptyComponent={
                 <View style={styles.emptyCityWrap}>
                   <Text style={[styles.emptyCityText, { color: colors.textSecondary }]}>
-                    No city matches this search.
+                    No location matches this search.
                   </Text>
                 </View>
               }

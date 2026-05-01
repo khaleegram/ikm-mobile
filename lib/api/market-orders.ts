@@ -1,6 +1,7 @@
 import { addDoc, collection, getDocs, limit, query, serverTimestamp, where } from 'firebase/firestore';
 
 import { firestore } from '@/lib/firebase/config';
+import { getMarketBranding } from '@/lib/market-branding';
 import { MarketPost, Order } from '@/types';
 
 export interface CreateMarketOrderInput {
@@ -19,7 +20,7 @@ export interface CreateMarketOrderInput {
 
 function buildMarketItemName(post: MarketPost): string {
   const description = post.description?.trim() || '';
-  if (!description) return 'Market Street Item';
+  if (!description) return getMarketBranding().genericItemTitle;
   return description.length > 70 ? `${description.slice(0, 67)}...` : description;
 }
 

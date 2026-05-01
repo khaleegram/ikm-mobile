@@ -41,20 +41,17 @@ export class CoreCloudClient {
   }
 
   private get404FallbackUrl(url: string): string | null {
-    const projectId = process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID?.trim();
-    if (!projectId) return null;
-
     try {
       const parsedUrl = new URL(url);
-      if (!parsedUrl.hostname.endsWith('.a.run.app')) return null;
-
-      const functionName = this.getFunctionNameFromUrl(url);
-      if (!functionName || functionName === 'unknown') return null;
-
-      return `https://us-central1-${projectId}.cloudfunctions.net/${functionName}`;
+      // Do not fallback Cloud Run endpoints to cloudfunctions.net.
+      // Cloud Run service names are often lowercase/kebab and do not
+      // preserve the original callable export name casing, which can
+      // produce bad 404 fallback URLs (e.g. incrementpostviews vs incrementPostViews).
+      if (parsedUrl.hostname.endsWith('.a.run.app')) return null;
     } catch {
       return null;
     }
+    return null;
   }
 
   private isExpectedPaymentVerificationState(error: CloudFunctionError): boolean {
@@ -71,8 +68,20 @@ export class CoreCloudClient {
     );
   }
 
+  private isExpectedIncrementViewsNotFound(error: CloudFunctionError): boolean {
+    const functionName = String(error?.functionName || '').trim().toLowerCase();
+    if (functionName !== 'incrementpostviews') return false;
+    if (Number(error?.status) !== 404) return false;
+
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('post not found');
+  }
+
   private reportFunctionError(error: CloudFunctionError): void {
-    if (this.isExpectedPaymentVerificationState(error)) {
+    if (
+      this.isExpectedPaymentVerificationState(error) ||
+      this.isExpectedIncrementViewsNotFound(error)
+    ) {
       cloudDebug('[Cloud Function] Expected payment verification state:', error);
       return;
     }

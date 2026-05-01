@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,24 +11,20 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as Linking from 'expo-linking';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
-import {
-  PaystackCheckoutModal,
-  type PaystackCheckoutResult,
-} from '@/components/market/paystack-checkout-modal';
+import { PaystackCheckout } from '@/components/market/paystack-checkout';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
-import { paymentsApi } from '@/lib/api/payments';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getMarketBranding } from '@/lib/market-branding';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import {
@@ -42,6 +38,10 @@ const NIGERIA_STATES = [...new Set(NIGERIA_LOCATION_OPTIONS.map((item) => item.s
 
 function formatAmount(value: number): string {
   return `NGN ${value.toLocaleString()}`;
+}
+
+function buildDefaultReference(): string {
+  return `ikm_escrow_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function resolveDisplayName(profile: any, fallback: string): string {
@@ -80,7 +80,29 @@ function extractPaymentReference(url: string): string {
   }
 }
 
+function CheckoutSkeleton({ colors }: { colors: any }) {
+  const SKELETON_COLOR = colors.border;
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <View style={{ height: 60, borderBottomWidth: 1, borderBottomColor: colors.border, paddingHorizontal: 16, paddingTop: 10, flexDirection: 'row', alignItems: 'center' }}>
+        <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: SKELETON_COLOR, opacity: 0.5 }} />
+        <View style={{ flex: 1, alignItems: 'center' }}>
+          <View style={{ width: 120, height: 16, backgroundColor: SKELETON_COLOR, opacity: 0.4, borderRadius: 4, marginBottom: 4 }} />
+          <View style={{ width: 140, height: 12, backgroundColor: SKELETON_COLOR, opacity: 0.2, borderRadius: 4 }} />
+        </View>
+        <View style={{ width: 40, height: 20, borderRadius: 10, backgroundColor: SKELETON_COLOR, opacity: 0.5 }} />
+      </View>
+      <View style={{ padding: 16, gap: 16 }}>
+        <View style={{ height: 200, borderRadius: 16, backgroundColor: SKELETON_COLOR, opacity: 0.4 }} />
+        <View style={{ height: 150, borderRadius: 16, backgroundColor: SKELETON_COLOR, opacity: 0.3 }} />
+        <View style={{ height: 300, borderRadius: 16, backgroundColor: SKELETON_COLOR, opacity: 0.3 }} />
+      </View>
+    </View>
+  );
+}
+
 export default function MarketBuyScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
@@ -106,38 +128,12 @@ export default function MarketBuyScreen() {
   const [addressLine, setAddressLine] = useState('');
   const [deliveryState, setDeliveryState] = useState('');
   const [deliveryCity, setDeliveryCity] = useState('');
-  const [statePickerVisible, setStatePickerVisible] = useState(false);
-  const [cityPickerVisible, setCityPickerVisible] = useState(false);
-  const [stateSearch, setStateSearch] = useState('');
-  const [citySearch, setCitySearch] = useState('');
+  const [locationPickerVisible, setLocationPickerVisible] = useState(false);
+  const [locationSearch, setLocationSearch] = useState('');
+  const [paymentReference, setPaymentReference] = useState(() => buildDefaultReference());
+  const [paystackVisible, setPaystackVisible] = useState(false);
 
-  const checkoutResolverRef = useRef<((result: PaystackCheckoutResult) => void) | null>(null);
-  const [checkoutVisible, setCheckoutVisible] = useState(false);
-  const [checkoutAuthorizationUrl, setCheckoutAuthorizationUrl] = useState<string | null>(null);
-
-  const openCheckoutModal = useCallback(async (authorizationUrl: string) => {
-    const normalizedUrl = String(authorizationUrl || '').trim();
-    if (!normalizedUrl) {
-      throw new Error('Unable to open payment checkout.');
-    }
-
-    setCheckoutAuthorizationUrl(normalizedUrl);
-    setCheckoutVisible(true);
-
-    return new Promise<PaystackCheckoutResult>((resolve) => {
-      checkoutResolverRef.current = resolve;
-    });
-  }, []);
-
-  const handleCheckoutResult = useCallback((result: PaystackCheckoutResult) => {
-    const resolver = checkoutResolverRef.current;
-    checkoutResolverRef.current = null;
-
-    setCheckoutVisible(false);
-    setCheckoutAuthorizationUrl(null);
-
-    resolver?.(result);
-  }, []);
+  const PAYSTACK_KEY = process.env.EXPO_PUBLIC_PAYSTACK_PUBLIC_KEY || '';
   const savedBuyerPhone = useMemo(
     () =>
       String((profile as any)?.marketBuyerPhone || profile?.phone || '')
@@ -178,32 +174,21 @@ export default function MarketBuyScreen() {
   const trimmedAddressLine = addressLine.trim();
   const builtDeliveryAddress = [trimmedAddressLine, deliveryCity, deliveryState].filter(Boolean).join(', ');
 
-  const filteredStates = useMemo(() => {
-    const queryValue = stateSearch.trim().toLowerCase();
-    if (!queryValue) return NIGERIA_STATES;
-    return NIGERIA_STATES.filter((state) => state.toLowerCase().includes(queryValue));
-  }, [stateSearch]);
+  const ALL_LOCATIONS = useMemo(() => {
+    const list: Array<{ city: string; state: string; label: string }> = [];
+    NIGERIA_LOCATION_OPTIONS.forEach(opt => {
+      list.push({ city: opt.city, state: opt.state, label: `${opt.city}, ${opt.state}` });
+    });
+    const unique = new Map<string, typeof list[0]>();
+    list.forEach(i => unique.set(i.label, i));
+    return [...unique.values()].sort((a,b) => a.label.localeCompare(b.label));
+  }, []);
 
-  const availableCities = useMemo(() => {
-    if (!deliveryState) return [];
-    const cities = NIGERIA_LOCATION_OPTIONS.filter((entry) => entry.state === deliveryState).map(
-      (entry) => entry.city
-    );
-    return [...new Set(cities)].sort((a, b) => a.localeCompare(b));
-  }, [deliveryState]);
-
-  const filteredCities = useMemo(() => {
-    const queryValue = citySearch.trim().toLowerCase();
-    if (!queryValue) return availableCities;
-    return availableCities.filter((city) => city.toLowerCase().includes(queryValue));
-  }, [availableCities, citySearch]);
-
-  React.useEffect(() => {
-    if (!deliveryCity) return;
-    if (!availableCities.includes(deliveryCity)) {
-      setDeliveryCity('');
-    }
-  }, [availableCities, deliveryCity]);
+  const filteredLocations = useMemo(() => {
+    const queryValue = locationSearch.trim().toLowerCase();
+    if (!queryValue) return ALL_LOCATIONS;
+    return ALL_LOCATIONS.filter((loc) => loc.label.toLowerCase().includes(queryValue));
+  }, [ALL_LOCATIONS, locationSearch]);
 
   const canSubmit =
     !!user &&
@@ -251,7 +236,8 @@ export default function MarketBuyScreen() {
       return;
     }
     if (!buyerPhone) {
-      showToast('Verify your phone before checkout.', 'error');
+      showToast('Verify your phone to continue.', 'error');
+      haptics.light();
       router.push('/complete-phone' as any);
       return;
     }
@@ -287,22 +273,11 @@ export default function MarketBuyScreen() {
       setSubmitting(true);
       haptics.medium();
 
-      const callbackUrl = Linking.createURL('/paystack-callback');
-      const initializedCheckout = await paymentsApi.initializeEscrowPayment({
-        amount: total,
-        email: buyerEmail,
-        callbackUrl,
-        metadata: {
-          buyerId: user.uid,
-          sellerId: post.posterId,
-          postId: post.id,
-          chatId: chatId || null,
-          quantity: numericQuantity,
-        },
-      });
+      const paymentReference = buildDefaultReference();
 
+      // Save pending checkout so the callback screen can finalize the order
       await savePendingEscrowCheckout({
-        reference: initializedCheckout.reference,
+        reference: paymentReference,
         amount: total,
         buyerId: user.uid,
         buyerName: profile?.displayName || user.displayName || user.email || 'Market Buyer',
@@ -319,33 +294,11 @@ export default function MarketBuyScreen() {
         createdAtMs: Date.now(),
       });
 
-      const checkoutResult = await openCheckoutModal(initializedCheckout.authorizationUrl);
-      if (checkoutResult.type === 'error') {
-        throw new Error('Unable to open payment checkout.');
-      }
-
-      if (checkoutResult.type !== 'success') {
-        showToast('Payment not completed. You can try again when ready.', 'info');
-        return;
-      }
-
-      const callbackReference = extractPaymentReference(checkoutResult.url || '');
-      const paymentReference = callbackReference || initializedCheckout.reference;
-      if (!paymentReference) {
-        throw new Error('Unable to confirm payment reference.');
-      }
-
-      // Finalize payment + order in a dedicated processing route.
-      // This gives users deterministic progress UI and retry handling.
-      showToast('Payment submitted. Confirming now...', 'info');
-      router.replace({
-        pathname: '/paystack-callback',
-        params: { reference: paymentReference },
-      } as any);
+      // Launch custom Paystack checkout
+      setPaystackVisible(true);
     } catch (error: any) {
       haptics.error();
       showToast(error?.message || 'Unable to process payment right now.', 'error');
-    } finally {
       setSubmitting(false);
     }
   };
@@ -364,20 +317,11 @@ export default function MarketBuyScreen() {
   }
 
   if (postLoading || !post) {
-    return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={lightBrown} />
-      </View>
-    );
+    return <CheckoutSkeleton colors={colors} />;
   }
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <PaystackCheckoutModal
-        visible={checkoutVisible}
-        authorizationUrl={checkoutAuthorizationUrl}
-        onResult={handleCheckoutResult}
-      />
       <View
         style={[
           styles.header,
@@ -417,7 +361,7 @@ export default function MarketBuyScreen() {
           <Image source={{ uri: post.images?.[0] || '' }} style={styles.image} contentFit="cover" />
 
           <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
-            {post.description?.trim() || 'Market Street item'}
+            {post.description?.trim() || marketBrand.genericItemLower}
           </Text>
           <Text style={[styles.itemMeta, { color: colors.textSecondary }]}>Seller: {sellerName}</Text>
           <Text style={[styles.heroAmount, { color: colors.text }]}>
@@ -497,64 +441,52 @@ export default function MarketBuyScreen() {
           </View>
 
           <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Phone Number</Text>
-          <View
-            style={[
-              styles.readonlyField,
-              {
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}>
-            <Text style={[styles.readonlyValue, { color: buyerPhone ? colors.text : colors.textSecondary }]}>
-              {buyerPhone || 'Phone not verified'}
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.editSettingsAction} onPress={handleOpenDeliverySettings}>
-            <Text style={[styles.cancelText, { color: colors.textSecondary }]}>
-              Edit saved delivery settings
-            </Text>
-          </TouchableOpacity>
-
-          <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery State</Text>
-          <TouchableOpacity
-            style={[
-              styles.locationPicker,
-              {
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}
-            onPress={() => setStatePickerVisible(true)}>
-            <IconSymbol name="location.fill" size={16} color={lightBrown} />
-            <Text
+          {buyerPhone ? (
+            <View
               style={[
-                styles.locationPickerText,
-                { color: deliveryState ? colors.text : colors.textSecondary },
+                styles.readonlyField,
+                {
+                  borderColor: colors.border,
+                  backgroundColor: colors.backgroundSecondary,
+                },
               ]}>
-              {selectedStateLabel}
-            </Text>
-            <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
-          </TouchableOpacity>
+              <Text style={[styles.readonlyValue, { color: colors.text }]}>{buyerPhone}</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[
+                styles.verifyPhoneAction,
+                {
+                  borderColor: lightBrown,
+                  backgroundColor: `${lightBrown}0A`,
+                },
+              ]}
+              onPress={() => {
+                haptics.light();
+                router.push('/complete-phone' as any);
+              }}>
+              <IconSymbol name="plus.circle.fill" size={18} color={lightBrown} />
+              <Text style={[styles.verifyPhoneText, { color: lightBrown }]}>Add & Verify Phone</Text>
+            </TouchableOpacity>
+          )}
 
-          <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery City</Text>
+          <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery Location</Text>
           <TouchableOpacity
             style={[
               styles.locationPicker,
               {
                 borderColor: colors.border,
                 backgroundColor: colors.backgroundSecondary,
-                opacity: deliveryState ? 1 : 0.7,
               },
             ]}
-            disabled={!deliveryState}
-            onPress={() => setCityPickerVisible(true)}>
-            <IconSymbol name="location.fill" size={15} color={lightBrown} />
+            onPress={() => setLocationPickerVisible(true)}>
+            <IconSymbol name="location.fill" size={16} color={lightBrown} />
             <Text
               style={[
                 styles.locationPickerText,
                 { color: deliveryCity ? colors.text : colors.textSecondary },
               ]}>
-              {deliveryState ? selectedCityLabel : 'Select state first'}
+              {deliveryCity && deliveryState ? `${deliveryCity}, ${deliveryState}` : 'Search city or area'}
             </Text>
             <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
           </TouchableOpacity>
@@ -671,11 +603,11 @@ export default function MarketBuyScreen() {
       </View>
 
       <Modal
-        visible={statePickerVisible}
+        visible={locationPickerVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => setStatePickerVisible(false)}>
-        <Pressable style={styles.stateModalBackdrop} onPress={() => setStatePickerVisible(false)}>
+        onRequestClose={() => setLocationPickerVisible(false)}>
+        <Pressable style={styles.stateModalBackdrop} onPress={() => setLocationPickerVisible(false)}>
           <Pressable
             style={[
               styles.stateModalSheet,
@@ -687,8 +619,8 @@ export default function MarketBuyScreen() {
             ]}
             onPress={(event) => event.stopPropagation()}>
             <View style={styles.stateModalHeader}>
-              <Text style={[styles.stateModalTitle, { color: colors.text }]}>Select Delivery State</Text>
-              <TouchableOpacity onPress={() => setStatePickerVisible(false)}>
+              <Text style={[styles.stateModalTitle, { color: colors.text }]}>Select Location</Text>
+              <TouchableOpacity onPress={() => setLocationPickerVisible(false)}>
                 <IconSymbol name="xmark" size={18} color={colors.text} />
               </TouchableOpacity>
             </View>
@@ -703,88 +635,25 @@ export default function MarketBuyScreen() {
               ]}>
               <IconSymbol name="magnifyingglass" size={15} color={colors.textSecondary} />
               <TextInput
-                value={stateSearch}
-                onChangeText={setStateSearch}
-                placeholder="Search state"
+                value={locationSearch}
+                onChangeText={setLocationSearch}
+                placeholder="Search your city or area..."
                 placeholderTextColor={colors.textSecondary}
                 style={[styles.stateSearchInput, { color: colors.text }]}
+                autoCapitalize="words"
               />
             </View>
 
             <FlatList
-              data={filteredStates}
-              keyExtractor={(item) => item}
-              keyboardShouldPersistTaps="always"
-              keyboardDismissMode="none"
-              contentContainerStyle={styles.stateListContent}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[styles.stateRowItem, { borderBottomColor: colors.border }]}
-                  onPress={() => {
-                    haptics.light();
-                    setDeliveryState(item);
-                    setStateSearch('');
-                    setStatePickerVisible(false);
-                  }}>
-                  <Text style={[styles.stateRowText, { color: colors.text }]}>{item}</Text>
-                </TouchableOpacity>
-              )}
-            />
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      <Modal
-        visible={cityPickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setCityPickerVisible(false)}>
-        <Pressable style={styles.stateModalBackdrop} onPress={() => setCityPickerVisible(false)}>
-          <Pressable
-            style={[
-              styles.stateModalSheet,
-              {
-                backgroundColor: colors.card,
-                borderTopColor: colors.border,
-                paddingBottom: insets.bottom + 12,
-              },
-            ]}
-            onPress={(event) => event.stopPropagation()}>
-            <View style={styles.stateModalHeader}>
-              <Text style={[styles.stateModalTitle, { color: colors.text }]}>Select Delivery City</Text>
-              <TouchableOpacity onPress={() => setCityPickerVisible(false)}>
-                <IconSymbol name="xmark" size={18} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <View
-              style={[
-                styles.stateSearchWrap,
-                {
-                  borderColor: colors.border,
-                  backgroundColor: colors.backgroundSecondary,
-                },
-              ]}>
-              <IconSymbol name="magnifyingglass" size={15} color={colors.textSecondary} />
-              <TextInput
-                value={citySearch}
-                onChangeText={setCitySearch}
-                placeholder="Search city"
-                placeholderTextColor={colors.textSecondary}
-                style={[styles.stateSearchInput, { color: colors.text }]}
-              />
-            </View>
-
-            <FlatList
-              data={filteredCities}
-              keyExtractor={(item) => item}
+              data={filteredLocations}
+              keyExtractor={(item) => item.label}
               keyboardShouldPersistTaps="always"
               keyboardDismissMode="none"
               contentContainerStyle={styles.stateListContent}
               ListEmptyComponent={
                 <View style={styles.emptyCityWrap}>
                   <Text style={[styles.emptyCityText, { color: colors.textSecondary }]}>
-                    No city matches this search.
+                    No location matches this search.
                   </Text>
                 </View>
               }
@@ -793,17 +662,49 @@ export default function MarketBuyScreen() {
                   style={[styles.stateRowItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
                     haptics.light();
-                    setDeliveryCity(item);
-                    setCitySearch('');
-                    setCityPickerVisible(false);
+                    setDeliveryState(item.state);
+                    setDeliveryCity(item.city);
+                    setLocationSearch('');
+                    setLocationPickerVisible(false);
                   }}>
-                  <Text style={[styles.stateRowText, { color: colors.text }]}>{item}</Text>
+                  <Text style={[styles.stateRowText, { color: colors.text }]}>{item.label}</Text>
                 </TouchableOpacity>
               )}
             />
           </Pressable>
         </Pressable>
       </Modal>
+
+      <PaystackCheckout
+        visible={paystackVisible}
+        paystackKey={PAYSTACK_KEY}
+        amount={total}
+        billingEmail={user.email || ''}
+        billingName={profile?.displayName || user?.displayName || user?.email || 'Buyer'}
+        refNumber={paymentReference}
+        onCancel={() => {
+          setPaystackVisible(false);
+          showToast('Payment not completed.', 'info');
+          setSubmitting(false);
+          setPaymentReference(buildDefaultReference());
+        }}
+        onSuccess={(res: any) => {
+          setPaystackVisible(false);
+          const finalReference = res.transactionRef?.reference || res.reference || paymentReference;
+          showToast('Payment submitted. Confirming now...', 'info');
+          router.replace({
+            pathname: '/paystack-callback',
+            params: { reference: finalReference },
+          } as any);
+        }}
+        onError={(err: any) => {
+          setPaystackVisible(false);
+          haptics.error();
+          showToast(err?.message || 'Unable to process payment right now.', 'error');
+          setSubmitting(false);
+          setPaymentReference(buildDefaultReference());
+        }}
+      />
     </View>
   );
 }
@@ -1123,9 +1024,22 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
   },
+  verifyPhoneAction: {
+    borderWidth: 1,
+    height: 44,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  verifyPhoneText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
   stateModalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
   stateModalSheet: {
