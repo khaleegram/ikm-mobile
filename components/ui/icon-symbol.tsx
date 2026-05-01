@@ -46,6 +46,14 @@ const MAPPING = {
   // Media & Images
   'photo': 'image',
   'photo.fill': 'image',
+  'photo.stack.fill': 'photo-library',
+  'photo.stack': 'photo-library',
+  'photo.badge.plus': 'add-photo-alternate',
+  'photo.badge.plus.fill': 'add-photo-alternate',
+  'camera.fill': 'photo-camera',
+  'camera': 'photo-camera',
+  'play.rectangle.fill': 'smart-display',
+  'play.rectangle': 'smart-display',
   
   // Time & Calendar
   'calendar': 'calendar-today',
@@ -76,6 +84,8 @@ const MAPPING = {
   'person': 'person-outline',
   'person.badge.shield.checkmark.fill': 'admin-panel-settings',
   'person.badge.shield.checkmark': 'admin-panel-settings',
+  'person.crop.circle.badge.exclamationmark': 'account-circle',
+  'person.crop.circle.badge.exclamationmark.fill': 'account-circle',
   
   // Notifications & Alerts
   'exclamationmark.triangle.fill': 'warning',
@@ -88,12 +98,25 @@ const MAPPING = {
   'paperplane': 'send',
   'message.fill': 'message',
   'message': 'message',
+  'tray.fill': 'inbox',
   'envelope.fill': 'mail',
   'envelope': 'mail-outline',
+  'envelope.badge.fill': 'mark-email-unread',
+  'bubble.right.fill': 'chat-bubble',
+  'bubble.right': 'chat-bubble-outline',
+  'bubble.left.fill': 'chat-bubble',
+  'bubble.left': 'chat-bubble-outline',
+  'bubble.left.and.bubble.right.fill': 'forum',
+  'arrowshape.turn.up.right.fill': 'share',
+  'arrowshape.turn.up.right': 'share',
+  'exclamationmark.bubble.fill': 'report',
+  'exclamationmark.bubble': 'report',
   
   // Status & Indicators
   'checkmark.circle.fill': 'check-circle',
   'checkmark.circle': 'check-circle-outline',
+  'checkmark.seal.fill': 'verified',
+  'checkmark.seal': 'verified',
   'xmark.circle.fill': 'cancel',
   'xmark.circle': 'cancel',
   'info.circle.fill': 'info',
@@ -197,6 +220,8 @@ const MAPPING = {
   'video.fill': 'videocam',
   'video': 'videocam',
   'music.note': 'music-note',
+  'waveform': 'graphic-eq',
+  'waveform.fill': 'graphic-eq',
   
   // Checkmarks
   'checkmark': 'check',

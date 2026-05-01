@@ -13,23 +13,48 @@ module.exports = ({ config }) => {
   const variant = rawVariant === "seller" ? "seller" : "market";
   const isMarket = variant === "market";
 
-  const name = isMarket ? "IKM Market Street" : "IKM Seller";
+  const name = isMarket ? "ChatCart" : "ChatCart Seller";
   // Keep a single Expo project (same `extra.eas.projectId`) for both variants.
   // Store listings are separated by bundle identifier / applicationId, not by slug.
-  const slug = config.slug || "ikm";
-  const scheme = isMarket ? "ikm-market" : "ikm-seller";
+  const slug = config.slug || "chatcart";
+  const scheme = isMarket ? "chatcart" : "chatcart-seller";
 
-  // Separate store listings require unique identifiers.
+  // Register the same IDs in Firebase (Android + iOS app entries) and in App Store / Play Console.
   const androidPackage = isMarket
-    ? "com.khaleefah.ikm.market"
-    : "com.khaleefah.ikm.seller";
+    ? "com.argalengz.chatcart"
+    : "com.argalengz.chatcart.seller";
   const iosBundleIdentifier = isMarket
-    ? "com.khaleefah.ikm.market"
-    : "com.khaleefah.ikm.seller";
+    ? "com.argalengz.chatcart"
+    : "com.argalengz.chatcart.seller";
+
+  const marketBranding = isMarket
+    ? {
+        headerLine: 'CHATCART',
+        proseName: 'ChatCart',
+        genericItemLower: 'ChatCart item',
+        genericItemTitle: 'ChatCart Item',
+        signupJoinSubtitle: 'Join ChatCart',
+        deletePostMessage: 'This will permanently remove this post from ChatCart.',
+        phoneGateLine: 'Add a phone number so buyers and sellers can reach you. Use your country code (e.g. +234).',
+        shareFromLine: 'Shared from ChatCart',
+        ordersNavLabel: 'Orders',
+      }
+    : {
+        headerLine: 'CHATCART SELLER',
+        proseName: 'ChatCart Seller',
+        genericItemLower: 'item',
+        genericItemTitle: 'Item',
+        signupJoinSubtitle: 'Join and start selling',
+        deletePostMessage: 'This will permanently remove this post.',
+        phoneGateLine: 'Add a phone number for your store. Buyers may use it to reach you. Include your country code (e.g. +234).',
+        shareFromLine: 'Shared from ChatCart Seller',
+        ordersNavLabel: 'Orders',
+      };
 
   const extra = {
     ...(config.extra || {}),
     appVariant: variant,
+    marketBranding,
   };
 
   // Optional: allow overriding EAS project IDs per variant (recommended for EAS Update separation).
@@ -59,8 +84,9 @@ module.exports = ({ config }) => {
   const plugins = Array.from(
     new Set([
       ...((Array.isArray(config.plugins) ? config.plugins : []) || []),
-      "expo-video",
       "expo-av",
+      "expo-localization",
+      "expo-video",
     ]),
   );
 
@@ -75,7 +101,7 @@ module.exports = ({ config }) => {
       infoPlist: {
         ...((config.ios && config.ios.infoPlist) || {}),
         NSLocationWhenInUseUsageDescription:
-          "IKM uses your location to help prefill delivery settings. You can change it any time.",
+          "ChatCart uses your location to help prefill delivery settings. You can change it any time.",
       },
     },
     android: {

@@ -5,8 +5,10 @@ import { FlatList, Platform, ScrollView } from 'react-native';
 import * as SystemUI from 'expo-system-ui';
 import 'react-native-reanimated';
 
+
 import { useOfflineSync } from '@/lib/hooks/use-offline-sync';
 import { ThemeProvider, useTheme } from '@/lib/theme/theme-context';
+
 
 const ROOT_STACK_OPTIONS = { headerShown: false as const };
 
@@ -62,11 +64,15 @@ function AppShell() {
     <>
       <OfflineSyncBridge />
       {/* Keep root navigation minimal to avoid route/theme feedback loops. */}
-      <Stack screenOptions={ROOT_STACK_OPTIONS} />
+      <Stack screenOptions={ROOT_STACK_OPTIONS}>
+        <Stack.Screen name="complete-phone" options={{ presentation: 'modal' }} />
+      </Stack>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} translucent backgroundColor="transparent" />
     </>
   );
 }
+
+
 
 export default function RootLayout() {
   return (
