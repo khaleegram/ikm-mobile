@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef } from 'react';
-import { FlatList, Keyboard, Platform, Text, View, ViewToken } from 'react-native';
+import { Keyboard, Platform, Text, View, ViewToken } from 'react-native';
+import { FlashList, type FlashListRef } from '@shopify/flash-list';
 
 import { MessageBubble } from '@/components/market/message-bubble';
 import { MarketMessage } from '@/types';
@@ -18,7 +19,7 @@ type ChatListProps = {
   onLatestVisibleIncomingMessage?: (messageId: string) => void;
   unreadCount: number;
   unreadDividerMessageId: string;
-  flatListRef: React.RefObject<FlatList<MarketMessage>>;
+  flatListRef: React.RefObject<FlashListRef<MarketMessage> | null>;
 };
 
 export function ChatList({
@@ -108,27 +109,25 @@ export function ChatList({
   );
 
   return (
-    <FlatList
-      ref={flatListRef}
-      data={messages}
-      inverted
-      maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
-      keyExtractor={(item) => getStableMessageKey(item, String(activeChatId || 'chat'))}
-      initialNumToRender={16}
-      maxToRenderPerBatch={12}
-      windowSize={9}
-      updateCellsBatchingPeriod={40}
-      removeClippedSubviews
-      contentContainerStyle={[
-        styles.messagesContent,
-        { paddingBottom: insetsBottom + 90 },
-      ]}
-      renderItem={renderMessageItem}
-      keyboardShouldPersistTaps="handled"
-      keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-      onScrollBeginDrag={Keyboard.dismiss}
-      onViewableItemsChanged={onViewableItemsChanged.current}
-      viewabilityConfig={viewabilityConfig.current}
-    />
+    <View style={{ flex: 1 }}>
+      <FlashList
+        ref={flatListRef}
+        data={messages}
+        inverted
+        drawDistance={450}
+        keyExtractor={(item) => getStableMessageKey(item, String(activeChatId || 'chat'))}
+        contentContainerStyle={[
+          styles.messagesContent,
+          { paddingBottom: insetsBottom + 24, paddingTop: 16 },
+        ]}
+        renderItem={renderMessageItem}
+        extraData={{ unreadDividerMessageId, unreadCount, currentUserId, peerAvatarUri }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+        onScrollBeginDrag={Keyboard.dismiss}
+        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={viewabilityConfig.current}
+      />
+    </View>
   );
 }

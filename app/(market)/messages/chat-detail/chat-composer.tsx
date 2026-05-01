@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -35,65 +35,77 @@ export function ChatComposer({
   return (
     <View
       style={[
-        styles.inputContainer,
+        styles.composerShell,
         {
-          backgroundColor: colors.card,
+          backgroundColor: colors.background,
           borderTopColor: colors.border,
-          paddingBottom: insetBottom + 12,
+          paddingBottom: insetBottom + (Platform.OS === 'ios' ? 10 : 12),
         },
       ]}>
-      {showInlineOfferCta ? (
-        <TouchableOpacity
-          style={[styles.inlineOfferButton, { backgroundColor: lightBrown }]}
-          onPress={onOpenOffer}>
-          <IconSymbol name="dollarsign.circle.fill" size={16} color="#FFFFFF" />
-          <Text style={styles.inlineOfferButtonText}>Buyer asked for price. Send Offer</Text>
-        </TouchableOpacity>
-      ) : null}
-
-      <AnimatedPressable
-        style={[styles.imageButton, { backgroundColor: colors.backgroundSecondary }]}
-        onPress={onPickImage}
-        scaleValue={0.9}>
-        <IconSymbol name="photo" size={24} color={colors.text} />
-      </AnimatedPressable>
-
       <View
         style={[
-          styles.inputWrapper,
+          styles.composerInner,
           {
-            backgroundColor: colors.backgroundSecondary,
+            backgroundColor: colors.card,
             borderColor: colors.border,
           },
         ]}>
-        <TextInput
-          style={[styles.input, { color: colors.text }]}
-          placeholder="Type a message..."
-          placeholderTextColor={colors.textSecondary}
-          value={messageText}
-          onChangeText={onChangeMessageText}
-          multiline
-          maxLength={1000}
-        />
-      </View>
+        {showInlineOfferCta ? (
+          <TouchableOpacity
+            style={[styles.inlineOfferButton, { backgroundColor: lightBrown }]}
+            onPress={onOpenOffer}
+            activeOpacity={0.88}>
+            <IconSymbol name="dollarsign.circle.fill" size={18} color="#FFFFFF" />
+            <Text style={styles.inlineOfferButtonText}>Buyer asked for price — send offer</Text>
+          </TouchableOpacity>
+        ) : null}
 
-      <AnimatedPressable
-        style={[
-          styles.sendButton,
-          {
-            backgroundColor: hasMessage ? lightBrown : colors.backgroundSecondary,
-            opacity: hasMessage ? 1 : 0.5,
-          },
-        ]}
-        onPress={onSend}
-        disabled={!hasMessage}
-        scaleValue={0.9}>
-        {sending ? (
-          <ActivityIndicator size="small" color="#FFFFFF" />
-        ) : (
-          <IconSymbol name="paperplane.fill" size={20} color="#FFFFFF" />
-        )}
-      </AnimatedPressable>
+        <View style={styles.composerRow}>
+          <AnimatedPressable
+            style={[styles.circleAction, { backgroundColor: colors.backgroundSecondary }]}
+            onPress={onPickImage}
+            scaleValue={0.92}>
+            <IconSymbol name="photo" size={22} color={colors.text} />
+          </AnimatedPressable>
+
+          <View
+            style={[
+              styles.inputIsland,
+              {
+                backgroundColor: colors.backgroundSecondary,
+                borderColor: hasMessage ? `${lightBrown}66` : colors.border,
+              },
+            ]}>
+            <TextInput
+              style={[styles.composerInput, { color: colors.text }]}
+              placeholder="Message…"
+              placeholderTextColor={colors.textSecondary}
+              value={messageText}
+              onChangeText={onChangeMessageText}
+              multiline
+              maxLength={1000}
+            />
+          </View>
+
+          <AnimatedPressable
+            style={[
+              styles.circleAction,
+              styles.sendCircle,
+              {
+                backgroundColor: hasMessage ? lightBrown : colors.backgroundSecondary,
+              },
+            ]}
+            onPress={onSend}
+            disabled={!hasMessage}
+            scaleValue={0.92}>
+            {sending ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <IconSymbol name="paperplane.fill" size={20} color={hasMessage ? '#FFFFFF' : colors.textSecondary} />
+            )}
+          </AnimatedPressable>
+        </View>
+      </View>
     </View>
   );
 }

@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { View, Text, StyleSheet, Linking } from 'react-native';
+import { View, Text, StyleSheet, Linking, Platform } from 'react-native';
 import { useTheme } from '@/lib/theme/theme-context';
 import { MarketMessage } from '@/types';
 import { SafeImage } from '@/components/safe-image';
@@ -38,8 +38,11 @@ export const MessageBubble = memo(function MessageBubble({
   const messageText = String((message as any).text || message.message || '').trim();
 
   const handlePaymentLink = async () => {
-    if (offerPayload && onOpenOffer && !isSent) {
-      onOpenOffer(offerPayload);
+    if (offerPayload) {
+      if (isSent) return; // Seller just sees 'Offer Sent', no action needed
+      if (onOpenOffer) {
+        onOpenOffer(offerPayload);
+      }
       return;
     }
 
@@ -68,7 +71,7 @@ export const MessageBubble = memo(function MessageBubble({
         style={[
           styles.bubble,
           {
-            backgroundColor: isSent ? '#A67C52' : colors.backgroundSecondary,
+            backgroundColor: isSent ? colors.primary : colors.backgroundSecondary,
             alignSelf: isSent ? 'flex-end' : 'flex-start',
           },
         ]}>
@@ -195,10 +198,20 @@ const styles = StyleSheet.create({
     borderRadius: 13,
   },
   bubble: {
-    maxWidth: '75%',
-    padding: 12,
-    borderRadius: 16,
-    gap: 8,
+    maxWidth: '80%',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 18,
+    gap: 6,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
+      },
+      android: { elevation: 1 },
+    }),
   },
   messageText: {
     fontSize: 15,

@@ -10,6 +10,7 @@ import { marketSoundsApi } from '@/lib/api/market-sounds';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useSavedMarketSounds } from '@/lib/firebase/firestore/market-sounds';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getMarketBranding } from '@/lib/market-branding';
 import { haptics } from '@/lib/utils/haptics';
 import { buildMarketSoundStableKey } from '@/lib/utils/market-media';
 import type { MarketSound } from '@/types';
@@ -17,6 +18,7 @@ import type { MarketSound } from '@/types';
 const lightBrown = '#A67C52';
 
 export default function SavedSoundsScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
@@ -128,7 +130,7 @@ export default function SavedSoundsScreen() {
           <IconSymbol name="arrow.left" size={22} color={colors.text} />
         </TouchableOpacity>
         <View style={[styles.headerIsland, { backgroundColor: lightBrown }]}>
-          <Text style={styles.headerLabel}>MARKET STREET</Text>
+          <Text style={styles.headerLabel}>{marketBrand.headerLine}</Text>
           <Text style={styles.headerTitle}>Saved Sounds</Text>
         </View>
       </View>

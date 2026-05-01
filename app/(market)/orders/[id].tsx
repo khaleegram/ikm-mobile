@@ -14,10 +14,11 @@ import * as ImagePicker from 'expo-image-picker';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
-import { cloudFunctions } from '@/lib/api/cloud-functions';
+import { orderApi } from '@/lib/api/orders';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useOrder } from '@/lib/firebase/firestore/orders';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getMarketBranding } from '@/lib/market-branding';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { haptics } from '@/lib/utils/haptics';
 import { Order } from '@/types';
@@ -57,6 +58,7 @@ function resolveAutoReleaseDate(order: Order | null): Date | null {
 }
 
 export default function MarketOrderDetailScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
@@ -72,10 +74,10 @@ export default function MarketOrderDetailScreen() {
   const autoReleaseDate = useMemo(() => resolveAutoReleaseDate(order), [order]);
 
   const itemSummary = useMemo(() => {
-    if (!order?.items?.length) return 'Market Street item';
+    if (!order?.items?.length) return marketBrand.genericItemLower;
     if (order.items.length === 1) return order.items[0].name;
     return `${order.items[0].name} +${order.items.length - 1} more`;
-  }, [order?.items]);
+  }, [order?.items, marketBrand.genericItemLower]);
   const paymentReference = String(order?.paymentReference || order?.paystackReference || '').trim();
 
   const pickProofImage = async (): Promise<string | undefined> => {
@@ -103,10 +105,7 @@ export default function MarketOrderDetailScreen() {
     try {
       setUpdating(true);
       haptics.medium();
-      await cloudFunctions.markOrderAsSent({
-        orderId: order.id,
-        photoUrl,
-      });
+      await orderApi.markAsSent(order.id, photoUrl);
       haptics.success();
       showToast('Order marked as sent.', 'success');
     } catch (error: any) {
@@ -145,7 +144,7 @@ export default function MarketOrderDetailScreen() {
     try {
       setUpdating(true);
       haptics.medium();
-      await cloudFunctions.markOrderAsReceived({ orderId: order.id });
+      await orderApi.markAsReceived(order.id);
       haptics.success();
       showToast('Order marked as received.', 'success');
     } catch (error: any) {
@@ -162,10 +161,7 @@ export default function MarketOrderDetailScreen() {
     try {
       setUpdating(true);
       haptics.medium();
-      await cloudFunctions.updateOrderStatus({
-        orderId: order.id,
-        status,
-      });
+      await orderApi.updateStatus(order.id, status);
       haptics.success();
       showToast(`Order ${status.toLowerCase()}.`, 'success');
     } catch (error: any) {

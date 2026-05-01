@@ -171,12 +171,15 @@ export function useMarketChats(userId: string | null) {
       return;
     }
 
+    // Hydrate from memory cache first (instant, no spinner)
     const memoryChats = memoryChatsByUser.get(userId);
-    if (memoryChats && memoryChats.length > 0) {
+    const hadMemoryCache = memoryChats && memoryChats.length > 0;
+    if (hadMemoryCache) {
       setChats(memoryChats);
       setLoading(false);
     }
 
+    // Then try async disk cache
     const cacheKey = `market_chats_${userId}`;
     (async () => {
       const cached = await getCachedData<any[]>(cacheKey);
@@ -187,10 +190,13 @@ export function useMarketChats(userId: string | null) {
         updatedAt: toDate(chat.updatedAt),
       }));
       setChats(normalizedCached);
-      setLoading(false);
+      setLoading(false); // clear loading once disk cache is available
     })();
 
-    setLoading(true);
+    // Only show loading spinner if we had NO cached data at all
+    if (!hadMemoryCache) {
+      setLoading(true);
+    }
     setError(null);
 
     const directConversationsQuery = query(
@@ -480,6 +486,9 @@ export function useMarketChats(userId: string | null) {
       ) {
         setLoading(false);
         inboxDebug('mergeChats:all-streams-loaded');
+      } else if (conversations.length > 0) {
+        // Clear loading as soon as we have ANY data to show
+        setLoading(false);
       }
     };
 
@@ -919,6 +928,10 @@ export function useMarketChat(chatId: string | null) {
       setMessages(normalized);
       memoryChatMessagesById.set(chatId, normalized);
       cacheData(cacheKey, normalized, MARKET_CHAT_MESSAGES_CACHE_TTL_MS).catch(() => {});
+      // Clear loading immediately if we have messages to show
+      if (normalized.length > 0) {
+        setLoading(false);
+      }
       markLoadedIfReady();
     };
 
@@ -1272,6 +1285,10 @@ export function useMarketConversationMessages(userId: string | null, peerId: str
       setMessages(normalized);
       memoryConversationMessagesById.set(directConversationId, normalized);
       cacheData(cacheKey, normalized, MARKET_CHAT_MESSAGES_CACHE_TTL_MS).catch(() => {});
+      // Clear loading immediately when we have messages to show
+      if (normalized.length > 0) {
+        setLoading(false);
+      }
       setLoaded();
     };
 

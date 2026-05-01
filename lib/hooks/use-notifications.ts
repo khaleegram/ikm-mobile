@@ -15,7 +15,8 @@ Notifications.setNotificationHandler({
     const config = getNotificationConfig(data.type);
     
     return {
-      shouldShowAlert: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
       shouldPlaySound: config.sound,
       shouldSetBadge: true,
       priority: config.priority,

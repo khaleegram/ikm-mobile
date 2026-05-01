@@ -2,7 +2,6 @@ import { SafeImage } from '@/components/safe-image';
 import { showToast } from '@/components/toast';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { adminApi } from '@/lib/api/admin';
-import { cloudFunctions } from '@/lib/api/cloud-functions';
 import { orderChatApi } from '@/lib/api/order-chat';
 import { orderApi } from '@/lib/api/orders';
 import { useUser } from '@/lib/firebase/auth/use-user';
@@ -107,14 +106,15 @@ export default function OrderDetailScreen() {
     haptics.medium();
     try {
       if (newStatus === 'Sent') {
-        await cloudFunctions.markOrderAsSent({ 
-          orderId: order.id!, 
-          waybillParkId: parkId || undefined, 
-          waybillParkName: parkName || undefined 
-        });
+        await orderApi.markAsSent(
+          order.id!,
+          undefined,
+          parkId || undefined,
+          parkName || undefined
+        );
         showToast('Order marked as sent', 'success');
       } else if (newStatus === 'AvailabilityCheck') {
-        await cloudFunctions.markOrderAsNotAvailable({
+        await orderApi.markAsNotAvailable({
           orderId: order.id!,
           reason: notAvailableReason || undefined,
           waitTimeDays: waitTimeDays ? parseInt(waitTimeDays) : undefined,

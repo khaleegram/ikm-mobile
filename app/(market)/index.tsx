@@ -1,7 +1,7 @@
 import React, { useRef, useCallback } from 'react';
 import {
   View,
-  Dimensions,
+  useWindowDimensions,
   RefreshControl,
   ActivityIndicator,
   Alert,
@@ -10,6 +10,7 @@ import {
   StatusBar,
   TouchableOpacity,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,31 +26,48 @@ import { haptics } from '@/lib/utils/haptics';
 import { getDeviceCoordinates } from '@/lib/utils/device-location';
 import { buildMarketPostStableKey } from '@/lib/utils/market-media';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
+import { getMarketBranding } from '@/lib/market-branding';
 import { router } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
-const { height } = Dimensions.get('window');
 const lightBrown = '#A67C52';
 const SNAP_TOLERANCE_PX = 2;
 const MARKET_LOCATION_PROMPT_KEY = '@ikm_market_location_prompted_v1';
 
 export default function MarketFeedScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
+  const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { user: profile } = useUserProfile(user?.uid || null);
   const { posts, loading, error, loadMore, hasMore, refresh } = useMarketPosts();
   const [refreshing, setRefreshing] = React.useState(false);
-  const [viewportHeight, setViewportHeight] = React.useState(height);
+  const viewportHeight = Math.max(1, Math.round(windowHeight));
   const [activePostId, setActivePostId] = React.useState<string | null>(null);
   const flatListRef = useRef<any>(null);
   const isProgrammaticSnapRef = useRef(false);
+  const activeIndexRef = useRef(0);
   const hasShownLocationPromptRef = useRef(false);
   const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
   const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
     const firstVisible = viewableItems?.[0]?.item as MarketPost | undefined;
+    const firstIndex = Number(viewableItems?.[0]?.index || 0);
+    if (Number.isFinite(firstIndex)) activeIndexRef.current = Math.max(0, firstIndex);
     setActivePostId(firstVisible?.id || null);
   }).current;
+
+  useFocusEffect(
+    useCallback(() => {
+      const listRef = flatListRef.current;
+      if (!listRef || typeof listRef.scrollToOffset !== 'function') return undefined;
+      const offset = Math.max(0, activeIndexRef.current) * viewportHeight;
+      requestAnimationFrame(() => {
+        listRef.scrollToOffset({ offset, animated: false });
+      });
+      return undefined;
+    }, [viewportHeight])
+  );
 
   React.useEffect(() => {
     if (!user?.uid || !profile) return;
@@ -126,10 +144,6 @@ export default function MarketFeedScreen() {
     }
   };
 
-  const handleComment = useCallback((postId: string) => {
-    router.push(`/(market)/post/${postId}` as any);
-  }, []);
-
   const settleToNearestPost = useCallback(
     (rawOffsetY: number, animated: boolean) => {
       const listRef = flatListRef.current;
@@ -177,10 +191,9 @@ export default function MarketFeedScreen() {
         post={item}
         itemHeight={viewportHeight}
         isActive={item.id === activePostId}
-        onComment={() => handleComment(item.id!)}
       />
     ),
-    [activePostId, handleComment, viewportHeight]
+    [activePostId, viewportHeight]
   );
 
   const keyExtractor = useCallback(
@@ -206,25 +219,19 @@ export default function MarketFeedScreen() {
   );
 
   const renderHomeAppBar = () => (
-    <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 8 }]}>
+    <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 6 }]}>
       <View style={styles.headerTopRow}>
-        <View style={styles.brandIsland}>
-          <View style={styles.brandLogoBadge}>
-            <IconSymbol name="storefront.fill" size={14} color="#FFFFFF" />
-          </View>
-          <View style={styles.brandTextWrap}>
-            <Text style={styles.headerLabel}>MARKET STREET</Text>
-            <Text style={styles.headerTitle}>Home</Text>
-          </View>
+        <View style={styles.headerTitles}>
+          <Text style={styles.headerSuper}>{marketBrand.headerLine}</Text>
+          <Text style={styles.headerTitle}>Home</Text>
         </View>
-
         <TouchableOpacity
           style={styles.searchButton}
           onPress={() => {
             haptics.light();
             router.push('/(market)/search');
           }}>
-          <IconSymbol name="magnifyingglass" size={18} color="#FFFFFF" />
+          <IconSymbol name="magnifyingglass" size={19} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </View>
@@ -278,19 +285,14 @@ export default function MarketFeedScreen() {
   }
 
   return (
-    <View
-      style={[styles.container, { backgroundColor: '#000' }]}
-      onLayout={(event) => {
-        const nextHeight = Math.round(event.nativeEvent.layout.height);
-        if (nextHeight > 0 && nextHeight !== viewportHeight) {
-          setViewportHeight(nextHeight);
-        }
-      }}>
+    <View style={[styles.container, { backgroundColor: '#000' }]}>
       <StatusBar barStyle="light-content" translucent />
 
       <FlashListCompat
+        key={`market-feed-${viewportHeight}`}
         ref={flatListRef}
         data={posts}
+        extraData={`${activePostId || ''}-${viewportHeight}`}
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         estimatedItemSize={viewportHeight}
@@ -318,7 +320,7 @@ export default function MarketFeedScreen() {
           />
         }
         getItemLayout={getItemLayout}
-        removeClippedSubviews={true}
+        removeClippedSubviews={false}
         maxToRenderPerBatch={3}
         windowSize={5}
         initialNumToRender={3}
@@ -349,44 +351,31 @@ const styles = StyleSheet.create({
     zIndex: 9999,
     elevation: 50,
     paddingHorizontal: 16,
-    gap: 8,
   },
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'space-between',
   },
-  brandIsland: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: lightBrown,
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  headerTitles: {
+    gap: 1,
   },
-  brandLogoBadge: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.22)',
-  },
-  brandTextWrap: {
-    flex: 1,
-  },
-  headerLabel: {
-    color: 'rgba(255,255,255,0.72)',
+  headerSuper: {
+    color: 'rgba(255,255,255,0.55)',
     fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 0.7,
+    letterSpacing: 1.2,
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   headerTitle: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 20,
     fontWeight: '800',
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   searchButton: {
     width: 38,
@@ -394,7 +383,7 @@ const styles = StyleSheet.create({
     borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: lightBrown,
+    backgroundColor: 'rgba(0,0,0,0.35)',
   },
   center: {
     flex: 1,
@@ -430,7 +419,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   footerLoader: {
-    height: height,
     justifyContent: 'center',
     alignItems: 'center',
   },

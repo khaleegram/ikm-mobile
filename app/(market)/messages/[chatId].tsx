@@ -3,7 +3,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
   Text,
@@ -12,6 +11,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
+import { type FlashListRef } from '@shopify/flash-list';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -98,7 +98,7 @@ export default function ChatDetailScreen() {
   });
   const isBlockedPeer = Boolean(resolvedPeerId && blockedIds.has(String(resolvedPeerId)));
 
-  const flatListRef = useRef<FlatList<MarketMessage>>(null);
+  const flatListRef = useRef<FlashListRef<MarketMessage>>(null);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
   const [offerVisible, setOfferVisible] = useState(false);
@@ -342,13 +342,32 @@ export default function ChatDetailScreen() {
 
   if (!user) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <Text style={[styles.text, { color: colors.text }]}>Please log in to view chat</Text>
-        <TouchableOpacity
-          style={[styles.button, { backgroundColor: lightBrown }]}
-          onPress={() => router.push(marketLoginRoute as any)}>
-          <Text style={styles.buttonText}>Login</Text>
-        </TouchableOpacity>
+      <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top + 24, paddingHorizontal: 24 }]}>
+        <View style={[styles.emptyContainer, { flex: 1 }]}>
+          <View
+            style={{
+              width: 88,
+              height: 88,
+              borderRadius: 44,
+              backgroundColor: `${lightBrown}18`,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 8,
+            }}>
+            <IconSymbol name="message.fill" size={40} color={lightBrown} />
+          </View>
+          <Text style={[styles.text, { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' }]}>
+            Sign in to chat
+          </Text>
+          <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
+            Your conversations sync across devices when you’re logged in.
+          </Text>
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: lightBrown, borderRadius: 14, paddingVertical: 14 }]}
+            onPress={() => router.push(marketLoginRoute as any)}>
+            <Text style={styles.buttonText}>Log in</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
@@ -372,26 +391,9 @@ export default function ChatDetailScreen() {
           }}
         />
 
-        {loading && displayMessages.length === 0 ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={lightBrown} />
-          </View>
-        ) : error && displayMessages.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.error} />
-            <Text style={[styles.emptyText, { color: colors.error }]}>Unable to load chat</Text>
-            <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
-              Please open this conversation again.
-            </Text>
-          </View>
-        ) : displayMessages.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <IconSymbol name="message" size={64} color={colors.textSecondary} />
-            <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-              No messages yet. Start the conversation!
-            </Text>
-          </View>
-        ) : (
+        {/* Always render the chat list shell — no full-screen spinners.
+            Messages stream in from cache/Firestore without blocking the UI. */}
+        {displayMessages.length > 0 ? (
           <ChatList
             activeChatId={activeChatId}
             colors={colors}
@@ -405,6 +407,52 @@ export default function ChatDetailScreen() {
             unreadCount={unreadCount}
             unreadDividerMessageId={unreadDividerMessageId}
           />
+        ) : (
+          <View style={[styles.emptyContainer, { paddingHorizontal: 24 }]}>
+            {loading ? (
+              <>
+                <View
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: 28,
+                    borderWidth: 2,
+                    borderColor: `${lightBrown}40`,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                  <ActivityIndicator size="small" color={lightBrown} />
+                </View>
+                <Text style={[styles.emptySubtext, { color: colors.textSecondary, marginTop: 12, fontWeight: '600' }]}>
+                  Loading messages…
+                </Text>
+              </>
+            ) : error ? (
+              <>
+                <IconSymbol name="exclamationmark.triangle.fill" size={40} color={colors.error} />
+                <Text style={[styles.emptyText, { color: colors.error, fontWeight: '800', fontSize: 17 }]}>Couldn’t load chat</Text>
+                <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>Check your connection and try opening the thread again.</Text>
+              </>
+            ) : (
+              <>
+                <View
+                  style={{
+                    width: 72,
+                    height: 72,
+                    borderRadius: 36,
+                    backgroundColor: `${lightBrown}14`,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                  <IconSymbol name="bubble.left.and.bubble.right.fill" size={32} color={lightBrown} />
+                </View>
+                <Text style={[styles.emptyText, { color: colors.text, fontSize: 17, fontWeight: '800' }]}>Say hello</Text>
+                <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
+                  Send a message to start the conversation.
+                </Text>
+              </>
+            )}
+          </View>
         )}
 
         {isBlockedPeer ? (

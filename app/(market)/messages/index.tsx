@@ -3,12 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
   TouchableOpacity,
-  ActivityIndicator,
+  TextInput,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { FlashList } from '@shopify/flash-list';
+
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useMarketChats } from '@/lib/firebase/firestore/market-messages';
@@ -17,21 +19,22 @@ import { formatRelativeTime } from '@/lib/utils/date-format';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { buildDirectConversationId, resolveDirectConversationPeerId } from '@/lib/api/market-messages';
 import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { SafeImage } from '@/components/safe-image';
+import { useInboxPeerSummaries, type InboxPeerSummary } from '@/lib/hooks/use-inbox-peer-summaries';
 
 const lightBrown = '#A67C52';
 
-function resolveProfileName(profile: any, fallback: string) {
-  const first = String(profile?.firstName || '').trim();
-  const last = String(profile?.lastName || '').trim();
-  const full = `${first} ${last}`.trim();
-  if (full) return full;
-  const display = String(profile?.displayName || '').trim();
-  if (display) return display;
-  const store = String(profile?.storeName || '').trim();
-  if (store) return store;
-  return fallback;
+function getInboxPeerId(item: any, userId: string): string | null {
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  const otherFromParticipants = participants.find((p: string) => p && p !== userId) || null;
+  return (
+    otherFromParticipants ||
+    resolveDirectConversationPeerId(String(item.id || item.chatId || ''), userId) ||
+    (item.posterId && item.posterId !== userId ? String(item.posterId) : null) ||
+    (item.buyerId && item.buyerId !== userId ? String(item.buyerId) : null) ||
+    (item.receiverId && item.receiverId !== userId ? String(item.receiverId) : null) ||
+    null
+  );
 }
 
 function initialsFromName(name: string): string {
@@ -61,27 +64,62 @@ function getChatRowKey(item: any): string {
   return 'conversation:unknown';
 }
 
+function displayNameForChat(
+  item: any,
+  peerId: string | null,
+  peerMap: Record<string, InboxPeerSummary>
+): string {
+  const fromProfile = peerId ? peerMap[peerId]?.displayName : undefined;
+  if (fromProfile) return fromProfile;
+  return (
+    item.posterName ||
+    item.otherParticipantName ||
+    'Conversation'
+  );
+}
+
+function InboxSkeleton({ count = 8, colors }: { count?: number; colors: any }) {
+  const tone = colors.border;
+  return (
+    <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8, gap: 10 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <View
+          key={i}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            padding: 14,
+            borderRadius: 18,
+            gap: 14,
+            backgroundColor: colors.card,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: colors.border,
+          }}>
+          <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: tone, opacity: 0.35 }} />
+          <View style={{ flex: 1, gap: 10 }}>
+            <View style={{ width: '55%', height: 14, backgroundColor: tone, opacity: 0.4, borderRadius: 6 }} />
+            <View style={{ width: '88%', height: 12, backgroundColor: tone, opacity: 0.25, borderRadius: 6 }} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 type ChatRowProps = {
   item: any;
   userId: string;
   colors: any;
+  peerSummary?: InboxPeerSummary;
 };
 
-function ChatRow({ item, userId, colors }: ChatRowProps) {
+const ChatRow = memo(function ChatRow({ item, userId, colors, peerSummary }: ChatRowProps) {
   const unreadCount = item.unreadCount || 0;
   const lastMessage = item.lastMessage || '';
-  const participants = Array.isArray(item.participants) ? item.participants : [];
-  const otherParticipantFromList = participants.find((p: string) => p && p !== userId) || null;
-  const otherParticipantId =
-    otherParticipantFromList ||
-    resolveDirectConversationPeerId(String(item.id || item.chatId || ''), userId) ||
-    (item.posterId && item.posterId !== userId ? String(item.posterId) : null) ||
-    (item.buyerId && item.buyerId !== userId ? String(item.buyerId) : null) ||
-    (item.receiverId && item.receiverId !== userId ? String(item.receiverId) : null);
-  const { user: otherUserProfile, loading: otherProfileLoading } = useUserProfile(otherParticipantId);
+  const peerId = getInboxPeerId(item, userId);
 
-  const targetConversationId = otherParticipantId
-    ? buildDirectConversationId(userId, String(otherParticipantId))
+  const targetConversationId = peerId
+    ? buildDirectConversationId(userId, String(peerId))
     : String(item.id || item.chatId || '');
   const chatIds = Array.isArray((item as any).chatIds)
     ? (item as any).chatIds.map((value: unknown) => String(value || '').trim()).filter(Boolean)
@@ -89,35 +127,38 @@ function ChatRow({ item, userId, colors }: ChatRowProps) {
   const legacyChatId =
     chatIds.find((value: string) => value && !value.startsWith('direct_')) ||
     (String(item.id || item.chatId || '').startsWith('direct_') ? '' : String(item.id || item.chatId || ''));
-  const fallbackName =
+
+  const chatName =
+    peerSummary?.displayName ||
     item.posterName ||
     item.otherParticipantName ||
     'Conversation';
-  const chatName = resolveProfileName(otherUserProfile, otherProfileLoading ? 'Loading...' : fallbackName);
-  const avatarUri = otherUserProfile?.storeLogoUrl || (otherUserProfile as any)?.photoURL || undefined;
+  const avatarUri = peerSummary?.avatarUri;
 
   return (
     <TouchableOpacity
       style={[
-        styles.chatItem,
+        styles.chatCard,
         {
           backgroundColor: colors.card,
+          borderColor: unreadCount > 0 ? `${lightBrown}55` : colors.border,
         },
       ]}
+      activeOpacity={0.72}
       onPress={() =>
         router.push(
           `/(market)/messages/${targetConversationId}${
-            otherParticipantId || legacyChatId
+            peerId || legacyChatId
               ? `?${
                   [
-                    otherParticipantId ? `peerId=${encodeURIComponent(String(otherParticipantId))}` : null,
+                    peerId ? `peerId=${encodeURIComponent(String(peerId))}` : null,
                     legacyChatId ? `legacyChatId=${encodeURIComponent(legacyChatId)}` : null,
                   ]
                     .filter(Boolean)
                     .join('&')
                 }`
               : ''
-          }` as any
+          }` as any,
         )
       }>
       <View style={[styles.avatar, { backgroundColor: colors.backgroundSecondary }]}>
@@ -140,28 +181,25 @@ function ChatRow({ item, userId, colors }: ChatRowProps) {
         </View>
         <View style={styles.chatPreviewRow}>
           <Text
-            style={[styles.chatPreview, { color: unreadCount > 0 ? colors.text : colors.textSecondary }]}
-            numberOfLines={1}>
+            style={[
+              styles.chatPreview,
+              { color: unreadCount > 0 ? colors.text : colors.textSecondary, fontWeight: unreadCount > 0 ? '700' : '500' },
+            ]}
+            numberOfLines={2}>
             {lastMessage || 'Tap to open chat'}
           </Text>
-          {unreadCount > 0 ? (
-            <View style={[styles.unreadInlinePill, { backgroundColor: `${lightBrown}18` }]}>
-              <Text style={[styles.unreadInlineText, { color: lightBrown }]}>
-                {unreadCount} unread
-              </Text>
-            </View>
-          ) : null}
         </View>
       </View>
-      {unreadCount > 0 && (
+      {unreadCount > 0 ? (
         <View style={[styles.badge, { backgroundColor: lightBrown }]}>
           <Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
         </View>
+      ) : (
+        <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} style={{ opacity: 0.6 }} />
       )}
     </TouchableOpacity>
   );
-}
-const MemoChatRow = memo(ChatRow);
+});
 
 export default function MessagesScreen() {
   const { colors } = useTheme();
@@ -170,6 +208,7 @@ export default function MessagesScreen() {
   const { chats, loading, error } = useMarketChats(user?.uid || null);
   const { idSet: blockedIds } = useBlockedUserIds(user?.uid || null);
   const [activeFilter, setActiveFilter] = useState<'chats' | 'unread'>('chats');
+  const [searchQuery, setSearchQuery] = useState('');
   const marketLoginRoute = getLoginRouteForVariant('market');
 
   const unreadTotal = useMemo(
@@ -178,17 +217,18 @@ export default function MessagesScreen() {
         const value = Number((chat as any)?.unreadCount || 0);
         return total + (Number.isFinite(value) ? value : 0);
       }, 0),
-    [chats]
+    [chats],
   );
+
   const visibleChats = useMemo(() => {
     if (!user?.uid) return chats;
     return chats.filter((chat) => {
-      const participants = Array.isArray((chat as any)?.participants) ? (chat as any).participants : [];
-      const peerIdFromParticipants =
-        participants.find((p: string) => p && p !== user.uid) ||
-        resolveDirectConversationPeerId(String((chat as any)?.id || (chat as any)?.chatId || ''), user.uid);
-      if (!peerIdFromParticipants) return true;
-      return !blockedIds.has(String(peerIdFromParticipants));
+      const peer =
+        (Array.isArray((chat as any)?.participants)
+          ? (chat as any).participants.find((p: string) => p && p !== user.uid)
+          : null) || resolveDirectConversationPeerId(String((chat as any)?.id || (chat as any)?.chatId || ''), user.uid);
+      if (!peer) return true;
+      return !blockedIds.has(String(peer));
     });
   }, [blockedIds, chats, user?.uid]);
 
@@ -198,9 +238,32 @@ export default function MessagesScreen() {
     }
     return visibleChats;
   }, [activeFilter, visibleChats]);
+
+  const inboxPeerIds = useMemo(
+    () => filteredChats.map((c) => getInboxPeerId(c, user?.uid || '')).filter(Boolean) as string[],
+    [filteredChats, user?.uid],
+  );
+
+  const peerSummaries = useInboxPeerSummaries(inboxPeerIds);
+
+  const searchFiltered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return filteredChats;
+    return filteredChats.filter((chat) => {
+      const peerId = getInboxPeerId(chat, user?.uid || '');
+      const name = displayNameForChat(chat, peerId, peerSummaries).toLowerCase();
+      const preview = String(chat.lastMessage || '').toLowerCase();
+      return name.includes(q) || preview.includes(q);
+    });
+  }, [filteredChats, peerSummaries, searchQuery, user?.uid]);
+
   const renderChatRow = useCallback(
-    ({ item }: { item: any }) => <MemoChatRow item={item} userId={user?.uid || ''} colors={colors} />,
-    [colors, user?.uid]
+    ({ item }: { item: any }) => {
+      const peerId = getInboxPeerId(item, user?.uid || '');
+      const summary = peerId ? peerSummaries[peerId] : undefined;
+      return <ChatRow item={item} userId={user?.uid || ''} colors={colors} peerSummary={summary} />;
+    },
+    [colors, peerSummaries, user?.uid],
   );
 
   const renderHeader = () => (
@@ -208,61 +271,60 @@ export default function MessagesScreen() {
       style={[
         styles.appHeaderWrap,
         {
-          paddingTop: insets.top + 6,
+          paddingTop: insets.top + 8,
           backgroundColor: colors.background,
         },
       ]}>
-      <View style={styles.headerRow}>
-        <View style={[styles.titleChip, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <IconSymbol name="message.fill" size={16} color={lightBrown} />
-          <Text style={[styles.titleChipText, { color: colors.text }]}>Messages</Text>
+      <View style={styles.heroRow}>
+        <View>
+          <Text style={[styles.screenTitle, { color: colors.text }]}>Messages</Text>
+          <Text style={[styles.screenSubtitle, { color: colors.textSecondary }]}>
+            {unreadTotal > 0 ? `${unreadTotal} unread` : 'Your conversations'}
+          </Text>
         </View>
-        <View style={styles.filtersRow}>
-          <TouchableOpacity
-            style={[
-              styles.filterChipLegacy,
-              {
-                backgroundColor:
-                  activeFilter === 'chats' ? `${lightBrown}18` : colors.backgroundSecondary,
-              },
-            ]}
-            onPress={() => setActiveFilter('chats')}>
-            <IconSymbol
-              name="message"
-              size={12}
-              color={activeFilter === 'chats' ? lightBrown : colors.textSecondary}
-            />
-            <Text
-              style={[
-                styles.filterChipLegacyText,
-                { color: activeFilter === 'chats' ? lightBrown : colors.textSecondary },
-              ]}>
-              Chats
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.filterChipLegacy,
-              {
-                backgroundColor:
-                  activeFilter === 'unread' ? `${lightBrown}18` : colors.backgroundSecondary,
-              },
-            ]}
-            onPress={() => setActiveFilter('unread')}>
-            <IconSymbol
-              name="envelope.fill"
-              size={12}
-              color={activeFilter === 'unread' ? lightBrown : colors.textSecondary}
-            />
-            <Text
-              style={[
-                styles.filterChipLegacyText,
-                { color: activeFilter === 'unread' ? lightBrown : colors.textSecondary },
-              ]}>
-              {unreadTotal > 0 ? `Unread (${unreadTotal})` : 'Unread'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+      </View>
+
+      <View style={[styles.searchBar, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
+        <IconSymbol name="magnifyingglass" size={18} color={colors.textSecondary} />
+        <TextInput
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="Search by name or message"
+          placeholderTextColor={colors.textSecondary}
+          style={[styles.searchInput, { color: colors.text }]}
+          autoCorrect={false}
+          autoCapitalize="none"
+          clearButtonMode="while-editing"
+        />
+      </View>
+
+      <View style={styles.segmentWrap}>
+        <TouchableOpacity
+          style={[
+            styles.segmentBtn,
+            {
+              backgroundColor: activeFilter === 'chats' ? lightBrown : 'transparent',
+            },
+          ]}
+          onPress={() => setActiveFilter('chats')}
+          activeOpacity={0.85}>
+          <IconSymbol name="bubble.left.and.bubble.right.fill" size={15} color={activeFilter === 'chats' ? '#FFF' : colors.textSecondary} />
+          <Text style={[styles.segmentLabel, { color: activeFilter === 'chats' ? '#FFF' : colors.textSecondary }]}>All</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.segmentBtn,
+            {
+              backgroundColor: activeFilter === 'unread' ? lightBrown : 'transparent',
+            },
+          ]}
+          onPress={() => setActiveFilter('unread')}
+          activeOpacity={0.85}>
+          <IconSymbol name="envelope.badge.fill" size={15} color={activeFilter === 'unread' ? '#FFF' : colors.textSecondary} />
+          <Text style={[styles.segmentLabel, { color: activeFilter === 'unread' ? '#FFF' : colors.textSecondary }]}>
+            Unread{unreadTotal > 0 ? ` (${unreadTotal})` : ''}
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -272,15 +334,15 @@ export default function MessagesScreen() {
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {renderHeader()}
         <View style={styles.emptyContainer}>
-          <IconSymbol name="message" size={64} color={colors.textSecondary} />
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>Please log in to view messages</Text>
+          <View style={[styles.emptyIconWrap, { backgroundColor: `${lightBrown}18` }]}>
+            <IconSymbol name="message.fill" size={40} color={lightBrown} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>Log in to message</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            Log in to see your conversations with sellers
+            Chat with sellers and keep your offers in one place.
           </Text>
-          <TouchableOpacity
-            style={[styles.button, { backgroundColor: lightBrown }]}
-            onPress={() => router.push(marketLoginRoute as any)}>
-            <Text style={styles.buttonText}>Login</Text>
+          <TouchableOpacity style={[styles.ctaBtn, { backgroundColor: lightBrown }]} onPress={() => router.push(marketLoginRoute as any)}>
+            <Text style={styles.ctaBtnText}>Log in</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -291,9 +353,7 @@ export default function MessagesScreen() {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {renderHeader()}
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={lightBrown} />
-        </View>
+        <InboxSkeleton count={7} colors={colors} />
       </View>
     );
   }
@@ -303,14 +363,16 @@ export default function MessagesScreen() {
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {renderHeader()}
         <View style={styles.emptyContainer}>
-          <IconSymbol name="message" size={64} color={colors.textSecondary} />
+          <View style={[styles.emptyIconWrap, { backgroundColor: `${lightBrown}18` }]}>
+            <IconSymbol name="tray.fill" size={40} color={lightBrown} />
+          </View>
           <Text style={[styles.emptyTitle, { color: colors.text }]}>No messages yet</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            Start a conversation by tapping Ask for Price on a post.
+            Use Ask for Price on a post to start a conversation.
           </Text>
           {error ? (
             <Text style={[styles.errorHint, { color: colors.error }]}>
-              Some chats could not load. Open a post and start a new chat to refresh your inbox.
+              Some threads couldn’t load. Pull up a post and message the seller to refresh.
             </Text>
           ) : null}
         </View>
@@ -321,24 +383,29 @@ export default function MessagesScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {renderHeader()}
-      {filteredChats.length === 0 && activeFilter === 'unread' ? (
+      {searchFiltered.length === 0 && activeFilter === 'unread' ? (
         <View style={styles.emptyContainer}>
-          <IconSymbol name="checkmark.circle.fill" size={54} color={colors.textSecondary} />
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>No unread chats</Text>
-          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>You are all caught up.</Text>
+          <View style={[styles.emptyIconWrap, { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border }]}>
+            <IconSymbol name="checkmark.circle.fill" size={40} color={lightBrown} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No unread messages</Text>
+          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>You’re all caught up.</Text>
+        </View>
+      ) : searchFiltered.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <IconSymbol name="magnifyingglass" size={44} color={colors.textSecondary} />
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No matches</Text>
+          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>Try another search term.</Text>
         </View>
       ) : (
-        <FlatList
-          data={filteredChats}
+        <FlashList
+          data={searchFiltered}
           keyExtractor={getChatRowKey}
-          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }]}
-          ItemSeparatorComponent={() => <View style={styles.chatSeparator} />}
           renderItem={renderChatRow}
-          initialNumToRender={10}
-          maxToRenderPerBatch={10}
-          windowSize={7}
-          updateCellsBatchingPeriod={40}
-          removeClippedSubviews
+          extraData={{ peerSummaries, colors }}
+          drawDistance={380}
+          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 96 }]}
+          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         />
       )}
@@ -351,122 +418,149 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   appHeaderWrap: {
-    paddingHorizontal: 16,
-    paddingBottom: 10,
+    paddingHorizontal: 18,
+    paddingBottom: 12,
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+  heroRow: {
+    marginBottom: 14,
   },
-  titleChip: {
-    minHeight: 40,
-    borderRadius: 18,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  titleChipText: {
-    fontSize: 16,
+  screenTitle: {
+    fontSize: 28,
     fontWeight: '800',
+    letterSpacing: -0.6,
   },
-  filtersRow: {
+  screenSubtitle: {
+    marginTop: 4,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    minHeight: 46,
+    marginBottom: 12,
   },
-  filterChipLegacy: {
-    minHeight: 28,
-    borderRadius: 16,
-    paddingHorizontal: 12,
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+  },
+  segmentWrap: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 4,
+    borderRadius: 14,
+    backgroundColor: 'rgba(128,128,128,0.12)',
     gap: 4,
   },
-  filterChipLegacyText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  loadingContainer: {
+  segmentBtn: {
     flex: 1,
-    justifyContent: 'center',
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 11,
+  },
+  segmentLabel: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 40,
-    gap: 16,
+    paddingHorizontal: 36,
+    gap: 12,
+  },
+  emptyIconWrap: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
   },
   emptyTitle: {
     fontSize: 20,
-    fontWeight: '700',
+    fontWeight: '800',
     textAlign: 'center',
   },
   emptyText: {
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '600',
     textAlign: 'center',
+    lineHeight: 22,
   },
-  button: {
-    marginTop: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
+  ctaBtn: {
+    marginTop: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 14,
   },
-  buttonText: {
+  ctaBtnText: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '800',
   },
   listContent: {
-    paddingTop: 12,
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
+    paddingTop: 4,
   },
-  chatSeparator: {
-    height: 8,
-  },
-  chatItem: {
+  chatCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    marginBottom: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+      },
+      android: { elevation: 2 },
+    }),
   },
   avatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarImage: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
   },
   avatarFallback: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
   },
   chatContent: {
     flex: 1,
     gap: 4,
+    minWidth: 0,
   },
   chatHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 8,
   },
   chatName: {
     fontSize: 16,
     fontWeight: '800',
+    flex: 1,
   },
   chatTime: {
     fontSize: 12,
@@ -474,35 +568,24 @@ const styles = StyleSheet.create({
   },
   chatPreview: {
     fontSize: 14,
-    fontWeight: '500',
+    lineHeight: 19,
     flex: 1,
   },
   chatPreviewRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  unreadInlinePill: {
-    minHeight: 20,
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  unreadInlineText: {
-    fontSize: 10,
-    fontWeight: '800',
+    alignItems: 'flex-start',
   },
   errorHint: {
     marginTop: 4,
     fontSize: 12,
     textAlign: 'center',
     fontWeight: '600',
+    lineHeight: 18,
   },
   badge: {
-    minWidth: 24,
-    height: 24,
-    borderRadius: 12,
+    minWidth: 26,
+    height: 26,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 8,
@@ -510,6 +593,6 @@ const styles = StyleSheet.create({
   badgeText: {
     color: '#FFFFFF',
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 });

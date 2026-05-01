@@ -22,6 +22,7 @@ import { useSellerPayouts } from '@/lib/firebase/firestore/payouts';
 import { useStore } from '@/lib/firebase/firestore/stores';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getMarketBranding } from '@/lib/market-branding';
 import { NIGERIAN_BANKS, searchBanks } from '@/lib/utils/banks';
 import { haptics } from '@/lib/utils/haptics';
 
@@ -42,6 +43,7 @@ function toDate(value: unknown): Date | null {
 }
 
 export default function MarketPayoutsScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
@@ -206,7 +208,7 @@ export default function MarketPayoutsScreen() {
           <IconSymbol name="arrow.left" size={18} color={colors.text} />
         </TouchableOpacity>
         <View style={styles.headerIsland}>
-          <Text style={styles.headerLabel}>MARKET STREET</Text>
+          <Text style={styles.headerLabel}>{marketBrand.headerLine}</Text>
           <Text style={styles.headerTitle}>Payouts</Text>
         </View>
       </View>

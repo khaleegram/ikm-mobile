@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import React, { useMemo, useRef, useCallback } from 'react';
-import { ActivityIndicator, Dimensions, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FeedCard } from '@/components/market/feed-card';
@@ -9,15 +10,17 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPostsByPosterIds } from '@/lib/firebase/firestore/market-posts';
 import { useBlockedUserIds, useFollowingUserIds } from '@/lib/firebase/firestore/market-social';
+import { getMarketBranding } from '@/lib/market-branding';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { buildMarketPostStableKey } from '@/lib/utils/market-media';
 
 const lightBrown = '#A67C52';
-const { height } = Dimensions.get('window');
 
 export default function FollowingScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
+  const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { ids: followingIds, loading: followsLoading } = useFollowingUserIds(user?.uid || null);
@@ -29,14 +32,29 @@ export default function FollowingScreen() {
   }, [blockedIdSet, posts]);
 
   const [activePostId, setActivePostId] = React.useState<string | null>(null);
-  const [viewportHeight, setViewportHeight] = React.useState(height);
+  const viewportHeight = Math.max(1, Math.round(windowHeight));
   const [refreshing, setRefreshing] = React.useState(false);
   const flatListRef = useRef<any>(null);
+  const activeIndexRef = useRef(0);
   const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
   const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
     const firstVisible = viewableItems?.[0]?.item;
+    const firstIndex = Number(viewableItems?.[0]?.index || 0);
+    if (Number.isFinite(firstIndex)) activeIndexRef.current = Math.max(0, firstIndex);
     setActivePostId(firstVisible?.id || null);
   }).current;
+
+  useFocusEffect(
+    useCallback(() => {
+      const listRef = flatListRef.current;
+      if (!listRef || typeof listRef.scrollToOffset !== 'function') return undefined;
+      const offset = Math.max(0, activeIndexRef.current) * viewportHeight;
+      requestAnimationFrame(() => {
+        listRef.scrollToOffset({ offset, animated: false });
+      });
+      return undefined;
+    }, [viewportHeight])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -50,26 +68,23 @@ export default function FollowingScreen() {
         post={item}
         itemHeight={viewportHeight}
         isActive={item.id === activePostId}
-        onComment={() => {
-          if (!item.id) return;
-          router.push(`/(market)/post/${item.id}` as any);
-        }}
       />
     ),
     [activePostId, viewportHeight]
   );
 
   const keyExtractor = useCallback((item: any) => buildMarketPostStableKey(item), []);
+  const getItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: viewportHeight,
+      offset: viewportHeight * index,
+      index,
+    }),
+    [viewportHeight]
+  );
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 10 }]}>
-        <View style={[styles.nameIsland, { backgroundColor: lightBrown }]}>
-          <Text style={styles.islandLabel}>MARKET STREET</Text>
-          <Text style={styles.islandTitle}>Following</Text>
-        </View>
-      </View>
-
       {!user ? (
         <View style={styles.center}>
           <IconSymbol name="person.crop.circle.badge.exclamationmark" size={52} color={lightBrown} />
@@ -138,15 +153,16 @@ export default function FollowingScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <View
-          style={{ flex: 1, backgroundColor: '#000' }}
-          onLayout={(event) => {
-            const nextHeight = Math.round(event.nativeEvent.layout.height);
-            if (nextHeight > 0 && nextHeight !== viewportHeight) setViewportHeight(nextHeight);
-          }}>
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 6 }]}>
+            <Text style={styles.headerSuper}>{marketBrand.headerLine}</Text>
+            <Text style={styles.headerTitle}>Following</Text>
+          </View>
           <FlashListCompat
+            key={`following-feed-${viewportHeight}`}
             ref={flatListRef}
             data={visiblePosts}
+            extraData={`${activePostId || ''}-${viewportHeight}`}
             renderItem={renderItem}
             keyExtractor={keyExtractor}
             estimatedItemSize={viewportHeight}
@@ -161,6 +177,8 @@ export default function FollowingScreen() {
             showsVerticalScrollIndicator={false}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
+            getItemLayout={getItemLayout}
+            removeClippedSubviews={false}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -181,27 +199,30 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   floatingHeaderContainer: {
-    paddingHorizontal: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  nameIsland: {
-    flex: 1,
-    paddingVertical: 10,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    elevation: 50,
     paddingHorizontal: 16,
-    borderRadius: 22,
   },
-  islandLabel: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 10,
+  headerSuper: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 0.8,
+    letterSpacing: 1.2,
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
-  islandTitle: {
+  headerTitle: {
     color: '#FFFFFF',
-    fontSize: 17,
+    fontSize: 20,
     fontWeight: '800',
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   center: {
     flex: 1,

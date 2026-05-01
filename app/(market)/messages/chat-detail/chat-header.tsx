@@ -31,37 +31,45 @@ export function ChatHeader({
       style={[
         styles.header,
         {
-          backgroundColor: colors.card,
-          paddingTop: insetTop + 12,
+          backgroundColor: colors.background,
+          paddingTop: insetTop + 8,
           borderBottomColor: colors.border,
         },
       ]}>
-      <TouchableOpacity onPress={onBack} style={styles.headerButton}>
-        <IconSymbol name="arrow.left" size={24} color={colors.text} />
+      <TouchableOpacity onPress={onBack} style={styles.headerBackBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back to inbox">
+        <IconSymbol name="chevron.left" size={22} color={colors.text} />
       </TouchableOpacity>
 
       <View style={styles.headerCenter}>
-        {headerAvatarUri ? (
-          <SafeImage uri={headerAvatarUri} style={styles.headerAvatar} />
-        ) : (
-          <View style={[styles.headerAvatar, { backgroundColor: colors.backgroundSecondary }]}>
-            <IconSymbol name="person.circle.fill" size={24} color={colors.textSecondary} />
-          </View>
-        )}
-        <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
-          {headerName}
-        </Text>
+        <View style={[styles.headerAvatarRing, { borderColor: `${lightBrown}40` }]}>
+          {headerAvatarUri ? (
+            <SafeImage uri={headerAvatarUri} style={styles.headerAvatarLg} />
+          ) : (
+            <View style={[styles.headerAvatarLg, { backgroundColor: colors.backgroundSecondary }]}>
+              <IconSymbol name="person.fill" size={22} color={colors.textSecondary} />
+            </View>
+          )}
+        </View>
+        <View style={styles.headerTitleBlock}>
+          <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
+            {headerName}
+          </Text>
+          <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+            Direct message
+          </Text>
+        </View>
       </View>
 
       {canSendOffer ? (
         <TouchableOpacity
-          style={[styles.offerHeaderButton, { backgroundColor: colors.backgroundSecondary }]}
-          onPress={onOpenOffer}>
-          <IconSymbol name="dollarsign.circle.fill" size={18} color={lightBrown} />
-          <Text style={[styles.offerHeaderText, { color: lightBrown }]}>Offer</Text>
+          style={[styles.offerPill, { backgroundColor: `${lightBrown}18`, borderColor: `${lightBrown}44` }]}
+          onPress={onOpenOffer}
+          activeOpacity={0.85}>
+          <IconSymbol name="dollarsign.circle.fill" size={17} color={lightBrown} />
+          <Text style={[styles.offerPillText, { color: lightBrown }]}>Offer</Text>
         </TouchableOpacity>
       ) : (
-        <View style={styles.headerButton} />
+        <View style={styles.headerSpacer} />
       )}
     </View>
   );

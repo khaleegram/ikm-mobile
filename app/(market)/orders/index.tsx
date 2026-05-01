@@ -16,6 +16,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useUserOrders } from '@/lib/firebase/firestore/orders';
 import { useTheme } from '@/lib/theme/theme-context';
+import { getMarketBranding } from '@/lib/market-branding';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 
@@ -57,6 +58,7 @@ function isActiveStatus(status: string): boolean {
 }
 
 export default function MarketOrdersScreen() {
+  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
@@ -135,7 +137,7 @@ export default function MarketOrdersScreen() {
           <IconSymbol name="arrow.left" size={18} color={colors.text} />
         </TouchableOpacity>
         <View style={styles.headerIsland}>
-          <Text style={styles.headerLabel}>MARKET STREET</Text>
+          <Text style={styles.headerLabel}>{marketBrand.headerLine}</Text>
           <Text style={styles.headerTitle}>Orders</Text>
         </View>
         <TouchableOpacity
@@ -222,7 +224,7 @@ export default function MarketOrdersScreen() {
           contentContainerStyle={{ paddingBottom: insets.bottom + 96, paddingHorizontal: 16, paddingTop: 8 }}
           renderItem={({ item }) => {
             const isBuyer = item.customerId === user.uid;
-            const itemName = item.items?.[0]?.name || 'Market Street item';
+            const itemName = item.items?.[0]?.name || marketBrand.genericItemLower;
             const itemCount = item.items?.length || 0;
             const orderDate = toDate(item.createdAt);
             const statusColor = getStatusColor(item.status);

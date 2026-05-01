@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
 export const styles = StyleSheet.create({
   container: {
@@ -8,47 +8,68 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
+    paddingHorizontal: 12,
+    paddingBottom: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  headerButton: {
-    width: 60,
-    alignItems: 'flex-start',
+  headerBackBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
   },
   headerCenter: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: 8,
+    gap: 12,
+    paddingHorizontal: 6,
+    minWidth: 0,
   },
-  headerAvatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+  headerAvatarRing: {
+    padding: 2,
+    borderRadius: 999,
+    borderWidth: 2,
+  },
+  headerAvatarLg: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  offerHeaderButton: {
-    minWidth: 72,
-    height: 34,
-    borderRadius: 17,
-    paddingHorizontal: 10,
+  headerTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  headerSubtitle: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  headerSpacer: {
+    width: 44,
+  },
+  offerPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    gap: 5,
+    paddingHorizontal: 12,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
   },
-  offerHeaderText: {
-    fontSize: 12,
-    fontWeight: '700',
+  offerPillText: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   headerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    flexShrink: 1,
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: -0.2,
   },
   loadingContainer: {
     flex: 1,
@@ -105,46 +126,74 @@ export const styles = StyleSheet.create({
     borderTopWidth: 1,
     gap: 8,
   },
-  inlineOfferButton: {
-    width: '100%',
-    minHeight: 34,
-    borderRadius: 18,
+  composerShell: {
+    borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
+    paddingTop: 10,
+  },
+  composerInner: {
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 10,
+    gap: 10,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 12,
+      },
+      android: { elevation: 4 },
+    }),
+  },
+  composerRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 2,
+    alignItems: 'flex-end',
+    gap: 10,
   },
-  inlineOfferButtonText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  imageButton: {
+  circleAction: {
     width: 44,
     height: 44,
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  inputWrapper: {
+  sendCircle: {
+    marginBottom: 0,
+  },
+  inputIsland: {
     flex: 1,
     borderWidth: 1,
     borderRadius: 22,
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    maxHeight: 100,
-  },
-  input: {
-    fontSize: 16,
-    maxHeight: 80,
-  },
-  sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    minHeight: 44,
+    maxHeight: 120,
     justifyContent: 'center',
+  },
+  composerInput: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '500',
+    maxHeight: 100,
+    paddingTop: 0,
+    paddingBottom: Platform.OS === 'ios' ? 0 : 4,
+  },
+  inlineOfferButton: {
+    width: '100%',
+    minHeight: 40,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  inlineOfferButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+    flex: 1,
   },
   text: {
     fontSize: 18,
