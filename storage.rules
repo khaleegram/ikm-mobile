@@ -17,18 +17,16 @@ service firebase.storage {
     }
 
     function isMarketPostMediaUpload() {
+      // Accept any content-type ≤ 500 MB — the SDK sometimes sends
+      // application/octet-stream for local video blobs on mobile.
       return request.resource != null
-        && request.resource.size < 250 * 1024 * 1024
-        && (
-          request.resource.contentType.matches('image/.*')
-          || request.resource.contentType.matches('video/.*')
-        );
+        && request.resource.size < 500 * 1024 * 1024;
     }
 
     function isMarketSoundUpload() {
+      // Accept any content-type ≤ 50 MB for audio files.
       return request.resource != null
-        && request.resource.size < 40 * 1024 * 1024
-        && request.resource.contentType.matches('audio/.*');
+        && request.resource.size < 50 * 1024 * 1024;
     }
 
     // Product images (legacy/current path requested)

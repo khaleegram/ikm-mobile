@@ -1,7 +1,7 @@
 import { useAudioPlayer } from "@/hooks/use-audio-player";
 import { useVideoPlayer, VideoView } from "expo-video";
 import React, { useEffect } from "react";
-import { StyleSheet, View } from "react-native";
+import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
 
 interface MarketVideoSurfaceProps {
   active: boolean;
@@ -12,6 +12,7 @@ interface MarketVideoSurfaceProps {
   soundStartMs?: number;
   useOriginalVideoAudio?: boolean;
   videoUri: string;
+  style?: StyleProp<ViewStyle>;
 }
 
 function clampUnitVolume(value: number | undefined, fallback: number): number {
@@ -28,6 +29,7 @@ export function MarketVideoSurface({
   soundStartMs = 0,
   useOriginalVideoAudio = true,
   videoUri,
+  style,
 }: MarketVideoSurfaceProps) {
   const videoPlayer = useVideoPlayer({ uri: videoUri }, (player) => {
     player.loop = true;
@@ -38,7 +40,7 @@ export function MarketVideoSurface({
     );
   });
   const audioPlayer = useAudioPlayer(externalSoundUri || null, {
-    updateInterval: 500,
+    updateIntervalMs: 500,
   });
 
   useEffect(() => {
@@ -82,7 +84,7 @@ export function MarketVideoSurface({
   }, [active, audioPlayer, externalSoundUri, soundStartMs, videoPlayer]);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, style]}>
       <VideoView
         player={videoPlayer}
         style={StyleSheet.absoluteFill}
@@ -96,7 +98,8 @@ export function MarketVideoSurface({
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
     backgroundColor: "#000000",
   },
 });

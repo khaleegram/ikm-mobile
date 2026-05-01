@@ -1,6 +1,6 @@
 // Media upload utility for Firebase Storage (images, video, audio)
 import * as ImagePicker from 'expo-image-picker';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { getDownloadURL, ref, uploadBytes, uploadBytesResumable } from 'firebase/storage';
 import { storage } from '../firebase/config';
 import Constants from 'expo-constants';
 
@@ -212,29 +212,42 @@ export async function pickAudio(): Promise<string | null> {
 }
 
 /**
- * Upload video to Firebase Storage
+ * Upload video to Firebase Storage with real-time progress reporting.
+ * Uses uploadBytesResumable so large files stream instead of buffering.
  */
 export async function uploadVideo(
   uri: string,
-  path: string
+  path: string,
+  onProgress?: (progress: number) => void,
 ): Promise<MediaUploadResult> {
   try {
-    // Fetch the video
     const response = await fetch(uri);
     const blob = await response.blob();
 
-    // Upload to Firebase Storage
+    // Derive content-type from blob; fall back to video/mp4 so the
+    // Storage rules never reject on application/octet-stream.
+    const contentType = blob.type && blob.type !== 'application/octet-stream'
+      ? blob.type
+      : 'video/mp4';
+
     const storageRef = ref(storage, path);
-    await uploadBytes(storageRef, blob);
+    const task = uploadBytesResumable(storageRef, blob, { contentType });
 
-    // Get download URL
-    const downloadURL = await getDownloadURL(storageRef);
+    await new Promise<void>((resolve, reject) => {
+      task.on(
+        'state_changed',
+        (snapshot) => {
+          if (snapshot.totalBytes > 0) {
+            onProgress?.(snapshot.bytesTransferred / snapshot.totalBytes);
+          }
+        },
+        reject,
+        resolve,
+      );
+    });
 
-    return {
-      url: downloadURL,
-      path,
-      type: 'video',
-    };
+    const downloadURL = await getDownloadURL(task.snapshot.ref);
+    return { url: downloadURL, path, type: 'video' };
   } catch (error) {
     console.error('Error uploading video:', error);
     throw new Error('Failed to upload video');

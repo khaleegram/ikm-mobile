@@ -90,6 +90,26 @@ function buildLocation(value: CreateMarketPostData['location']) {
   };
 }
 
+function sanitizeSoundMeta(
+  value: MarketPost['soundMeta'] | undefined
+): MarketPost['soundMeta'] | null {
+  if (!value) return null;
+  return {
+    soundId: value.soundId ?? null,
+    title: String(value.title || '').trim() || 'Original audio',
+    sourceUri: String(value.sourceUri || '').trim(),
+    sourceType: (value.sourceType ?? 'original') as MarketPost['soundMeta']['sourceType'],
+    artworkUrl: value.artworkUrl ?? null,
+    durationMs: Number.isFinite(value.durationMs) ? Number(value.durationMs) : null,
+    startMs: Number.isFinite(value.startMs) ? Number(value.startMs) : 0,
+    soundVolume: Number.isFinite(value.soundVolume) ? Number(value.soundVolume) : 1,
+    originalAudioVolume: Number.isFinite(value.originalAudioVolume)
+      ? Number(value.originalAudioVolume)
+      : 1,
+    useOriginalVideoAudio: value.useOriginalVideoAudio !== false,
+  };
+}
+
 function buildLocalMarketPostSnapshot(
   id: string,
   data: {
@@ -142,7 +162,7 @@ function buildLocalMarketPostSnapshot(
 }
 
 export const marketPostsApi = {
-  async create(data: CreateMarketPostData): Promise<MarketPost> {
+  async create(data: CreateMarketPostData, onProgress?: (progress: number) => void): Promise<MarketPost> {
     const user = requireAuthenticatedUser();
     const postRef = doc(collection(firestore, 'marketPosts'));
     const mediaType: MarketPost['mediaType'] =
@@ -167,19 +187,24 @@ export const marketPostsApi = {
         throw new Error('Maximum 20 photos allowed.');
       }
 
+      onProgress?.(0.05);
       uploadedImages = await uploadImages(images, 'marketPosts', user.uid);
+      onProgress?.(0.80);
     } else {
       const videoUri = String(data.videoUri || '').trim();
       if (!videoUri) {
         throw new Error('Please pick a video before publishing.');
       }
 
+      onProgress?.(0.05);
       const videoExtension = inferFileExtension(videoUri, 'mp4');
       const uploadedVideo = await uploadVideo(
         videoUri,
-        `marketPosts/${user.uid}/post_${postRef.id}.${videoExtension}`
+        `marketPosts/${user.uid}/post_${postRef.id}.${videoExtension}`,
+        (videoProgress) => onProgress?.(0.05 + videoProgress * 0.65), // 5% → 70%
       );
       uploadedVideoUrl = uploadedVideo.url;
+      onProgress?.(0.72);
 
       const coverImageUri = String(data.coverImageUri || '').trim();
       if (coverImageUri) {
@@ -191,6 +216,7 @@ export const marketPostsApi = {
         uploadedCoverImageUrl = uploadedCover.url;
         uploadedImages = [uploadedCover.url];
       }
+      onProgress?.(0.80);
 
       const soundSelection = data.soundSelection || { mode: 'original' };
       const soundMode = soundSelection.mode || 'original';
@@ -214,8 +240,8 @@ export const marketPostsApi = {
           title: existingSound.title,
           sourceUri: existingSound.sourceUri,
           sourceType: existingSound.sourceType,
-          artworkUrl: existingSound.artworkUrl || uploadedCoverImageUrl || undefined,
-          durationMs: existingSound.durationMs,
+          artworkUrl: existingSound.artworkUrl || uploadedCoverImageUrl || null,
+          durationMs: existingSound.durationMs ?? null,
           startMs,
           soundVolume,
           originalAudioVolume,
@@ -262,7 +288,7 @@ export const marketPostsApi = {
           title: soundTitle,
           sourceUri: uploadedAudio.url,
           sourceType: 'uploaded',
-          artworkUrl: uploadedCoverImageUrl || undefined,
+          artworkUrl: uploadedCoverImageUrl || null,
           startMs,
           soundVolume,
           originalAudioVolume,
@@ -293,8 +319,8 @@ export const marketPostsApi = {
           title: soundTitle,
           sourceUri: uploadedVideoUrl,
           sourceType: 'original',
-          artworkUrl: uploadedCoverImageUrl || undefined,
-          durationMs: Number.isFinite(data.videoDurationMs) ? Number(data.videoDurationMs) : undefined,
+          artworkUrl: uploadedCoverImageUrl || null,
+          durationMs: Number.isFinite(data.videoDurationMs) ? Number(data.videoDurationMs) : null,
           startMs,
           soundVolume,
           originalAudioVolume,
@@ -318,7 +344,7 @@ export const marketPostsApi = {
               soundMeta?.useOriginalVideoAudio !== true,
           }
         : null,
-      soundMeta: soundMeta || null,
+      soundMeta: sanitizeSoundMeta(soundMeta),
       hashtags,
       price: price ?? null,
       isNegotiable: Boolean(price && data.isNegotiable),
@@ -348,7 +374,9 @@ export const marketPostsApi = {
       );
     });
 
+    onProgress?.(0.95);
     await batch.commit();
+    onProgress?.(1.0);
 
     return buildLocalMarketPostSnapshot(postRef.id, {
       posterId: user.uid,

@@ -31,6 +31,47 @@ service cloud.firestore {
           || conversationId.matches('^direct_[A-Za-z0-9]+_' + request.auth.uid + '$')
         );
     }
+
+    // marketFollows doc id is `${followerId}_${followedId}` (Firebase UIDs are alphanumeric).
+    // Realtime listens on a missing follow doc must still be allowed — resource.data is not available.
+    function isPartyInMarketFollowDocId(followId) {
+      return isAuthenticated()
+        && (
+          followId.matches('^' + request.auth.uid + '_[^_]+$')
+          || followId.matches('^[^_]+_' + request.auth.uid + '$')
+        );
+    }
+
+    // followerCount on users/{followedId}: +1 only when this user creates edge marketFollows/(auth + '_' + followedId) in the same batch.
+    function followerCountPlusOneWithNewFollowEdge(followedUserId) {
+      return isAuthenticated()
+        && request.auth.uid != followedUserId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followerCount', 'updatedAt'])
+        && request.resource.data.followerCount is int
+        && request.resource.data.followerCount >= 0
+        && request.resource.data.followerCount
+          == (resource.data.keys().hasAny(['followerCount']) && resource.data.followerCount is int
+            ? resource.data.followerCount
+            : 0) + 1
+        && getAfter(/databases/$(database)/documents/marketFollows/$(request.auth.uid + '_' + followedUserId)).data.followerId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/marketFollows/$(request.auth.uid + '_' + followedUserId)).data.followedId == followedUserId;
+    }
+
+    // followerCount on users/{followedId}: -1 when deleting marketFollows/(auth + '_' + followedId) in same batch (unfollow).
+    function followerCountMinusOneRemovingFollowEdge(followedUserId) {
+      return isAuthenticated()
+        && request.auth.uid != followedUserId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followerCount', 'updatedAt'])
+        && request.resource.data.followerCount is int
+        && request.resource.data.followerCount >= 0
+        && request.resource.data.followerCount
+          == (resource.data.keys().hasAny(['followerCount']) && resource.data.followerCount is int
+            ? resource.data.followerCount
+            : 0) - 1
+        && exists(/databases/$(database)/documents/marketFollows/$(request.auth.uid + '_' + followedUserId))
+        && get(/databases/$(database)/documents/marketFollows/$(request.auth.uid + '_' + followedUserId)).data.followerId == request.auth.uid
+        && get(/databases/$(database)/documents/marketFollows/$(request.auth.uid + '_' + followedUserId)).data.followedId == followedUserId;
+    }
     
     function isValidEmail(email) {
       return email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
@@ -397,11 +438,14 @@ service cloud.firestore {
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0;
       
-      // Users can update their own profile, admins can update any
+      // Users can update their own profile, admins can update any.
+      // Follower/following counters are also adjusted in batch with marketFollows (see helpers above).
       allow update: if isAdmin() 
         || (isOwner(userId)
           // Prevent email and UID changes
-          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['email', 'id'])));
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['email', 'id'])))
+        || followerCountPlusOneWithNewFollowEdge(userId)
+        || followerCountMinusOneRemovingFollowEdge(userId);
       
       // Only admin can delete user profiles
       allow delete: if isAdmin();
@@ -513,8 +557,8 @@ service cloud.firestore {
 
     // Market social graph: follows, blocks, reports
     match /marketFollows/{followId} {
-      allow read: if isAdmin()
-        || (isAuthenticated() && (resource.data.followerId == request.auth.uid || resource.data.followedId == request.auth.uid));
+      // Doc id is always follower_followed (see app). Id-based read allows listen before doc exists.
+      allow read: if isAdmin() || isPartyInMarketFollowDocId(followId);
       allow list: if isAuthenticated();
       allow create: if isAuthenticated()
         && request.resource.data.followerId == request.auth.uid
@@ -522,6 +566,30 @@ service cloud.firestore {
         && request.resource.data.followedId.size() > 0;
       allow update: if false;
       allow delete: if isAdmin() || (isAuthenticated() && resource.data.followerId == request.auth.uid);
+    }
+
+    match /following/{userId}/list/{followedId} {
+      allow read, list: if isAdmin() || isAuthenticated();
+      allow create: if isAuthenticated()
+        && request.auth.uid == userId
+        && followedId is string
+        && followedId.size() > 0
+        && request.resource.data.followerId == request.auth.uid
+        && request.resource.data.followedId == followedId;
+      allow update: if false;
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+    }
+
+    match /followers/{userId}/list/{followerId} {
+      allow read, list: if isAdmin() || isAuthenticated();
+      allow create: if isAuthenticated()
+        && request.auth.uid == followerId
+        && userId is string
+        && userId.size() > 0
+        && request.resource.data.followerId == request.auth.uid
+        && request.resource.data.followedId == userId;
+      allow update: if false;
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == followerId);
     }
 
     match /marketBlocks/{blockId} {

@@ -1,10 +1,13 @@
 import { useAudioPlayer } from "@/hooks/use-audio-player";
 import { Image } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as DocumentPicker from "expo-document-picker";
 import {
     ActivityIndicator,
+    Keyboard,
+    KeyboardEvent,
     Modal,
     ScrollView,
     StyleSheet,
@@ -21,7 +24,10 @@ import { MarketSoundRow } from "@/components/market/market-sound-row";
 import { MarketVideoSurface } from "@/components/market/market-video-surface";
 import { showToast } from "@/components/toast";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { firestore } from "@/lib/firebase/config";
 import { marketPostsApi } from "@/lib/api/market-posts";
+import { useUploadProgress } from "@/lib/context/upload-progress";
+import { scheduleNotification } from "@/lib/hooks/use-notifications";
 import { marketSoundsApi } from "@/lib/api/market-sounds";
 import {
     NIGERIA_LOCATION_OPTIONS,
@@ -46,7 +52,6 @@ import {
 import {
     buildOriginalSoundTitle,
     buildUploadedSoundTitle,
-    extractFileStem,
 } from "@/lib/utils/market-media";
 import type { MarketSound } from "@/types";
 
@@ -121,6 +126,7 @@ function normalizeCreatePostError(error: unknown): string {
 export default function CreatePostScreen() {
   const { user } = useUser();
   const { colors } = useTheme();
+  const { startUpload, setUploadProgress, finishUpload, failUpload } = useUploadProgress();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ soundId?: string }>();
   const initialSoundId = Array.isArray(params.soundId)
@@ -163,6 +169,90 @@ export default function CreatePostScreen() {
   const [soundStartMs, setSoundStartMs] = useState(0);
   const [soundVolume, setSoundVolume] = useState(0.9);
   const [originalAudioVolume, setOriginalAudioVolume] = useState(1);
+  const [captionFocused, setCaptionFocused] = useState(false);
+  const [trendingSuggestions, setTrendingSuggestions] = useState<string[]>([]);
+
+  const captionRef = useRef<TextInput>(null);
+
+  // Subscribe to top trending hashtags in real-time
+  useEffect(() => {
+    const q = query(
+      collection(firestore, "trendingHashtags"),
+      orderBy("count", "desc"),
+      limit(30),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const tags: string[] = [];
+      snap.forEach((d) => {
+        const tag = d.data()?.tag;
+        if (typeof tag === "string" && tag.trim()) tags.push(tag.trim().toLowerCase());
+      });
+      setTrendingSuggestions(tags);
+    }, () => { /* silent fail — suggestions are non-critical */ });
+    return unsub;
+  }, []);
+
+  // Update description; activeSuggestions derives partial-tag live from description
+  const handleCaptionChange = useCallback((text: string) => {
+    setDescription(text);
+  }, []);
+
+  const hashtags = useMemo(() => extractHashtags(description), [description]);
+
+  // Filtered suggestions: match partial, exclude already-used tags
+  const activeSuggestions = useMemo(() => {
+    if (!captionFocused) return [];
+    const lastWord = description.split(/\s/).pop() ?? "";
+    if (!lastWord.startsWith("#")) return [];
+    const partial = lastWord.slice(1).toLowerCase();
+    const usedTags = new Set(hashtags);          // hashtags already in caption
+    return trendingSuggestions
+      .filter((t) => !usedTags.has(t) && (partial === "" || t.startsWith(partial)))
+      .slice(0, 12);
+  }, [captionFocused, description, trendingSuggestions, hashtags]);
+
+  // Autocomplete: replace the partial #word at the end with the tapped tag
+  const applyHashtagSuggestion = useCallback((tag: string) => {
+    haptics.light();
+    setDescription((prev) => {
+      const words = prev.split(/(\s)/);          // keep whitespace tokens
+      // Walk backwards to replace the last word that starts with #
+      for (let i = words.length - 1; i >= 0; i--) {
+        if (words[i].startsWith("#")) {
+          words[i] = `#${tag}`;
+          break;
+        }
+      }
+      return words.join("") + " ";              // append space after completion
+    });
+  }, []);
+
+  // Remove a confirmed tag by stripping it from the caption text
+  const removeHashtagFromCaption = useCallback((tag: string) => {
+    haptics.light();
+    setDescription((prev) =>
+      prev
+        .replace(new RegExp(`(^|\\s)#${tag}(?=\\s|$)`, "gi"), " ")
+        .replace(/\s{2,}/g, " ")
+        .trimStart(),
+    );
+  }, []);
+
+  // Keyboard event listeners — dismiss keyboard when tapping outside caption
+  useEffect(() => {
+    const onShow = (_e: KeyboardEvent) => {
+      // keyboard visible — no-op, KeyboardScreen handles scroll
+    };
+    const onHide = () => {
+      setCaptionFocused(false);
+    };
+    const showSub = Keyboard.addListener("keyboardDidShow", onShow);
+    const hideSub = Keyboard.addListener("keyboardDidHide", onHide);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!preselectedSound?.id) return;
@@ -173,7 +263,6 @@ export default function CreatePostScreen() {
     setOriginalAudioVolume(0);
   }, [preselectedSound]);
 
-  const hashtags = useMemo(() => extractHashtags(description), [description]);
   const locationLabel = useMemo(() => {
     if (!location.city && !location.state) return "";
     return [location.city, location.state].filter(Boolean).join(", ");
@@ -353,697 +442,386 @@ export default function CreatePostScreen() {
     setOriginalAudioVolume(1);
   };
 
-  const handlePublish = async () => {
-    if (!canPublish) return;
-    setPublishing(true);
+  const handlePublish = () => {
+    if (!canPublish || publishing) return;
     haptics.medium();
-    try {
-      const parsedPrice = price
-        ? Number(price.replace(/[^0-9.]/g, ""))
-        : undefined;
-      await marketPostsApi.create({
-        mediaType: postMode === "video" ? "video" : "image_gallery",
-        images: postMode === "photo" ? images : [],
-        coverImageUri:
-          postMode === "video" ? coverImageUri || undefined : undefined,
-        videoUri: postMode === "video" ? videoUri || undefined : undefined,
-        hashtags,
-        description: description.trim() || undefined,
-        price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
-        isNegotiable: Number.isFinite(parsedPrice) ? isNegotiable : false,
-        location: locationLabel ? location : undefined,
-        contactMethod: "in-app",
-        soundSelection:
-          postMode === "video"
-            ? {
-                mode: soundMode,
-                existingSound:
-                  soundMode === "existing" ? selectedSound : undefined,
-                uploadedAudioUri:
-                  soundMode === "uploaded"
-                    ? uploadedSoundUri || undefined
-                    : undefined,
-                soundTitle:
-                  soundMode === "uploaded"
-                    ? uploadedSoundTitle || undefined
-                    : undefined,
-                startMs: soundStartMs,
-                soundVolume,
-                originalAudioVolume,
-                useOriginalVideoAudio: keepOriginalAudio,
-              }
-            : undefined,
+
+    // Capture form state before reset
+    const parsedPrice = price ? Number(price.replace(/[^0-9.]/g, "")) : undefined;
+    const postData = {
+      mediaType: postMode === "video" ? "video" as const : "image_gallery" as const,
+      images: postMode === "photo" ? images : [],
+      coverImageUri: postMode === "video" ? coverImageUri || undefined : undefined,
+      videoUri: postMode === "video" ? videoUri || undefined : undefined,
+      hashtags,
+      description: description.trim() || undefined,
+      price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
+      isNegotiable: Number.isFinite(parsedPrice) ? isNegotiable : false,
+      location: locationLabel ? location : undefined,
+      contactMethod: "in-app" as const,
+      soundSelection: postMode === "video"
+        ? {
+            mode: soundMode,
+            existingSound: soundMode === "existing" ? selectedSound : undefined,
+            uploadedAudioUri: soundMode === "uploaded" ? uploadedSoundUri || undefined : undefined,
+            soundTitle: soundMode === "uploaded" ? uploadedSoundTitle || undefined : undefined,
+            startMs: soundStartMs,
+            soundVolume,
+            originalAudioVolume,
+            useOriginalVideoAudio: keepOriginalAudio,
+          }
+        : undefined,
+    };
+    const label = postMode === "video" ? "Uploading video…" : "Uploading post…";
+
+    // Navigate away immediately — upload runs in the background
+    resetForm();
+    router.replace("/(market)" as any);
+    startUpload(label);
+
+    marketPostsApi.create(postData, setUploadProgress)
+      .then(() => {
+        finishUpload();
+        haptics.success();
+        scheduleNotification(
+          "Post published! 🎉",
+          "Your post is now live on Market Street.",
+          { type: "general" },
+        ).catch(() => {});
+      })
+      .catch((error) => {
+        const msg = normalizeCreatePostError(error);
+        failUpload(msg);
+        haptics.error();
+        scheduleNotification(
+          "Upload failed",
+          msg,
+          { type: "general" },
+        ).catch(() => {});
       });
-      haptics.success();
-      showToast(
-        postMode === "video" ? "Video post published." : "Post published.",
-        "success",
-      );
-      resetForm();
-      router.replace("/(market)" as any);
-    } catch (error) {
-      haptics.error();
-      showToast(normalizeCreatePostError(error), "error");
-    } finally {
-      setPublishing(false);
-    }
   };
+
+  // Derived: no media picked yet
+  const hasNoMedia = images.length === 0 && !videoUri;
 
   if (!user || !canPostToMarketStreet(user)) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
-        <Text style={[styles.title, { color: colors.text }]}>
-          Sign in to create a post
-        </Text>
-        <TouchableOpacity
-          style={[styles.primaryButton, { backgroundColor: LIGHT_BROWN }]}
-          onPress={() => router.push(getLoginRoute() as any)}
-        >
-          <Text style={styles.primaryButtonText}>Go to Login</Text>
+        <IconSymbol name="person.crop.circle.badge.exclamationmark" size={48} color={LIGHT_BROWN} />
+        <Text style={[styles.guestTitle, { color: colors.text }]}>Sign in to post</Text>
+        <TouchableOpacity style={[styles.publishBtn, { backgroundColor: LIGHT_BROWN }]} onPress={() => router.push(getLoginRoute() as any)}>
+          <Text style={styles.publishBtnText}>Go to Login</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
+  const isDark = colors.background === "#0a0804" || colors.background < "#888";
+
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View
-        style={[
-          styles.header,
-          { paddingTop: insets.top + 8, borderBottomColor: colors.border },
-        ]}
-      >
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={() => router.back()}
-        >
-          <IconSymbol name="xmark" size={20} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
-          Create Post
-        </Text>
-        <TouchableOpacity
-          disabled={!canPublish}
-          onPress={handlePublish}
-          style={[
-            styles.publishButton,
-            {
-              backgroundColor: canPublish
-                ? LIGHT_BROWN
-                : colors.backgroundSecondary,
-            },
-          ]}
-        >
-          {publishing ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <Text style={styles.publishButtonText}>Publish</Text>
-          )}
-        </TouchableOpacity>
+
+      {/* ── Header island ────────────────────────────────────────── */}
+      <View style={[styles.headerIsland, { paddingTop: insets.top + 6 }]}>
+        <View style={[styles.headerPill, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <TouchableOpacity style={styles.headerClose} onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <IconSymbol name="xmark" size={15} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>New Post</Text>
+          <TouchableOpacity
+            disabled={!canPublish}
+            onPress={handlePublish}
+            style={[styles.publishBtn, { backgroundColor: canPublish ? LIGHT_BROWN : `${LIGHT_BROWN}44` }]}
+          >
+            {publishing
+              ? <ActivityIndicator size="small" color="#FFF" />
+              : <Text style={styles.publishBtnText}>Share</Text>}
+          </TouchableOpacity>
+        </View>
       </View>
 
       <KeyboardScreen
         keyboardVerticalOffset={insets.top}
         extraScrollHeight={28}
-        contentContainerStyle={[
-          styles.content,
-          { paddingBottom: insets.bottom + 90 },
-        ]}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 90 }]}
       >
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.card, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Post Format
-          </Text>
-          <View style={styles.row}>
+
+        {/* ── Media zone ───────────────────────────────────────────── */}
+        {hasNoMedia ? (
+          /* Immersive pick zone */
+          <View style={[styles.pickZone, { backgroundColor: isDark ? `${LIGHT_BROWN}10` : `${LIGHT_BROWN}08`, borderColor: `${LIGHT_BROWN}30` }]}>
+            {/* Photos side */}
             <TouchableOpacity
-              style={[
-                styles.segment,
-                {
-                  backgroundColor:
-                    postMode === "photo"
-                      ? LIGHT_BROWN
-                      : colors.backgroundSecondary,
-                },
-              ]}
-              onPress={() => setPostMode("photo")}
+              style={styles.pickHalf}
+              activeOpacity={0.7}
+              onPress={async () => { setPostMode("photo"); await pickImagesForPost(); }}
             >
-              <Text style={styles.segmentText}>Photo</Text>
+              <View style={[styles.pickIconRing, { backgroundColor: `${LIGHT_BROWN}20`, borderColor: `${LIGHT_BROWN}35` }]}>
+                <IconSymbol name="photo.stack.fill" size={30} color={LIGHT_BROWN} />
+              </View>
+              <Text style={[styles.pickLabel, { color: colors.text }]}>Photos</Text>
+              <Text style={[styles.pickHint, { color: colors.textSecondary }]}>Gallery</Text>
             </TouchableOpacity>
+
+            {/* OR divider */}
+            <View style={styles.pickDivider}>
+              <View style={[styles.pickDividerLine, { backgroundColor: `${LIGHT_BROWN}25` }]} />
+              <Text style={[styles.pickDividerOr, { color: `${LIGHT_BROWN}99`, backgroundColor: isDark ? `${LIGHT_BROWN}10` : `${LIGHT_BROWN}08` }]}>or</Text>
+              <View style={[styles.pickDividerLine, { backgroundColor: `${LIGHT_BROWN}25` }]} />
+            </View>
+
+            {/* Video side */}
             <TouchableOpacity
-              style={[
-                styles.segment,
-                {
-                  backgroundColor:
-                    postMode === "video"
-                      ? LIGHT_BROWN
-                      : colors.backgroundSecondary,
-                },
-              ]}
-              onPress={() => setPostMode("video")}
+              style={styles.pickHalf}
+              activeOpacity={0.7}
+              onPress={async () => { setPostMode("video"); await pickVideoForPost(); }}
             >
-              <Text style={styles.segmentText}>Video + Sound</Text>
+              <View style={[styles.pickIconRing, { backgroundColor: `${LIGHT_BROWN}20`, borderColor: `${LIGHT_BROWN}35` }]}>
+                <IconSymbol name="video.fill" size={30} color={LIGHT_BROWN} />
+              </View>
+              <Text style={[styles.pickLabel, { color: colors.text }]}>Video</Text>
+              <Text style={[styles.pickHint, { color: colors.textSecondary }]}>Camera roll</Text>
             </TouchableOpacity>
           </View>
-        </View>
-
-        {postMode === "photo" ? (
-          <View
-            style={[
-              styles.card,
-              { backgroundColor: colors.card, borderColor: colors.border },
-            ]}
-          >
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Photos
-            </Text>
-            {images.length === 0 ? (
-              <TouchableOpacity
-                style={[
-                  styles.emptyBox,
-                  {
-                    backgroundColor: colors.backgroundSecondary,
-                    borderColor: colors.border,
-                  },
-                ]}
-                onPress={pickImagesForPost}
-              >
-                <IconSymbol name="photo.fill" size={28} color={LIGHT_BROWN} />
-                <Text style={[styles.emptyText, { color: colors.text }]}>
-                  Add Photos
-                </Text>
+        ) : postMode === "photo" ? (
+          /* Photos preview card */
+          <View style={[styles.mediaCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {/* Main preview with count badge */}
+            <View>
+              <Image source={{ uri: images[0] }} style={styles.mediaPreview} contentFit="cover" />
+              <View style={styles.previewCountBadge}>
+                <IconSymbol name="photo.stack.fill" size={11} color="#FFF" />
+                <Text style={styles.previewCountText}>{images.length}</Text>
+              </View>
+              <TouchableOpacity style={styles.previewClearBtn} onPress={() => setImages([])}>
+                <IconSymbol name="xmark" size={12} color="#FFF" />
               </TouchableOpacity>
-            ) : (
-              <>
-                <Image
-                  source={{ uri: images[0] }}
-                  style={styles.preview}
-                  contentFit="cover"
-                />
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.thumbRow}
+            </View>
+            {/* Thumbnails strip */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbRow}>
+              {images.map((uri, index) => (
+                <TouchableOpacity
+                  key={`${uri}-${index}`}
+                  style={[styles.thumbWrap, index === 0 && { borderColor: LIGHT_BROWN, borderWidth: 2 }]}
+                  onPress={() => setImages([images[index], ...images.filter((_, i) => i !== index)])}
                 >
-                  {images.map((uri, index) => (
-                    <View key={`${uri}-${index}`} style={styles.thumbWrap}>
-                      <Image
-                        source={{ uri }}
-                        style={styles.thumb}
-                        contentFit="cover"
-                      />
-                      <TouchableOpacity
-                        style={styles.thumbRemove}
-                        onPress={() =>
-                          setImages((prev) =>
-                            prev.filter((_, i) => i !== index),
-                          )
-                        }
-                      >
-                        <IconSymbol name="xmark" size={10} color="#FFFFFF" />
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-                  {images.length < MAX_IMAGES ? (
-                    <TouchableOpacity
-                      style={[
-                        styles.addThumb,
-                        {
-                          backgroundColor: colors.backgroundSecondary,
-                          borderColor: colors.border,
-                        },
-                      ]}
-                      onPress={pickImagesForPost}
-                    >
-                      <IconSymbol name="plus" size={18} color={LIGHT_BROWN} />
-                    </TouchableOpacity>
-                  ) : null}
-                </ScrollView>
-              </>
-            )}
+                  <Image source={{ uri }} style={styles.thumb} contentFit="cover" />
+                  <TouchableOpacity
+                    style={styles.thumbRemove}
+                    onPress={() => {
+                      const next = images.filter((_, i) => i !== index);
+                      setImages(next);
+                    }}
+                  >
+                    <IconSymbol name="xmark" size={9} color="#FFF" />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              ))}
+              {images.length < MAX_IMAGES && (
+                <TouchableOpacity
+                  style={[styles.addThumb, { backgroundColor: colors.backgroundSecondary, borderColor: `${LIGHT_BROWN}40` }]}
+                  onPress={pickImagesForPost}
+                >
+                  <IconSymbol name="plus" size={22} color={LIGHT_BROWN} />
+                </TouchableOpacity>
+              )}
+            </ScrollView>
           </View>
         ) : (
-          <>
-            <View
-              style={[
-                styles.card,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Video
-              </Text>
-              {!videoUri ? (
-                <TouchableOpacity
-                  style={[
-                    styles.emptyBox,
-                    {
-                      backgroundColor: colors.backgroundSecondary,
-                      borderColor: colors.border,
-                    },
-                  ]}
-                  onPress={pickVideoForPost}
-                >
-                  <IconSymbol
-                    name="play.rectangle.fill"
-                    size={28}
-                    color={LIGHT_BROWN}
-                  />
-                  <Text style={[styles.emptyText, { color: colors.text }]}>
-                    Pick Video
-                  </Text>
-                </TouchableOpacity>
-              ) : (
-                <>
-                  <View style={styles.videoBox}>
-                    <MarketVideoSurface
-                      active={true}
-                      videoUri={videoUri}
-                      externalSoundUri={videoPreviewSoundUri}
-                      externalSoundVolume={soundVolume}
-                      originalAudioVolume={originalAudioVolume}
-                      soundStartMs={soundStartMs}
-                      useOriginalVideoAudio={keepOriginalAudio}
-                    />
-                  </View>
-                  <View style={styles.row}>
-                    <TouchableOpacity
-                      style={[
-                        styles.secondaryButton,
-                        { backgroundColor: colors.backgroundSecondary },
-                      ]}
-                      onPress={pickVideoForPost}
-                    >
-                      <Text
-                        style={[
-                          styles.secondaryButtonText,
-                          { color: colors.text },
-                        ]}
-                      >
-                        Change Video
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.secondaryButton,
-                        { backgroundColor: colors.backgroundSecondary },
-                      ]}
-                      onPress={() => setVideoUri("")}
-                    >
-                      <Text
-                        style={[
-                          styles.secondaryButtonText,
-                          { color: colors.text },
-                        ]}
-                      >
-                        Remove
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-              <TouchableOpacity
-                style={[
-                  styles.secondaryButton,
-                  { backgroundColor: colors.backgroundSecondary },
-                ]}
-                onPress={pickCover}
-              >
-                <Text
-                  style={[styles.secondaryButtonText, { color: colors.text }]}
-                >
-                  {coverImageUri ? "Change Cover" : "Add Cover"}
-                </Text>
-              </TouchableOpacity>
-              {coverImageUri ? (
-                <Image
-                  source={{ uri: coverImageUri }}
-                  style={styles.cover}
-                  contentFit="cover"
+          /* Video preview card */
+          <View style={[styles.mediaCard, { backgroundColor: "#000", borderColor: colors.border }]}>
+            {videoUri ? (
+              <View style={styles.videoWrap}>
+                <MarketVideoSurface
+                  active
+                  videoUri={videoUri}
+                  externalSoundUri={videoPreviewSoundUri}
+                  externalSoundVolume={soundVolume}
+                  originalAudioVolume={originalAudioVolume}
+                  soundStartMs={soundStartMs}
+                  useOriginalVideoAudio={keepOriginalAudio}
                 />
-              ) : null}
-            </View>
-            <View
-              style={[
-                styles.card,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <View style={styles.inlineHeader}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                  Sound
-                </Text>
-                <TouchableOpacity
-                  style={[
-                    styles.smallButton,
-                    { backgroundColor: colors.backgroundSecondary },
-                  ]}
-                  onPress={() => setSoundPickerVisible(true)}
-                >
-                  <Text
-                    style={[styles.smallButtonText, { color: colors.text }]}
-                  >
-                    Browse
-                  </Text>
-                </TouchableOpacity>
-              </View>
-              <View style={styles.row}>
-                <TouchableOpacity
-                  style={[
-                    styles.mode,
-                    {
-                      borderColor:
-                        soundMode === "original" ? LIGHT_BROWN : colors.border,
-                    },
-                  ]}
-                  onPress={() => setSoundMode("original")}
-                >
-                  <Text
-                    style={[
-                      styles.modeText,
-                      {
-                        color:
-                          soundMode === "original"
-                            ? LIGHT_BROWN
-                            : colors.textSecondary,
-                      },
-                    ]}
-                  >
-                    Original
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.mode,
-                    {
-                      borderColor:
-                        soundMode === "existing" ? LIGHT_BROWN : colors.border,
-                    },
-                  ]}
-                  onPress={() => setSoundPickerVisible(true)}
-                >
-                  <Text
-                    style={[
-                      styles.modeText,
-                      {
-                        color:
-                          soundMode === "existing"
-                            ? LIGHT_BROWN
-                            : colors.textSecondary,
-                      },
-                    ]}
-                  >
-                    Existing
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.mode,
-                    {
-                      borderColor:
-                        soundMode === "uploaded" ? LIGHT_BROWN : colors.border,
-                    },
-                  ]}
-                  onPress={pickAudioForSound}
-                >
-                  <Text
-                    style={[
-                      styles.modeText,
-                      {
-                        color:
-                          soundMode === "uploaded"
-                            ? LIGHT_BROWN
-                            : colors.textSecondary,
-                      },
-                    ]}
-                  >
-                    Upload
-                  </Text>
-                </TouchableOpacity>
-              </View>
-              <View
-                style={[
-                  styles.soundCard,
-                  {
-                    backgroundColor: colors.backgroundSecondary,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
-                <Text
-                  style={[styles.soundTitle, { color: colors.text }]}
-                  numberOfLines={1}
-                >
-                  {soundTitle}
-                </Text>
-                <Text
-                  style={[styles.soundMeta, { color: colors.textSecondary }]}
-                  numberOfLines={1}
-                >
-                  {soundMode === "existing"
-                    ? "Reusable sound"
-                    : soundMode === "uploaded"
-                      ? extractFileStem(uploadedSoundUri)
-                      : "Original video audio"}
-                </Text>
-                {soundMode === "uploaded" && uploadedSoundUri ? (
-                  <TextInput
-                    value={uploadedSoundTitle}
-                    onChangeText={setUploadedSoundTitle}
-                    placeholder="Sound title"
-                    placeholderTextColor={colors.textSecondary}
-                    style={[
-                      styles.input,
-                      {
-                        color: colors.text,
-                        borderColor: colors.border,
-                        backgroundColor: colors.card,
-                      },
-                    ]}
-                  />
-                ) : null}
-                <View style={styles.switchRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.label, { color: colors.text }]}>
-                      Keep original audio
-                    </Text>
-                    <Text
-                      style={[styles.help, { color: colors.textSecondary }]}
-                    >
-                      Mix the video audio with the selected sound.
-                    </Text>
-                  </View>
-                  <Switch
-                    value={keepOriginalAudio}
-                    onValueChange={(value) => {
-                      setKeepOriginalAudio(value);
-                      setOriginalAudioVolume(
-                        value ? Math.max(0.3, originalAudioVolume) : 0,
-                      );
-                    }}
-                    thumbColor="#FFFFFF"
-                    trackColor={{
-                      false: colors.border,
-                      true: `${LIGHT_BROWN}88`,
-                    }}
-                  />
-                </View>
-                <Text style={[styles.label, { color: colors.text }]}>
-                  Clip start
-                </Text>
-                <View style={styles.wrapRow}>
-                  {[0, 5000, 10000, 15000].map((value) => (
-                    <Chip
-                      key={value}
-                      active={soundStartMs === value}
-                      colors={colors}
-                      label={`${value / 1000}s`}
-                      onPress={() => setSoundStartMs(value)}
-                    />
-                  ))}
-                </View>
-                <Text style={[styles.label, { color: colors.text }]}>
-                  Sound volume
-                </Text>
-                <View style={styles.wrapRow}>
-                  {[1, 0.8, 0.6].map((value) => (
-                    <Chip
-                      key={`s-${value}`}
-                      active={Math.abs(soundVolume - value) < 0.001}
-                      colors={colors}
-                      label={`${Math.round(value * 100)}%`}
-                      onPress={() => setSoundVolume(value)}
-                    />
-                  ))}
-                </View>
-                <Text style={[styles.label, { color: colors.text }]}>
-                  Original audio
-                </Text>
-                <View style={styles.wrapRow}>
-                  {[0, 0.3, 0.6, 1].map((value) => (
-                    <Chip
-                      key={`o-${value}`}
-                      active={Math.abs(originalAudioVolume - value) < 0.001}
-                      colors={colors}
-                      label={`${Math.round(value * 100)}%`}
-                      onPress={() => {
-                        setOriginalAudioVolume(value);
-                        setKeepOriginalAudio(value > 0);
-                      }}
-                    />
-                  ))}
+                {/* Overlay controls */}
+                <View style={styles.videoOverlay}>
+                  <TouchableOpacity style={styles.videoOverlayBtn} onPress={pickVideoForPost}>
+                    <IconSymbol name="arrow.clockwise" size={14} color="#FFF" />
+                    <Text style={styles.videoOverlayText}>Change</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.videoOverlayBtn, { backgroundColor: "rgba(200,60,60,0.75)" }]} onPress={() => setVideoUri("")}>
+                    <IconSymbol name="trash.fill" size={14} color="#FFF" />
+                  </TouchableOpacity>
                 </View>
               </View>
-            </View>
-          </>
-        )}
-
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.card, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Caption
-          </Text>
-          <TextInput
-            value={description}
-            onChangeText={setDescription}
-            placeholder="Describe your post..."
-            placeholderTextColor={colors.textSecondary}
-            multiline
-            maxLength={500}
-            style={[
-              styles.descriptionInput,
-              {
-                color: colors.text,
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}
-          />
-          <Text style={[styles.help, { color: colors.textSecondary }]}>
-            Hashtags still work. Example: `#abaya #kano`
-          </Text>
-        </View>
-
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.card, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Price
-          </Text>
-          <TextInput
-            value={price}
-            onChangeText={setPrice}
-            placeholder="Optional price in NGN"
-            placeholderTextColor={colors.textSecondary}
-            keyboardType="numeric"
-            style={[
-              styles.input,
-              {
-                color: colors.text,
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}
-          />
-          <View style={styles.switchRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.label, { color: colors.text }]}>
-                Negotiable
-              </Text>
-              <Text style={[styles.help, { color: colors.textSecondary }]}>
-                Shows DM and Buy for priced posts.
-              </Text>
-            </View>
-            <Switch
-              value={isNegotiable}
-              onValueChange={setIsNegotiable}
-              thumbColor="#FFFFFF"
-              trackColor={{ false: colors.border, true: `${LIGHT_BROWN}88` }}
-            />
-          </View>
-        </View>
-
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.card, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.inlineHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Location
-            </Text>
-            <TouchableOpacity
-              style={[
-                styles.smallButton,
-                { backgroundColor: colors.backgroundSecondary },
-              ]}
-              onPress={() => setLocationPickerVisible(true)}
-            >
-              <Text style={[styles.smallButtonText, { color: colors.text }]}>
-                {locationLabel ? "Change" : "Select"}
-              </Text>
+            ) : null}
+            {/* Cover image row */}
+            <TouchableOpacity onPress={pickCover} style={[styles.coverBtn, { borderColor: colors.border, backgroundColor: colors.card }]}>
+              {coverImageUri
+                ? <Image source={{ uri: coverImageUri }} style={styles.coverThumb} contentFit="cover" />
+                : <View style={[styles.coverThumbEmpty, { backgroundColor: `${LIGHT_BROWN}15` }]}>
+                    <IconSymbol name="photo.badge.plus" size={16} color={LIGHT_BROWN} />
+                  </View>}
+              <Text style={[styles.coverBtnText, { color: colors.text }]}>{coverImageUri ? "Change thumbnail" : "Add thumbnail"}</Text>
+              <IconSymbol name="chevron.right" size={13} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
-          {locationLabel ? (
-            <View
-              style={[
-                styles.locationPill,
-                {
-                  backgroundColor: colors.backgroundSecondary,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <Text style={[styles.locationText, { color: colors.text }]}>
-                {locationLabel}
-              </Text>
-              <TouchableOpacity
-                onPress={() => setLocation({ state: "", city: "" })}
-              >
-                <IconSymbol
-                  name="xmark"
-                  size={14}
-                  color={colors.textSecondary}
-                />
-              </TouchableOpacity>
+        )}
+
+        {/* ── Details card ─────────────────────────────────────────── */}
+        <View style={[styles.formCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+
+          {/* Caption section */}
+          <View style={[styles.captionSection, { backgroundColor: isDark ? `${LIGHT_BROWN}07` : `${LIGHT_BROWN}05` }]}>
+            <TextInput
+              ref={captionRef}
+              value={description}
+              onChangeText={handleCaptionChange}
+              onFocus={() => setCaptionFocused(true)}
+              onBlur={() => setCaptionFocused(false)}
+              placeholder="Write a caption… add #hashtags inline"
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              maxLength={500}
+              blurOnSubmit={false}
+              style={[styles.captionInput, { color: colors.text }, captionFocused && styles.captionInputFocused]}
+            />
+            <View style={styles.captionFooter}>
+              {/* Confirmed hashtag chips */}
+              {hashtags.length > 0 && (
+                <View style={styles.tagsWrap}>
+                  {hashtags.map((tag) => (
+                    <TouchableOpacity
+                      key={tag}
+                      style={[styles.tagChip, { backgroundColor: `${LIGHT_BROWN}18`, borderColor: `${LIGHT_BROWN}35` }]}
+                      onPress={() => removeHashtagFromCaption(tag)}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={[styles.tagChipText, { color: LIGHT_BROWN }]}>#{tag}</Text>
+                      <IconSymbol name="xmark" size={9} color={`${LIGHT_BROWN}BB`} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+              <Text style={[styles.charCount, { color: colors.textSecondary }]}>{description.length}/500</Text>
             </View>
-          ) : (
-            <Text style={[styles.help, { color: colors.textSecondary }]}>
-              Optional. Buyers can still DM for delivery details.
+          </View>
+
+          {/* Trending hashtag suggestions */}
+          {activeSuggestions.length > 0 && (
+            <View style={[styles.suggestionsWrap, { borderTopColor: colors.border }]}>
+              <Text style={[styles.suggestionsLabel, { color: LIGHT_BROWN }]}>TRENDING</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.suggestionsRow}
+                keyboardShouldPersistTaps="always"
+              >
+                {activeSuggestions.map((tag) => (
+                  <TouchableOpacity
+                    key={tag}
+                    style={[styles.suggestionChip, { backgroundColor: `${LIGHT_BROWN}15`, borderColor: `${LIGHT_BROWN}40` }]}
+                    onPress={() => applyHashtagSuggestion(tag)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.suggestionChipText, { color: LIGHT_BROWN }]}>#{tag}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* Pricing row */}
+          <View style={[styles.sectionHeader, { borderTopColor: colors.border }]}>
+            <Text style={[styles.sectionLabel, { color: LIGHT_BROWN }]}>PRICING</Text>
+          </View>
+          <View style={styles.formRow}>
+            <View style={[styles.rowIconWrap, { backgroundColor: `${LIGHT_BROWN}15` }]}>
+              <IconSymbol name="tag.fill" size={14} color={LIGHT_BROWN} />
+            </View>
+            <Text style={[styles.rowPrefix, { color: colors.textSecondary }]}>₦</Text>
+            <TextInput
+              value={price}
+              onChangeText={setPrice}
+              placeholder="Set a price (optional)"
+              placeholderTextColor={colors.textSecondary}
+              keyboardType="numeric"
+              style={[styles.rowInput, { color: colors.text }]}
+            />
+            <View style={styles.rowRight}>
+              <Text style={[styles.rowRightLabel, { color: colors.textSecondary }]}>Negotiable</Text>
+              <Switch
+                value={isNegotiable}
+                onValueChange={setIsNegotiable}
+                thumbColor="#FFF"
+                trackColor={{ false: colors.border, true: LIGHT_BROWN }}
+              />
+            </View>
+          </View>
+
+          {/* Location row */}
+          <View style={[styles.sectionHeader, { borderTopColor: colors.border }]}>
+            <Text style={[styles.sectionLabel, { color: LIGHT_BROWN }]}>LOCATION</Text>
+          </View>
+          <TouchableOpacity style={styles.formRow} onPress={() => setLocationPickerVisible(true)}>
+            <View style={[styles.rowIconWrap, { backgroundColor: `${LIGHT_BROWN}15` }]}>
+              <IconSymbol name="location.fill" size={14} color={LIGHT_BROWN} />
+            </View>
+            <Text style={[styles.rowValue, { color: locationLabel ? colors.text : colors.textSecondary, flex: 1 }]} numberOfLines={1}>
+              {locationLabel || "Add location (optional)"}
             </Text>
+            {locationLabel
+              ? <TouchableOpacity onPress={() => setLocation({ state: "", city: "" })} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <IconSymbol name="xmark.circle.fill" size={18} color={colors.textSecondary} />
+                </TouchableOpacity>
+              : <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />}
+          </TouchableOpacity>
+
+          {/* Sound section — video only */}
+          {postMode === "video" && (
+            <>
+              <View style={[styles.sectionHeader, { borderTopColor: colors.border }]}>
+                <Text style={[styles.sectionLabel, { color: LIGHT_BROWN }]}>SOUND</Text>
+              </View>
+              <TouchableOpacity style={styles.formRow} onPress={() => setSoundPickerVisible(true)}>
+                <View style={[styles.rowIconWrap, { backgroundColor: `${LIGHT_BROWN}15` }]}>
+                  <IconSymbol name="music.note" size={14} color={LIGHT_BROWN} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.rowValue, { color: colors.text }]} numberOfLines={1}>{soundTitle}</Text>
+                  <Text style={[styles.rowSub, { color: colors.textSecondary }]}>
+                    {soundMode === "existing" ? "Library sound" : soundMode === "uploaded" ? "Your upload" : "Original audio"}
+                  </Text>
+                </View>
+                <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
+              </TouchableOpacity>
+              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <TouchableOpacity style={styles.formRow} onPress={pickAudioForSound}>
+                <View style={[styles.rowIconWrap, { backgroundColor: `${LIGHT_BROWN}15` }]}>
+                  <IconSymbol name="arrow.up.circle.fill" size={14} color={LIGHT_BROWN} />
+                </View>
+                <Text style={[styles.rowValue, { color: colors.text }]}>Upload your own sound</Text>
+              </TouchableOpacity>
+              {soundMode === "uploaded" && uploadedSoundUri ? (
+                <TextInput
+                  value={uploadedSoundTitle}
+                  onChangeText={setUploadedSoundTitle}
+                  placeholder="Sound title"
+                  placeholderTextColor={colors.textSecondary}
+                  style={[styles.soundTitleInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
+                />
+              ) : null}
+            </>
           )}
         </View>
       </KeyboardScreen>
 
-      <Modal
-        visible={locationPickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setLocationPickerVisible(false)}
-      >
+      {/* ── Location modal ───────────────────────────────────────── */}
+      <Modal visible={locationPickerVisible} transparent animationType="slide" onRequestClose={() => setLocationPickerVisible(false)}>
         <View style={styles.backdrop}>
-          <View
-            style={[
-              styles.modalCard,
-              { backgroundColor: colors.card, borderColor: colors.border },
-            ]}
-          >
-            <View style={styles.inlineHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Choose Location
-              </Text>
+          <View style={[styles.sheet, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <Text style={[styles.sheetTitle, { color: colors.text }]}>Location</Text>
               <TouchableOpacity onPress={() => setLocationPickerVisible(false)}>
                 <IconSymbol name="xmark" size={18} color={colors.text} />
               </TouchableOpacity>
@@ -1051,46 +829,19 @@ export default function CreatePostScreen() {
             <TextInput
               value={locationSearch}
               onChangeText={setLocationSearch}
-              placeholder="Search state or city"
+              placeholder="Search state or city…"
               placeholderTextColor={colors.textSecondary}
-              style={[
-                styles.input,
-                {
-                  color: colors.text,
-                  borderColor: colors.border,
-                  backgroundColor: colors.backgroundSecondary,
-                },
-              ]}
+              style={[styles.sheetSearch, { color: colors.text, borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
             />
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
               {locationSuggestions.map((option) => (
                 <TouchableOpacity
                   key={option.label}
-                  style={[
-                    styles.modalRow,
-                    { borderBottomColor: colors.border },
-                  ]}
-                  onPress={() => {
-                    const nextLocation: NigeriaLocationOption = option;
-                    setLocation({
-                      state: nextLocation.state,
-                      city: nextLocation.city,
-                    });
-                    setLocationPickerVisible(false);
-                    setLocationSearch("");
-                  }}
+                  style={[styles.sheetRow, { borderBottomColor: colors.border }]}
+                  onPress={() => { setLocation({ state: option.state, city: option.city }); setLocationPickerVisible(false); setLocationSearch(""); }}
                 >
-                  <Text style={[styles.modalRowTitle, { color: colors.text }]}>
-                    {option.city}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.modalRowMeta,
-                      { color: colors.textSecondary },
-                    ]}
-                  >
-                    {option.state}
-                  </Text>
+                  <Text style={[styles.sheetRowTitle, { color: colors.text }]}>{option.city}</Text>
+                  <Text style={[styles.sheetRowSub, { color: colors.textSecondary }]}>{option.state}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -1098,87 +849,46 @@ export default function CreatePostScreen() {
         </View>
       </Modal>
 
+      {/* ── Sound library modal ──────────────────────────────────── */}
       <Modal
         visible={soundPickerVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => {
-          setSoundPickerVisible(false);
-          setPreviewingSoundId(null);
-        }}
+        onRequestClose={() => { setSoundPickerVisible(false); setPreviewingSoundId(null); }}
       >
         <View style={styles.backdrop}>
-          <View
-            style={[
-              styles.modalCard,
-              {
-                backgroundColor: colors.card,
-                borderColor: colors.border,
-                maxHeight: "82%",
-              },
-            ]}
-          >
-            <View style={styles.inlineHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Sound Library
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setSoundPickerVisible(false);
-                  setPreviewingSoundId(null);
-                }}
-              >
+          <View style={[styles.sheet, { backgroundColor: colors.card, borderColor: colors.border, maxHeight: "85%" }]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <Text style={[styles.sheetTitle, { color: colors.text }]}>Sound Library</Text>
+              <TouchableOpacity onPress={() => { setSoundPickerVisible(false); setPreviewingSoundId(null); }}>
                 <IconSymbol name="xmark" size={18} color={colors.text} />
               </TouchableOpacity>
             </View>
-            <View style={styles.wrapRow}>
-              <Chip
-                active={!showSavedOnly}
-                colors={colors}
-                label="All Sounds"
-                onPress={() => setShowSavedOnly(false)}
-              />
-              <Chip
-                active={showSavedOnly}
-                colors={colors}
-                label="Saved"
-                onPress={() => setShowSavedOnly(true)}
-              />
+            <View style={styles.chipsRow}>
+              <Chip active={!showSavedOnly} colors={colors} label="All" onPress={() => setShowSavedOnly(false)} />
+              <Chip active={showSavedOnly} colors={colors} label="Saved" onPress={() => setShowSavedOnly(true)} />
             </View>
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.modalList}
-            >
-              {soundsLoading || savedSoundsLoading ? (
-                <ActivityIndicator size="small" color={LIGHT_BROWN} />
-              ) : displayedSounds.length === 0 ? (
-                <Text style={[styles.help, { color: colors.textSecondary }]}>
-                  No sounds found yet.
-                </Text>
-              ) : (
-                displayedSounds.map((sound) => (
-                  <MarketSoundRow
-                    key={sound.id || sound.title}
-                    colors={colors}
-                    sound={sound}
-                    selected={selectedSound?.id === sound.id}
-                    isPreviewing={previewingSoundId === sound.id}
-                    isSaved={Boolean(
-                      sound.id && savedSoundIds.includes(sound.id),
-                    )}
-                    togglingSave={Boolean(
-                      sound.id && busySoundIds.includes(sound.id),
-                    )}
-                    onPreview={() =>
-                      setPreviewingSoundId((current) =>
-                        current === sound.id ? null : sound.id || null,
-                      )
-                    }
-                    onOpen={() => selectExistingSound(sound)}
-                    onToggleSave={() => toggleSaveSound(sound)}
-                  />
-                ))
-              )}
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 24 }}>
+              {soundsLoading || savedSoundsLoading
+                ? <ActivityIndicator size="small" color={LIGHT_BROWN} style={{ marginTop: 24 }} />
+                : displayedSounds.length === 0
+                  ? <Text style={[styles.sheetRowSub, { color: colors.textSecondary, textAlign: "center", marginTop: 24 }]}>No sounds yet.</Text>
+                  : displayedSounds.map((sound) => (
+                      <MarketSoundRow
+                        key={sound.id || sound.title}
+                        colors={colors}
+                        sound={sound}
+                        selected={selectedSound?.id === sound.id}
+                        isPreviewing={previewingSoundId === sound.id}
+                        isSaved={Boolean(sound.id && savedSoundIds.includes(sound.id))}
+                        togglingSave={Boolean(sound.id && busySoundIds.includes(sound.id))}
+                        onPreview={() => setPreviewingSoundId((c) => c === sound.id ? null : sound.id || null)}
+                        onOpen={() => selectExistingSound(sound)}
+                        onToggleSave={() => toggleSaveSound(sound)}
+                      />
+                    ))
+              }
             </ScrollView>
           </View>
         </View>
@@ -1189,198 +899,142 @@ export default function CreatePostScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  center: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 24,
-    gap: 14,
+
+  // Guest screen
+  center: { flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 28, gap: 16 },
+  guestTitle: { fontSize: 20, fontWeight: "800", textAlign: "center" },
+
+  // Floating island header
+  headerIsland: { paddingHorizontal: 14, paddingBottom: 10, zIndex: 10 },
+  headerPill: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    borderRadius: 28, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 6,
   },
-  title: { fontSize: 18, fontWeight: "700", textAlign: "center" },
-  primaryButton: {
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    borderRadius: 14,
+  headerClose: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: "center", justifyContent: "center",
   },
-  primaryButtonText: { color: "#FFFFFF", fontWeight: "700" },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
+  headerTitle: { fontSize: 15, fontWeight: "800", flex: 1, textAlign: "center" },
+  publishBtn: { minWidth: 84, minHeight: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", paddingHorizontal: 16 },
+  publishBtnText: { color: "#FFF", fontWeight: "800", fontSize: 14 },
+
+  // Content scroll
+  content: { paddingHorizontal: 14, paddingTop: 6, gap: 12 },
+
+  // ── Empty pick zone ──────────────────────────────────────────
+  pickZone: {
+    flexDirection: "row", borderRadius: 24, borderWidth: 1,
+    borderStyle: "dashed", minHeight: 200, overflow: "hidden",
   },
-  headerButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
+  pickHalf: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 36, paddingHorizontal: 8 },
+  pickIconRing: {
+    width: 66, height: 66, borderRadius: 33, borderWidth: 1,
+    alignItems: "center", justifyContent: "center",
   },
-  headerTitle: { fontSize: 18, fontWeight: "800" },
-  publishButton: {
-    minWidth: 92,
-    minHeight: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 14,
+  pickLabel: { fontSize: 16, fontWeight: "800" },
+  pickHint: { fontSize: 12 },
+  pickDivider: { width: 28, alignItems: "center", justifyContent: "center" },
+  pickDividerLine: { flex: 1, width: 1 },
+  pickDividerOr: { fontSize: 11, fontWeight: "700", paddingVertical: 6, fontStyle: "italic" },
+
+  // ── Media card (photos / video) ─────────────────────────────
+  mediaCard: { borderRadius: 22, borderWidth: 1, overflow: "hidden" },
+  mediaPreview: { width: "100%", height: 300 },
+  previewCountBadge: {
+    position: "absolute", top: 10, left: 10,
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "rgba(0,0,0,0.55)", borderRadius: 12,
+    paddingHorizontal: 8, paddingVertical: 4,
   },
-  publishButtonText: { color: "#FFFFFF", fontWeight: "800" },
-  content: { paddingHorizontal: 16, paddingTop: 14, gap: 12 },
-  card: { borderWidth: 1, borderRadius: 22, padding: 16, gap: 12 },
-  sectionTitle: { fontSize: 17, fontWeight: "800" },
-  row: { flexDirection: "row", gap: 10 },
-  wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  segment: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
+  previewCountText: { color: "#FFF", fontSize: 12, fontWeight: "700" },
+  previewClearBtn: {
+    position: "absolute", top: 10, right: 10,
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center",
   },
-  segmentText: { color: "#FFFFFF", fontWeight: "800", fontSize: 13 },
-  emptyBox: {
-    minHeight: 180,
-    borderRadius: 18,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  emptyText: { fontSize: 15, fontWeight: "700" },
-  preview: { width: "100%", height: 280, borderRadius: 18 },
-  thumbRow: { gap: 10 },
-  thumbWrap: {
-    width: 74,
-    height: 74,
-    borderRadius: 16,
-    overflow: "hidden",
-    position: "relative",
-  },
+  thumbRow: { flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12 },
+  thumbWrap: { width: 66, height: 66, borderRadius: 13, overflow: "hidden", borderWidth: 0 },
   thumb: { width: "100%", height: "100%" },
   thumbRemove: {
-    position: "absolute",
-    top: 6,
-    right: 6,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    alignItems: "center",
-    justifyContent: "center",
+    position: "absolute", top: 3, right: 3, width: 18, height: 18,
+    borderRadius: 9, backgroundColor: "rgba(0,0,0,0.65)", alignItems: "center", justifyContent: "center",
   },
-  addThumb: {
-    width: 74,
-    height: 74,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
+  addThumb: { width: 66, height: 66, borderRadius: 13, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+
+  // Video
+  videoWrap: { width: "100%", height: 340, backgroundColor: "#000" },
+  videoOverlay: {
+    position: "absolute", bottom: 10, right: 10,
+    flexDirection: "row", gap: 8,
   },
-  videoBox: {
-    width: "100%",
-    height: 320,
-    borderRadius: 18,
-    overflow: "hidden",
-    backgroundColor: "#000000",
+  videoOverlayBtn: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    backgroundColor: "rgba(0,0,0,0.6)", borderRadius: 14,
+    paddingHorizontal: 10, paddingVertical: 6,
   },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 42,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
+  videoOverlayText: { color: "#FFF", fontSize: 12, fontWeight: "700" },
+  coverBtn: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingHorizontal: 14, paddingVertical: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  secondaryButtonText: { fontWeight: "700", fontSize: 13 },
-  cover: { width: "100%", height: 170, borderRadius: 16 },
-  inlineHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+  coverThumb: { width: 42, height: 42, borderRadius: 10 },
+  coverThumbEmpty: { width: 42, height: 42, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  coverBtnText: { flex: 1, fontSize: 14, fontWeight: "600" },
+
+  // ── Details form card ────────────────────────────────────────
+  formCard: { borderRadius: 22, borderWidth: 1, overflow: "hidden" },
+
+  captionSection: { paddingBottom: 4 },
+  captionInput: {
+    minHeight: 110, paddingHorizontal: 16, paddingTop: 16,
+    fontSize: 15, lineHeight: 22, textAlignVertical: "top",
   },
-  smallButton: {
-    minHeight: 38,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  smallButtonText: { fontWeight: "700", fontSize: 13 },
-  mode: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  modeText: { fontWeight: "700", fontSize: 12 },
-  soundCard: { borderWidth: 1, borderRadius: 18, padding: 14, gap: 10 },
-  soundTitle: { fontSize: 15, fontWeight: "800" },
-  soundMeta: { fontSize: 12 },
-  input: {
-    minHeight: 48,
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    fontSize: 14,
-  },
-  descriptionInput: {
-    minHeight: 120,
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    fontSize: 15,
-    lineHeight: 21,
-    textAlignVertical: "top",
-  },
-  switchRow: { flexDirection: "row", gap: 12, alignItems: "center" },
-  label: { fontSize: 14, fontWeight: "700" },
-  help: { fontSize: 12, lineHeight: 17 },
-  locationPill: {
-    minHeight: 44,
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  locationText: { fontSize: 14, fontWeight: "700" },
-  chip: {
-    minHeight: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  captionInputFocused: { minHeight: 140 },
+  captionFooter: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 10, flexWrap: "wrap", gap: 4 },
+  charCount: { fontSize: 11, alignSelf: "flex-end" },
+
+  tagsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 },
+  tagChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12, borderWidth: 1 },
+  tagChipText: { fontSize: 12, fontWeight: "700" },
+
+  // Trending suggestions
+  suggestionsWrap: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, gap: 6, borderTopWidth: StyleSheet.hairlineWidth },
+  suggestionsLabel: { fontSize: 9, fontWeight: "800", letterSpacing: 1 },
+  suggestionsRow: { gap: 6, paddingVertical: 2 },
+  suggestionChip: { paddingHorizontal: 11, paddingVertical: 5, borderRadius: 14, borderWidth: 1 },
+  suggestionChipText: { fontSize: 12, fontWeight: "700" },
+
+  // Section labels
+  sectionHeader: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4, borderTopWidth: StyleSheet.hairlineWidth },
+  sectionLabel: { fontSize: 9, fontWeight: "800", letterSpacing: 1.2 },
+
+  divider: { height: StyleSheet.hairlineWidth },
+  formRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 13 },
+  rowIconWrap: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  rowPrefix: { fontSize: 15, fontWeight: "700" },
+  rowInput: { flex: 1, fontSize: 14, minHeight: 28 },
+  rowValue: { fontSize: 14, fontWeight: "600" },
+  rowSub: { fontSize: 12, marginTop: 1 },
+  rowRight: { flexDirection: "row", alignItems: "center", gap: 6 },
+  rowRightLabel: { fontSize: 11, fontWeight: "600" },
+  soundTitleInput: { marginHorizontal: 14, marginBottom: 10, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14 },
+
+  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
+  chip: { minHeight: 34, borderRadius: 17, borderWidth: 1, paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
   chipText: { fontSize: 12, fontWeight: "700" },
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "flex-end",
+
+  // Bottom sheets
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+  sheet: {
+    borderTopLeftRadius: 30, borderTopRightRadius: 30, borderWidth: 1,
+    paddingHorizontal: 18, paddingTop: 10, paddingBottom: 24, gap: 12, maxHeight: "80%",
   },
-  modalCard: {
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    borderWidth: 1,
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 22,
-    gap: 12,
-    maxHeight: "76%",
-  },
-  modalRow: {
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  modalRowTitle: { fontSize: 15, fontWeight: "700" },
-  modalRowMeta: { fontSize: 12, marginTop: 2 },
-  modalList: { gap: 10, paddingBottom: 24 },
+  sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: "rgba(128,128,128,0.3)", alignSelf: "center", marginBottom: 6 },
+  sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  sheetTitle: { fontSize: 18, fontWeight: "800" },
+  sheetSearch: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 11, fontSize: 14 },
+  sheetRow: { paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth },
+  sheetRowTitle: { fontSize: 15, fontWeight: "700" },
+  sheetRowSub: { fontSize: 12, marginTop: 2 },
 });
