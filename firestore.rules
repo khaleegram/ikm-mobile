@@ -555,7 +555,7 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    // Market social graph: follows, blocks, reports
+    // Market social graph: follows, blocks, reports, saves, statuses
     match /marketFollows/{followId} {
       // Doc id is always follower_followed (see app). Id-based read allows listen before doc exists.
       allow read: if isAdmin() || isPartyInMarketFollowDocId(followId);
@@ -566,6 +566,27 @@ service cloud.firestore {
         && request.resource.data.followedId.size() > 0;
       allow update: if false;
       allow delete: if isAdmin() || (isAuthenticated() && resource.data.followerId == request.auth.uid);
+    }
+
+    match /marketSaves/{saveId} {
+      allow read: if isAdmin() || (isAuthenticated() && saveId.matches('^' + request.auth.uid + '_.*$'));
+      allow list: if isAdmin() || (isAuthenticated() && request.query.limit != null);
+      allow create: if isAuthenticated()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.postId is string
+        && request.resource.data.postId.size() > 0;
+      allow update: if false;
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    match /marketStatuses/{statusId} {
+      allow read, list: if isAuthenticated();
+      allow create: if isAuthenticated()
+        && request.resource.data.sellerId == request.auth.uid
+        && request.resource.data.mediaUrl is string
+        && request.resource.data.mediaUrl.size() > 0;
+      allow update: if false;
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.sellerId == request.auth.uid);
     }
 
     match /following/{userId}/list/{followedId} {

@@ -73,6 +73,12 @@ service firebase.storage {
       allow write: if isOwner(ownerId) && isMarketSoundUpload();
     }
 
+    // Market statuses
+    match /marketStatuses/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwner(userId) && isImageUploadUnder5MB();
+    }
+
     // Deny all other paths by default
     match /{allPaths=**} {
       allow read, write: if false;
