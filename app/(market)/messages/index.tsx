@@ -21,6 +21,8 @@ import { buildDirectConversationId, resolveDirectConversationPeerId } from '@/li
 import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
 import { SafeImage } from '@/components/safe-image';
 import { useInboxPeerSummaries, type InboxPeerSummary } from '@/lib/hooks/use-inbox-peer-summaries';
+import { SellerStoriesRow } from '@/components/market/seller-stories-row';
+import { haptics } from '@/lib/utils/haptics';
 
 const lightBrown = '#A67C52';
 
@@ -209,6 +211,7 @@ export default function MessagesScreen() {
   const { idSet: blockedIds } = useBlockedUserIds(user?.uid || null);
   const [activeFilter, setActiveFilter] = useState<'chats' | 'unread'>('chats');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchVisible, setIsSearchVisible] = useState(false);
   const marketLoginRoute = getLoginRouteForVariant('market');
 
   const unreadTotal = useMemo(
@@ -276,56 +279,57 @@ export default function MessagesScreen() {
         },
       ]}>
       <View style={styles.heroRow}>
-        <View>
-          <Text style={[styles.screenTitle, { color: colors.text }]}>Messages</Text>
-          <Text style={[styles.screenSubtitle, { color: colors.textSecondary }]}>
-            {unreadTotal > 0 ? `${unreadTotal} unread` : 'Your conversations'}
-          </Text>
+        <Text style={[styles.screenTitle, { color: colors.text }]}>Updates</Text>
+        <View style={styles.headerIcons}>
+          <TouchableOpacity activeOpacity={0.7} style={styles.iconBtn}>
+            <IconSymbol name="camera" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity 
+            activeOpacity={0.7} 
+            style={styles.iconBtn}
+            onPress={() => {
+              setActiveFilter(activeFilter === 'chats' ? 'unread' : 'chats');
+              haptics.light();
+            }}>
+            <IconSymbol 
+              name="line.3.horizontal.decrease.circle" 
+              size={24} 
+              color={activeFilter === 'unread' ? lightBrown : colors.text} 
+            />
+          </TouchableOpacity>
+          <TouchableOpacity 
+            activeOpacity={0.7} 
+            style={styles.iconBtn}
+            onPress={() => {
+              setIsSearchVisible(!isSearchVisible);
+              if (isSearchVisible) setSearchQuery('');
+            }}>
+            <IconSymbol name="magnifyingglass" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.7} style={styles.iconBtn}>
+            <IconSymbol name="ellipsis" size={24} color={colors.text} />
+          </TouchableOpacity>
         </View>
       </View>
 
-      <View style={[styles.searchBar, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
-        <IconSymbol name="magnifyingglass" size={18} color={colors.textSecondary} />
-        <TextInput
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Search by name or message"
-          placeholderTextColor={colors.textSecondary}
-          style={[styles.searchInput, { color: colors.text }]}
-          autoCorrect={false}
-          autoCapitalize="none"
-          clearButtonMode="while-editing"
-        />
-      </View>
+      {isSearchVisible && (
+        <View style={[styles.searchBar, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
+          <IconSymbol name="magnifyingglass" size={18} color={colors.textSecondary} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search by name or message"
+            placeholderTextColor={colors.textSecondary}
+            style={[styles.searchInput, { color: colors.text }]}
+            autoCorrect={false}
+            autoCapitalize="none"
+            clearButtonMode="while-editing"
+            autoFocus
+          />
+        </View>
+      )}
 
-      <View style={styles.segmentWrap}>
-        <TouchableOpacity
-          style={[
-            styles.segmentBtn,
-            {
-              backgroundColor: activeFilter === 'chats' ? lightBrown : 'transparent',
-            },
-          ]}
-          onPress={() => setActiveFilter('chats')}
-          activeOpacity={0.85}>
-          <IconSymbol name="bubble.left.and.bubble.right.fill" size={15} color={activeFilter === 'chats' ? '#FFF' : colors.textSecondary} />
-          <Text style={[styles.segmentLabel, { color: activeFilter === 'chats' ? '#FFF' : colors.textSecondary }]}>All</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.segmentBtn,
-            {
-              backgroundColor: activeFilter === 'unread' ? lightBrown : 'transparent',
-            },
-          ]}
-          onPress={() => setActiveFilter('unread')}
-          activeOpacity={0.85}>
-          <IconSymbol name="envelope.badge.fill" size={15} color={activeFilter === 'unread' ? '#FFF' : colors.textSecondary} />
-          <Text style={[styles.segmentLabel, { color: activeFilter === 'unread' ? '#FFF' : colors.textSecondary }]}>
-            Unread{unreadTotal > 0 ? ` (${unreadTotal})` : ''}
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <SellerStoriesRow />
     </View>
   );
 
@@ -422,12 +426,23 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   heroRow: {
-    marginBottom: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
   screenTitle: {
     fontSize: 28,
     fontWeight: '800',
-    letterSpacing: -0.6,
+    letterSpacing: -0.5,
+  },
+  headerIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  iconBtn: {
+    padding: 4,
   },
   screenSubtitle: {
     marginTop: 4,
