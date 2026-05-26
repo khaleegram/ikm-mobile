@@ -90,7 +90,7 @@ export function MarketVideoSurface({
         style={StyleSheet.absoluteFill}
         contentFit="cover"
         nativeControls={showControls}
-        allowsFullscreen={showControls}
+        fullscreenOptions={{ presentation: showControls ? 'fullScreen' : 'contained' }}
       />
     </View>
   );

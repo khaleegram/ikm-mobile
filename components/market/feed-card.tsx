@@ -1,12 +1,14 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   StyleSheet,
   Dimensions,
   ScrollView,
   Animated,
+  TouchableOpacity,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { useIsFocused } from '@react-navigation/native';
 import { MarketPost } from '@/types';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPostLikes } from '@/lib/firebase/firestore/market-posts';
@@ -18,6 +20,32 @@ import { PostOverlay } from './post-overlay';
 
 const { width, height } = Dimensions.get('window');
 const viewedPostIds = new Set<string>();
+
+function CapsuleDot({ active }: { active: boolean }) {
+  const widthAnim = useRef(new Animated.Value(active ? 18 : 6)).current;
+
+  useEffect(() => {
+    Animated.spring(widthAnim, {
+      toValue: active ? 18 : 6,
+      useNativeDriver: false,
+      tension: 280,
+      friction: 20,
+    }).start();
+  }, [active, widthAnim]);
+
+  return (
+    <Animated.View
+      style={[
+        styles.capsuleDot,
+        {
+          width: widthAnim,
+          backgroundColor: active ? '#FFFFFF' : 'rgba(255,255,255,0.38)',
+        },
+      ]}
+    />
+  );
+}
+
 interface FeedCardProps {
   post: MarketPost;
   itemHeight?: number;
@@ -35,6 +63,8 @@ export const FeedCard = React.memo(function FeedCard({
 }: FeedCardProps) {
   const { user } = useUser();
   const { likes, isLiked } = useMarketPostLikes(post.id || null, user?.uid || null);
+  const isFocused = useIsFocused();
+  const [isPaused, setIsPaused] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const scrollViewRef = useRef<ScrollView>(null);
   const likeScaleAnim = useRef(new Animated.Value(1)).current;
@@ -125,9 +155,12 @@ export const FeedCard = React.memo(function FeedCard({
   return (
     <View style={[styles.container, { width, height: cardHeight }]}>
       {isVideo && post.videoUrl ? (
-        <View style={[styles.videoFrame, { height: computedVideoHeight }]}>
+        <TouchableOpacity 
+          activeOpacity={1}
+          style={[styles.videoFrame, { height: computedVideoHeight }]}
+          onPress={() => setIsPaused(!isPaused)}>
           <MarketVideoSurface
-            active={isActive}
+            active={isActive && isFocused && !isPaused}
             videoUri={post.videoUrl}
             externalSoundUri={
               post.soundMeta?.sourceType === 'original'
@@ -141,7 +174,12 @@ export const FeedCard = React.memo(function FeedCard({
             soundStartMs={post.soundMeta?.startMs}
             useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
           />
-        </View>
+          {isPaused && (
+            <View style={styles.pauseOverlay}>
+              <IconSymbol name="play.rectangle.fill" size={60} color="rgba(255,255,255,0.8)" />
+            </View>
+          )}
+        </TouchableOpacity>
       ) : (
         <ScrollView
           ref={scrollViewRef}
@@ -165,22 +203,11 @@ export const FeedCard = React.memo(function FeedCard({
         </ScrollView>
       )}
 
-      {/* Image Pagination Dots */}
+      {/* Animated capsule pagination */}
       {!isVideo && post.images.length > 1 && (
         <View style={styles.paginationContainer}>
           {post.images.map((_, index) => (
-            <View
-              key={index}
-              style={[
-                styles.paginationDot,
-                {
-                  backgroundColor:
-                    index === currentImageIndex
-                      ? '#FFFFFF'
-                      : 'rgba(255, 255, 255, 0.4)',
-                },
-              ]}
-            />
+            <CapsuleDot key={index} active={index === currentImageIndex} />
           ))}
         </View>
       )}
@@ -227,19 +254,25 @@ const styles = StyleSheet.create({
     maxHeight: height,
     overflow: 'hidden',
     backgroundColor: '#000',
+    position: 'relative',
+  },
+  pauseOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   paginationContainer: {
     position: 'absolute',
-    bottom: 120,
+    bottom: 130,
     left: 0,
     right: 0,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
-  paginationDot: {
-    width: 6,
+  capsuleDot: {
     height: 6,
     borderRadius: 3,
   },
