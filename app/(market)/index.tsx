@@ -14,10 +14,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BlurView } from 'expo-blur';
 import { showToast } from '@/components/toast';
 import { useMarketPosts } from '@/lib/firebase/firestore/market-posts';
 import { FeedCard } from '@/components/market/feed-card';
 import { FlashListCompat } from '@/components/layout/flash-list-compat';
+import { SellerStoriesRow } from '@/components/market/seller-stories-row';
 import { MarketPost } from '@/types';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { firestore } from '@/lib/firebase/config';
@@ -26,16 +28,15 @@ import { haptics } from '@/lib/utils/haptics';
 import { getDeviceCoordinates } from '@/lib/utils/device-location';
 import { buildMarketPostStableKey } from '@/lib/utils/market-media';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
-import { getMarketBranding } from '@/lib/market-branding';
 import { router } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { Platform } from 'react-native';
 
 const lightBrown = '#A67C52';
 const SNAP_TOLERANCE_PX = 2;
 const MARKET_LOCATION_PROMPT_KEY = '@ikm_market_location_prompted_v1';
 
 export default function MarketFeedScreen() {
-  const marketBrand = getMarketBranding();
   const { colors } = useTheme();
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -49,6 +50,7 @@ export default function MarketFeedScreen() {
   const isProgrammaticSnapRef = useRef(false);
   const activeIndexRef = useRef(0);
   const hasShownLocationPromptRef = useRef(false);
+
   const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
   const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
     const firstVisible = viewableItems?.[0]?.item as MarketPost | undefined;
@@ -218,20 +220,26 @@ export default function MarketFeedScreen() {
     [viewportHeight]
   );
 
+  // ─── Premium Header ───
   const renderHomeAppBar = () => (
-    <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 6 }]}>
+    <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 2 }]}>
+      {Platform.OS === 'ios' ? (
+        <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFillObject} />
+      ) : null}
       <View style={styles.headerTopRow}>
-        <View style={styles.headerTitles}>
-          <Text style={styles.headerSuper}>{marketBrand.headerLine}</Text>
-          <Text style={styles.headerTitle}>Home</Text>
+        <View style={styles.wordmarkWrap}>
+          <Text style={styles.wordmark}>Chatcart</Text>
+          <View style={styles.wordmarkDot} />
         </View>
         <TouchableOpacity
-          style={styles.searchButton}
+          style={styles.searchPill}
           onPress={() => {
             haptics.light();
             router.push('/(market)/search');
-          }}>
-          <IconSymbol name="magnifyingglass" size={19} color="#FFFFFF" />
+          }}
+          activeOpacity={0.8}>
+          <IconSymbol name="magnifyingglass" size={14} color="rgba(255,255,255,0.85)" />
+          <Text style={styles.searchPillText}>Search</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -239,9 +247,8 @@ export default function MarketFeedScreen() {
 
   if (loading && posts.length === 0) {
     return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
+      <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
-        {renderHomeAppBar()}
         <ActivityIndicator size="large" color={lightBrown} />
       </View>
     );
@@ -249,22 +256,16 @@ export default function MarketFeedScreen() {
 
   if (error && posts.length === 0) {
     return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
+      <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
-        {renderHomeAppBar()}
-        <IconSymbol name="exclamationmark.triangle.fill" size={48} color={colors.error} />
-        <Text style={[styles.errorText, { color: colors.error }]}>
-          Error loading feed
-        </Text>
-        <Text style={[styles.errorSubtext, { color: colors.textSecondary }]}>
+        <IconSymbol name="exclamationmark.triangle.fill" size={48} color="#FF3B55" />
+        <Text style={styles.errorText}>Error loading feed</Text>
+        <Text style={styles.errorSubtext}>
           {error.message || 'Please check your connection and try again'}
         </Text>
         <TouchableOpacity
-          style={[styles.retryButton, { backgroundColor: lightBrown }]}
-          onPress={() => {
-            haptics.medium();
-            refresh();
-          }}>
+          style={styles.retryButton}
+          onPress={() => { haptics.medium(); refresh(); }}>
           <IconSymbol name="arrow.clockwise" size={20} color="#FFFFFF" />
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
@@ -274,18 +275,15 @@ export default function MarketFeedScreen() {
 
   if (posts.length === 0) {
     return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
+      <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
-        {renderHomeAppBar()}
-        <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-          No posts available
-        </Text>
+        <Text style={[styles.emptyText, { color: 'rgba(255,255,255,0.5)' }]}>No posts yet</Text>
       </View>
     );
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: '#000' }]}>
+    <View style={styles.container}>
       <StatusBar barStyle="light-content" translucent />
 
       <FlashListCompat
@@ -342,6 +340,7 @@ export default function MarketFeedScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#000',
   },
   floatingHeaderContainer: {
     position: 'absolute',
@@ -350,40 +349,53 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 9999,
     elevation: 50,
-    paddingHorizontal: 16,
+    overflow: 'hidden',
+    paddingBottom: 10,
   },
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
-  headerTitles: {
-    gap: 1,
+  wordmarkWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
   },
-  headerSuper: {
-    color: 'rgba(255,255,255,0.55)',
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-    textShadowColor: 'rgba(0,0,0,0.6)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
-  headerTitle: {
+  wordmark: {
     color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
-    textShadowColor: 'rgba(0,0,0,0.6)',
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+    textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
   },
-  searchButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+  wordmarkDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#A67C52',
+    marginBottom: 10,
+  },
+  searchPill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.13)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  searchPillText: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.1,
   },
   center: {
     flex: 1,
@@ -391,14 +403,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   errorText: {
+    color: '#FF3B55',
     fontSize: 16,
     fontWeight: '600',
+    marginTop: 12,
   },
   emptyText: {
     fontSize: 16,
     fontWeight: '500',
   },
   errorSubtext: {
+    color: 'rgba(255,255,255,0.5)',
     fontSize: 14,
     marginTop: 8,
     textAlign: 'center',
@@ -412,6 +427,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 12,
     marginTop: 20,
+    backgroundColor: '#A67C52',
   },
   retryButtonText: {
     color: '#FFFFFF',
