@@ -162,3 +162,96 @@ export async function toggleFollow(followerId: string, followedId: string, isCur
     }
   });
 }
+
+function saveDocId(userId: string, postId: string) {
+  return `${userId}_${postId}`;
+}
+
+export function useUserSavedPostIds(userId: string | null) {
+  const [ids, setIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!userId) {
+      setIds([]);
+      setLoading(false);
+      return;
+    }
+
+    const q = query(
+      collection(firestore, 'marketSaves'),
+      where('userId', '==', userId),
+      orderBy('savedAt', 'desc'),
+      limit(500)
+    );
+
+    const unsubscribe: Unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setIds(
+          snapshot.docs
+            .map((docSnap) => String(docSnap.data()?.postId || '').trim())
+            .filter(Boolean)
+        );
+        setLoading(false);
+      },
+      () => {
+        setIds([]);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userId]);
+
+  const idSet = useMemo(() => new Set(ids), [ids]);
+  return { ids, idSet, loading };
+}
+
+export function useIsSaved(userId: string | null, postId: string | null) {
+  const [isSaved, setIsSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const user = String(userId || '').trim();
+    const post = String(postId || '').trim();
+    if (!user || !post) {
+      setIsSaved(false);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const unsubscribe = onSnapshot(
+      doc(firestore, 'marketSaves', saveDocId(user, post)),
+      (snapshot) => {
+        setIsSaved(snapshot.exists());
+        setLoading(false);
+      },
+      (err) => {
+        console.warn('[useIsSaved] snapshot error', err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userId, postId]);
+
+  return { isSaved, loading };
+}
+
+export async function toggleMarketSave(userId: string, postId: string, isCurrentlySaved: boolean) {
+  const { doc, setDoc, deleteDoc, serverTimestamp } = await import('firebase/firestore');
+
+  const saveRef = doc(firestore, 'marketSaves', saveDocId(userId, postId));
+
+  if (isCurrentlySaved) {
+    await deleteDoc(saveRef);
+  } else {
+    await setDoc(saveRef, {
+      userId,
+      postId,
+      savedAt: serverTimestamp(),
+    });
+  }
+}
