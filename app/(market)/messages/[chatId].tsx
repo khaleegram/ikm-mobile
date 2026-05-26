@@ -26,16 +26,16 @@ import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { buildMarketOfferLink } from '@/lib/utils/market-offer-link';
 import { MarketMessage } from '@/types';
 
-import { ChatComposer } from './chat-detail/chat-composer';
-import { ChatHeader } from './chat-detail/chat-header';
-import { ChatList } from './chat-detail/chat-list';
-import { OfferModal } from './chat-detail/offer-modal';
-import { styles } from './chat-detail/styles';
-import { useChatHeader } from './chat-detail/use-chat-header';
-import { useChatMessages } from './chat-detail/use-chat-messages';
-import { useChatRoute } from './chat-detail/use-chat-route';
-import { useOfferLogic } from './chat-detail/use-offer-logic';
-import { buildClientMessageId, lightBrown } from './chat-detail/utils';
+import { ChatComposer } from './_chat-detail/chat-composer';
+import { ChatHeader } from './_chat-detail/chat-header';
+import { ChatList } from './_chat-detail/chat-list';
+import { OfferModal } from './_chat-detail/offer-modal';
+import { styles } from './_chat-detail/styles';
+import { useChatHeader } from './_chat-detail/use-chat-header';
+import { useChatMessages } from './_chat-detail/use-chat-messages';
+import { useChatRoute } from './_chat-detail/use-chat-route';
+import { useOfferLogic } from './_chat-detail/use-offer-logic';
+import { buildClientMessageId, lightBrown } from './_chat-detail/utils';
 import { useMarketChatStore } from '@/lib/stores/marketChatStore';
 
 export default function ChatDetailScreen() {
