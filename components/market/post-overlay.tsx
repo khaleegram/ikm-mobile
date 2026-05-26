@@ -15,7 +15,7 @@ import { buildDirectConversationId, marketMessagesApi } from '@/lib/api/market-m
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { marketSocialApi } from '@/lib/api/market-social';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useIsFollowing } from '@/lib/firebase/firestore/market-social';
+import { useIsFollowing, useIsSaved, toggleMarketSave } from '@/lib/firebase/firestore/market-social';
 import { usePublicUserProfile } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
@@ -60,6 +60,7 @@ export function PostOverlay({
   const [optimisticFollowing, setOptimisticFollowing] = useState<boolean | null>(null);
   const openingChatRef = useRef(false);
   const { isFollowing } = useIsFollowing(user?.uid ?? null, post.posterId ?? null);
+  const { isSaved } = useIsSaved(user?.uid ?? null, post.id);
   const isEffectivelyFollowing = optimisticFollowing ?? isFollowing;
 
   React.useEffect(() => {
@@ -82,6 +83,21 @@ export function PostOverlay({
 
   const hasPrice = typeof post.price === 'number' && post.price > 0;
   const locationText = [post.location?.city, post.location?.state].filter(Boolean).join(', ');
+
+  /* ─── Save toggle ─── */
+  const handleSaveToggle = async () => {
+    if (!user) {
+      router.push(marketLoginRoute as any);
+      return;
+    }
+    haptics.light();
+    try {
+      await toggleMarketSave(user.uid, post.id, isSaved);
+    } catch (error) {
+      console.error('Error toggling save state:', error);
+      showToast('Failed to save post', 'error');
+    }
+  };
 
   /* ─── Follow toggle ─── */
   const handleFollowToggle = async () => {
@@ -268,30 +284,44 @@ export function PostOverlay({
 
   return (
     <>
-      {/* Rich bottom gradient */}
+      {/* Top vignette so header always pops */}
       <LinearGradient
-        colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.82)', 'rgba(0,0,0,0.96)']}
-        locations={[0, 0.28, 0.68, 1]}
-        style={[styles.gradient, { height: bottomClearance + 260 }]}
+        colors={['rgba(0,0,0,0.45)', 'transparent']}
+        style={styles.topVignette}
+        pointerEvents="none"
+      />
+
+      {/* Rich bottom gradient — taller and denser */}
+      <LinearGradient
+        colors={['transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.75)', 'rgba(0,0,0,0.97)']}
+        locations={[0, 0.2, 0.58, 1]}
+        style={[styles.gradient, { height: bottomClearance + 320 }]}
         pointerEvents="none"
       />
 
       {/* Right-side action rail */}
       <View style={[styles.rail, { bottom: bottomClearance + 4 }]}>
-        {/* Avatar + follow badge */}
+        {/* Avatar with gradient ring */}
         <View style={styles.avatarWrap}>
           <TouchableOpacity
             onPress={() => post.posterId && router.push(`/(market)/seller/${encodeURIComponent(post.posterId)}` as any)}
             activeOpacity={0.82}
-            style={styles.avatarTouchable}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
-            ) : (
-              <View style={[styles.avatar, styles.avatarFallback]}>
-                <Text style={styles.avatarInitial}>{posterName.charAt(0).toUpperCase()}</Text>
+            <LinearGradient
+              colors={['#A67C52', '#C9A96E', '#FFFFFF']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.avatarRing}>
+              <View style={styles.avatarInnerBorder}>
+                {avatarUri ? (
+                  <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
+                ) : (
+                  <View style={[styles.avatar, styles.avatarFallback]}>
+                    <Text style={styles.avatarInitial}>{posterName.charAt(0).toUpperCase()}</Text>
+                  </View>
+                )}
               </View>
-            )}
+            </LinearGradient>
           </TouchableOpacity>
           {!isOwnPost && (
             <TouchableOpacity
@@ -299,21 +329,17 @@ export function PostOverlay({
               onPress={handleFollowToggle}
               activeOpacity={0.8}
               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-              <IconSymbol
-                name={isEffectivelyFollowing ? 'checkmark' : 'plus'}
-                size={10}
-                color="#FFFFFF"
-              />
+              <Text style={styles.followBadgeText}>{isEffectivelyFollowing ? '✓' : '+'}</Text>
             </TouchableOpacity>
           )}
         </View>
 
         {/* Like */}
         <AnimatedPressable style={styles.railAction} onPress={onLike} scaleValue={0.88}>
-          <Animated.View style={{ transform: [{ scale: animValue }] }}>
+          <Animated.View style={[{ transform: [{ scale: animValue }] }, styles.iconShadow]}>
             <IconSymbol
               name={isLiked ? 'heart.fill' : 'heart'}
-              size={33}
+              size={27}
               color={isLiked ? '#FF3B55' : '#FFFFFF'}
             />
           </Animated.View>
@@ -322,14 +348,24 @@ export function PostOverlay({
 
         {/* Comment */}
         <AnimatedPressable style={styles.railAction} onPress={() => setCommentsVisible(true)} scaleValue={0.88}>
-          <IconSymbol name="bubble.right.fill" size={31} color="#FFFFFF" />
+          <View style={styles.iconShadow}>
+            <IconSymbol name="bubble" size={26} color="#FFFFFF" />
+          </View>
           <Text style={styles.railCount}>{post.comments || 0}</Text>
         </AnimatedPressable>
 
         {/* Share */}
         <AnimatedPressable style={styles.railAction} onPress={handleShare} scaleValue={0.88}>
-          <IconSymbol name="arrowshape.turn.up.right.fill" size={30} color="#FFFFFF" />
-          <Text style={styles.railCount}>Share</Text>
+          <View style={styles.iconShadow}>
+            <IconSymbol name="paperplane" size={25} color="#FFFFFF" />
+          </View>
+        </AnimatedPressable>
+
+        {/* Save */}
+        <AnimatedPressable style={styles.railAction} onPress={handleSaveToggle} scaleValue={0.88}>
+          <View style={styles.iconShadow}>
+            <IconSymbol name={isSaved ? 'bookmark.fill' : 'bookmark'} size={25} color={isSaved ? '#A67C52' : '#FFFFFF'} />
+          </View>
         </AnimatedPressable>
 
         {/* More / Manage */}
@@ -337,8 +373,9 @@ export function PostOverlay({
           style={styles.railAction}
           onPress={() => isOwnPost ? setManageVisible(true) : setActionsVisible(true)}
           scaleValue={0.88}>
-          <IconSymbol name="ellipsis" size={27} color="#FFFFFF" />
-          <Text style={styles.railCount}>{isOwnPost ? 'Manage' : 'More'}</Text>
+          <View style={styles.iconShadow}>
+            <IconSymbol name="ellipsis" size={22} color="#FFFFFF" />
+          </View>
         </AnimatedPressable>
       </View>
 
@@ -387,7 +424,9 @@ export function PostOverlay({
         <View style={styles.ctaRow}>
           {hasPrice ? (
             <>
-              <Text style={styles.price}>NGN {Number(post.price).toLocaleString()}</Text>
+              <View style={styles.pricePill}>
+                <Text style={styles.price}>NGN {Number(post.price).toLocaleString()}</Text>
+              </View>
               {!isOwnPost && (
                 <>
                   {post.isNegotiable ? (
@@ -451,43 +490,65 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
+  topVignette: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 160,
+    zIndex: 5,
+  },
   rail: {
     position: 'absolute',
     right: 10,
     alignItems: 'center',
-    gap: 22,
+    gap: 18,
     zIndex: 10,
   },
   avatarWrap: {
     position: 'relative',
     marginBottom: 4,
+    alignItems: 'center',
   },
-  avatarTouchable: {},
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+  avatarRing: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    padding: 2.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarInnerBorder: {
+    width: 57,
+    height: 57,
+    borderRadius: 28.5,
     borderWidth: 2,
-    borderColor: '#FFFFFF',
+    borderColor: '#000',
+    overflow: 'hidden',
+  },
+  avatar: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 28,
   },
   avatarFallback: {
-    backgroundColor: lightBrown,
+    backgroundColor: '#A67C52',
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarInitial: {
     color: '#FFFFFF',
-    fontSize: 19,
+    fontSize: 20,
     fontWeight: '800',
   },
   followBadge: {
     position: 'absolute',
-    bottom: -8,
+    bottom: -6,
     alignSelf: 'center',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: lightBrown,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#A67C52',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
@@ -496,15 +557,43 @@ const styles = StyleSheet.create({
   followBadgeActive: {
     backgroundColor: '#3A3A3A',
   },
+  followBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+    lineHeight: 14,
+  },
+  iconBackdrop: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBackdropLiked: {
+    backgroundColor: 'rgba(255,59,85,0.18)',
+    shadowColor: '#FF3B55',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.55,
+    shadowRadius: 10,
+  },
   railAction: {
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
+  },
+  iconShadow: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.8,
+    shadowRadius: 2,
+    elevation: 4,
   },
   railCount: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-    textShadowColor: 'rgba(0,0,0,0.6)',
+    fontSize: 12,
+    fontWeight: '600',
+    textShadowColor: 'rgba(0,0,0,0.7)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
   },
@@ -593,21 +682,34 @@ const styles = StyleSheet.create({
   },
   price: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '900',
     textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
+  pricePill: {
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
   ctaButton: {
-    minHeight: 38,
-    borderRadius: 19,
+    minHeight: 42,
+    borderRadius: 21,
     paddingHorizontal: 18,
-    backgroundColor: lightBrown,
+    backgroundColor: '#A67C52',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    shadowColor: '#A67C52',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 4,
   },
   ctaButtonGhost: {
     backgroundColor: 'rgba(166,124,82,0.75)',
