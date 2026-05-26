@@ -59,9 +59,10 @@ const MAPPING = {
   'calendar': 'calendar-today',
   'calendar.fill': 'calendar-today',
   
-  // Search
+  // Search & Filter
   'magnifyingglass': 'search',
   'magnifyingglass.fill': 'search',
+  'line.3.horizontal.decrease.circle': 'filter-list-alt',
   
   // Security & Admin
   'shield.fill': 'security',
@@ -111,6 +112,7 @@ const MAPPING = {
   'arrowshape.turn.up.right': 'share',
   'exclamationmark.bubble.fill': 'report',
   'exclamationmark.bubble': 'report',
+  'bubble': 'chat-bubble-outline',
   
   // Status & Indicators
   'checkmark.circle.fill': 'check-circle',
@@ -184,6 +186,9 @@ const MAPPING = {
   'storefront.fill': 'store',
   'storefront': 'store',
   'link': 'link',
+  'bookmark.fill': 'bookmark',
+  'bookmark': 'bookmark-border',
+  'bookmark.slash.fill': 'bookmark-remove',
   
   // Transportation
   'bus': 'directions-bus',
@@ -258,9 +263,5 @@ export function IconSymbol({
     return <MaterialIcons color={color} size={size} name="help" style={style} />;
   }
   
-  // For outline icons (without .fill), use reduced opacity to simulate outline effect
-  const isOutline = !name.includes('.fill');
-  const iconOpacity = isOutline ? 0.6 : 1;
-
-  return <MaterialIcons color={color} size={size} name={iconName} style={[{ opacity: iconOpacity }, style]} />;
+  return <MaterialIcons color={color} size={size} name={iconName} style={style} />;
 }

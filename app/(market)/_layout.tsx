@@ -86,12 +86,12 @@ export default function MarketTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="following"
+        name="messages"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol
               size={24}
-              name={focused ? 'person.2.fill' : 'person.2'}
+              name={focused ? 'message.fill' : 'message'}
               color={focused ? colors.primary : colors.textSecondary}
             />
           ),
@@ -110,12 +110,12 @@ export default function MarketTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="messages"
+        name="saved"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol
               size={24}
-              name={focused ? 'message.fill' : 'message'}
+              name={focused ? 'bookmark.fill' : 'bookmark'}
               color={focused ? colors.primary : colors.textSecondary}
             />
           ),

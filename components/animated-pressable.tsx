@@ -1,8 +1,7 @@
-// Enhanced pressable component with smooth animations
-import { TouchableOpacity, TouchableOpacityProps, Animated, ViewStyle } from 'react-native';
-import { ReactNode, useRef, useEffect } from 'react';
+import { Pressable, PressableProps, Animated, ViewStyle } from 'react-native';
+import { ReactNode, useRef } from 'react';
 
-interface AnimatedPressableProps extends Omit<TouchableOpacityProps, 'style'> {
+interface AnimatedPressableProps extends Omit<PressableProps, 'style'> {
   children: ReactNode;
   style?: ViewStyle | ViewStyle[];
   scaleValue?: number;
@@ -24,7 +23,8 @@ export function AnimatedPressable({
     Animated.spring(scale, {
       toValue: scaleValue,
       useNativeDriver: true,
-      friction: 3,
+      tension: 150, // Faster tension
+      friction: 5,
     }).start();
     onPressIn?.(e);
   };
@@ -33,21 +33,21 @@ export function AnimatedPressable({
     Animated.spring(scale, {
       toValue: 1,
       useNativeDriver: true,
-      friction: 3,
+      tension: 150,
+      friction: 5,
     }).start();
     onPressOut?.(e);
   };
 
   return (
     <Animated.View style={[{ transform: [{ scale }] }, animatedStyle]}>
-      <TouchableOpacity
+      <Pressable
         {...props}
         style={style}
         onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        activeOpacity={0.9}>
+        onPressOut={handlePressOut}>
         {children}
-      </TouchableOpacity>
+      </Pressable>
     </Animated.View>
   );
 }

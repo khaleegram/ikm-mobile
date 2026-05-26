@@ -19,18 +19,18 @@ const CENTER_BUTTON_OFFSET = 12;
 const NOTCH_DEPTH = 22;
 const IOS_MARKET_BOTTOM_GAP = 6;
 const lightBrown = '#A67C52';
-const MARKET_TABS_ORDER = ['index', 'following', 'create-post', 'messages', 'profile'] as const;
+const MARKET_TABS_ORDER = ['index', 'messages', 'create-post', 'saved', 'profile'] as const;
 type MarketTabName = (typeof MARKET_TABS_ORDER)[number];
 const MARKET_LABELS: Record<(typeof MARKET_TABS_ORDER)[number], string> = {
   index: 'Home',
-  following: 'Following',
+  saved: 'Saved',
   'create-post': 'Add',
   messages: 'Inbox',
   profile: 'Profile',
 };
 const MARKET_ICONS: Record<MarketTabName, { focused: IconSymbolName; unfocused: IconSymbolName }> = {
   index: { focused: 'house.fill', unfocused: 'house' },
-  following: { focused: 'person.2.fill', unfocused: 'person.2' },
+  saved: { focused: 'bookmark.fill', unfocused: 'bookmark' },
   'create-post': { focused: 'plus.circle.fill', unfocused: 'plus.circle' },
   messages: { focused: 'message.fill', unfocused: 'message' },
   profile: { focused: 'person.fill', unfocused: 'person' },
@@ -47,7 +47,7 @@ const SELLER_ICONS: Record<
 
 function getMarketTabName(routeName: string): MarketTabName | null {
   if (routeName === 'index') return 'index';
-  if (routeName === 'following') return 'following';
+  if (routeName === 'saved') return 'saved';
   if (routeName === 'create-post') return 'create-post';
   if (routeName === 'profile') return 'profile';
   if (routeName === 'messages' || routeName.startsWith('messages/')) return 'messages';
@@ -165,20 +165,32 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
               : { backgroundColor: colors.card, borderColor: colors.border },
           ]}>
           {isImmersiveMarketFeed && Platform.OS === 'ios' ? (
-            <BlurView intensity={35} tint="dark" style={styles.marketBarBlur} />
+            <BlurView intensity={55} tint="dark" style={styles.marketBarBlur} />
           ) : null}
           {marketVisibleTabs.map(({ route, index, name }) => {
             const isFocused = isRouteFocused(route.key);
             const isAddButton = name === 'create-post';
             const fallbackIcon = MARKET_ICONS[name];
             const baseTabColor = isImmersiveMarketFeed
-              ? isFocused
-                ? '#FFFFFF'
-                : 'rgba(255,255,255,0.74)'
-              : isFocused
-              ? focusedAccentColor
-              : colors.textSecondary;
+              ? isFocused ? '#FFFFFF' : 'rgba(255,255,255,0.45)'
+              : isFocused ? focusedAccentColor : colors.textSecondary;
             const iconColor = isAddButton ? '#FFFFFF' : baseTabColor;
+
+            if (isAddButton) {
+              return (
+                <TouchableOpacity
+                  key={route.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={descriptors[route.key]?.options?.tabBarAccessibilityLabel}
+                  onPress={() => handleTabPress(route, index)}
+                  style={styles.marketAddTabButton}
+                  activeOpacity={0.8}>
+                  <View style={styles.addButtonInner}>
+                    <IconSymbol size={22} name="plus" color="#FFFFFF" />
+                  </View>
+                </TouchableOpacity>
+              );
+            }
 
             return (
               <TouchableOpacity
@@ -187,24 +199,19 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
                 accessibilityState={isFocused ? { selected: true } : {}}
                 accessibilityLabel={descriptors[route.key]?.options?.tabBarAccessibilityLabel}
                 onPress={() => handleTabPress(route, index)}
-                style={[
-                  styles.marketTabButton,
-                  isAddButton && styles.marketAddTabButton,
-                  isAddButton && { backgroundColor: lightBrown },
-                ]}>
+                style={styles.marketTabButton}>
                 <View style={styles.marketTabInner}>
                   <IconSymbol
-                    size={isAddButton ? 22 : 24}
+                    size={23}
                     name={isFocused ? fallbackIcon.focused : fallbackIcon.unfocused}
                     color={iconColor}
                   />
-                  <Text
-                    style={[
-                      styles.marketTabLabel,
-                      { color: iconColor },
-                    ]}>
-                    {MARKET_LABELS[name]}
-                  </Text>
+                  {isFocused && (
+                    <View style={[
+                      styles.glowDot,
+                      { backgroundColor: isImmersiveMarketFeed ? '#FFFFFF' : focusedAccentColor }
+                    ]} />
+                  )}
                 </View>
               </TouchableOpacity>
             );
@@ -365,15 +372,28 @@ const styles = StyleSheet.create({
   marketTabInner: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 1,
+    gap: 4,
   },
-  marketTabLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    lineHeight: 12,
+  glowDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
   },
   marketAddTabButton: {
     marginHorizontal: 4,
+  },
+  addButtonInner: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#A67C52',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#A67C52',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.45,
+    shadowRadius: 8,
+    elevation: 6,
   },
   container: {
     width: '100%',
