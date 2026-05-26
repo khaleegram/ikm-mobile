@@ -662,3 +662,55 @@ export function subscribeToMarketPosts(onPostsUpdate: (posts: MarketPost[]) => v
     }
   );
 }
+
+export function useMarketPostsByIds(postIds: string[], maxItems: number = 20) {
+  const [posts, setPosts] = useState<MarketPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const validIds = Array.from(new Set(postIds.filter(Boolean))).slice(0, 10); // Firestore max IN clause is 10
+    
+    if (validIds.length === 0) {
+      setPosts([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    const q = query(
+      collection(firestore, 'marketPosts'),
+      where('__name__', 'in', validIds),
+      limit(maxItems)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const results: MarketPost[] = [];
+        snapshot.forEach((docSnap) => {
+          results.push(normalizeMarketPostRecord(docSnap.id, docSnap.data()));
+        });
+        
+        // Preserve order from input postIds
+        const orderedResults = validIds
+          .map(id => results.find(p => p.id === id))
+          .filter((p): p is MarketPost => p !== undefined);
+          
+        setPosts(orderedResults);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Error fetching market posts by IDs:', err);
+        setError(err as Error);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [postIds, maxItems]);
+
+  return { posts, loading, error };
+}
