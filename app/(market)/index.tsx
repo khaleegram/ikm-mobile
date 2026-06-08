@@ -17,9 +17,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { showToast } from '@/components/toast';
 import { useMarketPosts } from '@/lib/firebase/firestore/market-posts';
+import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
+import { FeedSocialProvider } from '@/lib/context/feed-social-context';
+import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
 import { FeedCard } from '@/components/market/feed-card';
 import { FlashListCompat } from '@/components/layout/flash-list-compat';
-import { SellerStoriesRow } from '@/components/market/seller-stories-row';
 import { MarketPost } from '@/types';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { firestore } from '@/lib/firebase/config';
@@ -43,9 +45,10 @@ export default function MarketFeedScreen() {
   const { user } = useUser();
   const { user: profile } = useUserProfile(user?.uid || null);
   const { posts, loading, error, loadMore, hasMore, refresh } = useMarketPosts();
+  const { idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
+  const { idSet: savedIdSet } = useUserSavedPostIds(user?.uid || null);
   const [refreshing, setRefreshing] = React.useState(false);
   const viewportHeight = Math.max(1, Math.round(windowHeight));
-  const [activePostId, setActivePostId] = React.useState<string | null>(null);
   const flatListRef = useRef<any>(null);
   const isProgrammaticSnapRef = useRef(false);
   const activeIndexRef = useRef(0);
@@ -56,7 +59,7 @@ export default function MarketFeedScreen() {
     const firstVisible = viewableItems?.[0]?.item as MarketPost | undefined;
     const firstIndex = Number(viewableItems?.[0]?.index || 0);
     if (Number.isFinite(firstIndex)) activeIndexRef.current = Math.max(0, firstIndex);
-    setActivePostId(firstVisible?.id || null);
+    setFeedActivePostId(firstVisible?.id || null, firstIndex);
   }).current;
 
   useFocusEffect(
@@ -187,15 +190,13 @@ export default function MarketFeedScreen() {
     [settleToNearestPost]
   );
 
+  useFeedMediaPrefetch(posts);
+
   const renderItem = useCallback(
-    ({ item }: { item: MarketPost }) => (
-      <FeedCard
-        post={item}
-        itemHeight={viewportHeight}
-        isActive={item.id === activePostId}
-      />
+    ({ item, index }: { item: MarketPost; index: number }) => (
+      <FeedCard post={item} itemHeight={viewportHeight} index={index} />
     ),
-    [activePostId, viewportHeight]
+    [viewportHeight]
   );
 
   const keyExtractor = useCallback(
@@ -205,10 +206,12 @@ export default function MarketFeedScreen() {
 
   React.useEffect(() => {
     if (!posts.length) {
-      setActivePostId(null);
+      setFeedActivePostId(null);
       return;
     }
-    setActivePostId((current) => current || posts[0]?.id || null);
+    if (!getFeedActivePostId()) {
+      setFeedActivePostId(posts[0]?.id || null);
+    }
   }, [posts]);
 
   const getItemLayout = useCallback(
@@ -283,6 +286,7 @@ export default function MarketFeedScreen() {
   }
 
   return (
+    <FeedSocialProvider followingIdSet={followingIdSet} savedIdSet={savedIdSet}>
     <View style={styles.container}>
       <StatusBar barStyle="light-content" translucent />
 
@@ -290,7 +294,6 @@ export default function MarketFeedScreen() {
         key={`market-feed-${viewportHeight}`}
         ref={flatListRef}
         data={posts}
-        extraData={`${activePostId || ''}-${viewportHeight}`}
         renderItem={renderItem}
         keyExtractor={keyExtractor}
         estimatedItemSize={viewportHeight}
@@ -318,11 +321,11 @@ export default function MarketFeedScreen() {
           />
         }
         getItemLayout={getItemLayout}
-        removeClippedSubviews={false}
-        maxToRenderPerBatch={3}
-        windowSize={5}
-        initialNumToRender={3}
-        updateCellsBatchingPeriod={50}
+        removeClippedSubviews={Platform.OS === 'android'}
+        maxToRenderPerBatch={2}
+        windowSize={3}
+        initialNumToRender={2}
+        updateCellsBatchingPeriod={32}
         ListFooterComponent={
           loading && posts.length > 0 ? (
             <View style={[styles.footerLoader, { height: viewportHeight }]}>
@@ -334,6 +337,7 @@ export default function MarketFeedScreen() {
 
       {renderHomeAppBar()}
     </View>
+    </FeedSocialProvider>
   );
 }
 

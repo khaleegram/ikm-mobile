@@ -11,10 +11,11 @@ import { Image } from 'expo-image';
 import { useIsFocused } from '@react-navigation/native';
 import { MarketPost } from '@/types';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostLikes } from '@/lib/firebase/firestore/market-posts';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { haptics } from '@/lib/utils/haptics';
-import { isVideoMarketPost } from '@/lib/utils/market-media';
+import { getMarketPostPrimaryImage, isVideoMarketPost } from '@/lib/utils/market-media';
+import { useIsFeedItemActive, useShouldMountMedia } from '@/lib/hooks/use-feed-active-post';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { MarketVideoSurface } from './market-video-surface';
 import { PostOverlay } from './post-overlay';
 
@@ -22,23 +23,23 @@ const { width, height } = Dimensions.get('window');
 const viewedPostIds = new Set<string>();
 
 function CapsuleDot({ active }: { active: boolean }) {
-  const widthAnim = useRef(new Animated.Value(active ? 18 : 6)).current;
+  const scaleAnim = useRef(new Animated.Value(active ? 1 : 0.33)).current;
 
   useEffect(() => {
-    Animated.spring(widthAnim, {
-      toValue: active ? 18 : 6,
-      useNativeDriver: false,
+    Animated.spring(scaleAnim, {
+      toValue: active ? 1 : 0.33,
+      useNativeDriver: true,
       tension: 280,
       friction: 20,
     }).start();
-  }, [active, widthAnim]);
+  }, [active, scaleAnim]);
 
   return (
     <Animated.View
       style={[
         styles.capsuleDot,
         {
-          width: widthAnim,
+          transform: [{ scaleX: scaleAnim }],
           backgroundColor: active ? '#FFFFFF' : 'rgba(255,255,255,0.38)',
         },
       ]}
@@ -50,6 +51,7 @@ interface FeedCardProps {
   post: MarketPost;
   itemHeight?: number;
   isActive?: boolean;
+  index?: number;
   onComment?: () => void;
   onShare?: () => void;
 }
@@ -57,18 +59,53 @@ interface FeedCardProps {
 export const FeedCard = React.memo(function FeedCard({
   post,
   itemHeight,
-  isActive = false,
+  isActive: isActiveProp,
+  index,
   onComment,
   onShare,
 }: FeedCardProps) {
   const { user } = useUser();
-  const { likes, isLiked } = useMarketPostLikes(post.id || null, user?.uid || null);
+  const isActiveFromStore = useIsFeedItemActive(post.id);
+  const shouldMountFromStore = useShouldMountMedia(index);
+  const isActive = isActiveProp ?? isActiveFromStore;
+  const shouldMountMedia = isActiveProp ?? shouldMountFromStore;
   const isFocused = useIsFocused();
   const [isPaused, setIsPaused] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const scrollViewRef = useRef<ScrollView>(null);
-  const likeScaleAnim = useRef(new Animated.Value(1)).current;
-  const [isLiking, setIsLiking] = useState(false);
+
+  const serverLikes = post.likes ?? 0;
+  const serverIsLiked = user?.uid ? (post.likedBy ?? []).includes(user.uid) : false;
+  const [optimisticLike, setOptimisticLike] = useState<{ isLiked: boolean; likes: number } | null>(null);
+
+  const likes = optimisticLike?.likes ?? serverLikes;
+  const isLiked = optimisticLike?.isLiked ?? serverIsLiked;
+
+  const optimisticLikeRef = useRef(optimisticLike);
+  optimisticLikeRef.current = optimisticLike;
+  const lastServerLikedRef = useRef(serverIsLiked);
+  const likeSyncingRef = useRef(false);
+  const likeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLikeTapAtRef = useRef(0);
+  const userRef = useRef(user);
+  userRef.current = user;
+  const postIdRef = useRef(post.id);
+  postIdRef.current = post.id;
+
+  const LIKE_TAP_COOLDOWN_MS = 450;
+  const LIKE_SYNC_DELAY_MS = 400;
+
+  useEffect(() => {
+    lastServerLikedRef.current = serverIsLiked;
+    if (
+      optimisticLike &&
+      optimisticLike.isLiked === serverIsLiked &&
+      optimisticLike.likes === serverLikes
+    ) {
+      setOptimisticLike(null);
+    }
+  }, [serverIsLiked, serverLikes, optimisticLike]);
+
   const cardHeight = itemHeight ?? height;
   const isVideo = isVideoMarketPost(post);
   const aspectRatio =
@@ -79,54 +116,70 @@ export const FeedCard = React.memo(function FeedCard({
     ? Math.min(cardHeight, width / aspectRatio)
     : cardHeight;
 
-  const handleLike = useCallback(async () => {
-    if (!user) {
-      return; // PostOverlay will handle login prompt
-    }
+  const syncLikeToServer = useCallback(async () => {
+    const postId = postIdRef.current;
+    if (!postId || likeSyncingRef.current) return;
 
-    if (isLiking) return;
+    const desired = optimisticLikeRef.current?.isLiked ?? lastServerLikedRef.current;
+    if (desired === lastServerLikedRef.current) return;
 
-    setIsLiking(true);
-    haptics.light();
-
-    // Animate like button
-    Animated.sequence([
-      Animated.spring(likeScaleAnim, {
-        toValue: 1.3,
-        useNativeDriver: true,
-        tension: 300,
-        friction: 3,
-      }),
-      Animated.spring(likeScaleAnim, {
-        toValue: 1,
-        useNativeDriver: true,
-        tension: 300,
-        friction: 3,
-      }),
-    ]).start();
-
+    likeSyncingRef.current = true;
     try {
-      await marketPostsApi.like(post.id!);
+      const result = await marketPostsApi.like(postId);
+      lastServerLikedRef.current = result.isLiked;
+      const next = { isLiked: result.isLiked, likes: result.likes };
+      optimisticLikeRef.current = next;
+      setOptimisticLike(next);
     } catch (error: any) {
       console.error('Error liking post:', error);
+      optimisticLikeRef.current = null;
+      setOptimisticLike(null);
       haptics.error();
     } finally {
-      setIsLiking(false);
+      likeSyncingRef.current = false;
     }
-  }, [user, post.id, isLiking, likeScaleAnim]);
+  }, []);
+
+  const handleLike = useCallback(() => {
+    if (!userRef.current) return;
+
+    const now = Date.now();
+    if (now - lastLikeTapAtRef.current < LIKE_TAP_COOLDOWN_MS) return;
+    if (likeSyncingRef.current) return;
+
+    lastLikeTapAtRef.current = now;
+
+    const current = optimisticLikeRef.current ?? {
+      isLiked: lastServerLikedRef.current,
+      likes: serverLikes,
+    };
+    const nextLiked = !current.isLiked;
+    const nextLikes = Math.max(0, current.likes + (nextLiked ? 1 : -1));
+    const next = { isLiked: nextLiked, likes: nextLikes };
+    optimisticLikeRef.current = next;
+    setOptimisticLike(next);
+    haptics.light();
+
+    if (likeSyncTimerRef.current) clearTimeout(likeSyncTimerRef.current);
+    likeSyncTimerRef.current = setTimeout(() => {
+      likeSyncTimerRef.current = null;
+      syncLikeToServer();
+    }, LIKE_SYNC_DELAY_MS);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncLikeToServer, serverLikes]);
+
+  useEffect(() => {
+    return () => {
+      if (likeSyncTimerRef.current) clearTimeout(likeSyncTimerRef.current);
+    };
+  }, []);
 
   const handleComment = useCallback(() => {
-    if (onComment) {
-      onComment();
-    } else {
-      // PostOverlay will handle navigation
-    }
+    onComment?.();
   }, [onComment]);
 
   const handleShare = useCallback(() => {
-    if (onShare) {
-      onShare();
-    }
+    onShare?.();
   }, [onShare]);
 
   const handleImageScroll = useCallback((event: any) => {
@@ -135,8 +188,7 @@ export const FeedCard = React.memo(function FeedCard({
     setCurrentImageIndex(index);
   }, []);
 
-  // Increment views when card is displayed (only once)
-  React.useEffect(() => {
+  useEffect(() => {
     if (!post.id) return;
     if (viewedPostIds.has(post.id)) return;
 
@@ -144,37 +196,52 @@ export const FeedCard = React.memo(function FeedCard({
       if (viewedPostIds.has(post.id!)) return;
       viewedPostIds.add(post.id!);
       marketPostsApi.incrementViews(post.id!).catch((error) => {
-        // Silently fail for view increments
         console.warn('Failed to increment views:', error);
       });
-    }, 1000); // Delay to avoid spamming on fast scrolling
+    }, 1000);
 
     return () => clearTimeout(timer);
   }, [post.id]);
 
+  const imageRenderStart = Math.max(0, currentImageIndex - 1);
+  const imageRenderEnd = Math.min(post.images.length - 1, currentImageIndex + 1);
+  const posterUri = getMarketPostPrimaryImage(post);
+
   return (
     <View style={[styles.container, { width, height: cardHeight }]}>
       {isVideo && post.videoUrl ? (
-        <TouchableOpacity 
+        <TouchableOpacity
           activeOpacity={1}
           style={[styles.videoFrame, { height: computedVideoHeight }]}
-          onPress={() => setIsPaused(!isPaused)}>
-          <MarketVideoSurface
-            active={isActive && isFocused && !isPaused}
-            videoUri={post.videoUrl}
-            externalSoundUri={
-              post.soundMeta?.sourceType === 'original'
-                ? undefined
-                : post.soundMeta?.sourceUri
-                  ? post.soundMeta.sourceUri
-                  : undefined
-            }
-            externalSoundVolume={post.soundMeta?.soundVolume}
-            originalAudioVolume={post.soundMeta?.originalAudioVolume}
-            soundStartMs={post.soundMeta?.startMs}
-            useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
-          />
-          {isPaused && (
+          onPress={() => shouldMountMedia && setIsPaused(!isPaused)}>
+          {shouldMountMedia ? (
+            <MarketVideoSurface
+              active={isActive && isFocused && !isPaused}
+              videoUri={post.videoUrl}
+              externalSoundUri={
+                post.soundMeta?.sourceType === 'original'
+                  ? undefined
+                  : post.soundMeta?.sourceUri
+                    ? post.soundMeta.sourceUri
+                    : undefined
+              }
+              externalSoundVolume={post.soundMeta?.soundVolume}
+              originalAudioVolume={post.soundMeta?.originalAudioVolume}
+              soundStartMs={post.soundMeta?.startMs}
+              useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
+            />
+          ) : posterUri ? (
+            <Image
+              source={{ uri: posterUri }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              recyclingKey={`poster-${post.id}`}
+            />
+          ) : (
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000' }]} />
+          )}
+          {isPaused && shouldMountMedia && (
             <View style={styles.pauseOverlay}>
               <IconSymbol name="play.rectangle.fill" size={60} color="rgba(255,255,255,0.8)" />
             </View>
@@ -188,22 +255,32 @@ export const FeedCard = React.memo(function FeedCard({
           showsHorizontalScrollIndicator={false}
           onMomentumScrollEnd={handleImageScroll}
           style={styles.imageScrollView}>
-          {post.images.map((imageUri, index) => (
-            <Image
-              key={`${post.id}-${index}`}
-              source={{ uri: imageUri }}
-              style={[styles.image, { height: cardHeight }]}
-              contentFit="cover"
-              transition={200}
-              placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
-              cachePolicy="memory-disk"
-              recyclingKey={`${post.id}-${index}`}
-            />
-          ))}
+          {post.images.map((imageUri, index) => {
+            if (index < imageRenderStart || index > imageRenderEnd) {
+              return (
+                <View
+                  key={`${post.id}-${index}`}
+                  style={[styles.image, { height: cardHeight, backgroundColor: '#111' }]}
+                />
+              );
+            }
+            return (
+              <Image
+                key={`${post.id}-${index}`}
+                source={{ uri: imageUri }}
+                style={[styles.image, { height: cardHeight }]}
+                contentFit="cover"
+                transition={120}
+                placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
+                cachePolicy="memory-disk"
+                recyclingKey={`${post.id}-${index}`}
+                priority={index === currentImageIndex ? 'high' : 'normal'}
+              />
+            );
+          })}
         </ScrollView>
       )}
 
-      {/* Animated capsule pagination */}
       {!isVideo && post.images.length > 1 && (
         <View style={styles.paginationContainer}>
           {post.images.map((_, index) => (
@@ -212,7 +289,6 @@ export const FeedCard = React.memo(function FeedCard({
         </View>
       )}
 
-      {/* Post Overlay */}
       <PostOverlay
         post={post}
         likes={likes}
@@ -220,20 +296,23 @@ export const FeedCard = React.memo(function FeedCard({
         onLike={handleLike}
         onComment={handleComment}
         onShare={handleShare}
-        likeScaleAnim={likeScaleAnim}
       />
     </View>
   );
 }, (prevProps, nextProps) => {
-  // Custom comparison for memoization
+  const prevLiked =
+    prevProps.post.likedBy?.length ?? 0;
+  const nextLiked =
+    nextProps.post.likedBy?.length ?? 0;
+
   return (
     prevProps.post.id === nextProps.post.id &&
     prevProps.itemHeight === nextProps.itemHeight &&
-    prevProps.isActive === nextProps.isActive &&
     prevProps.post.likes === nextProps.post.likes &&
     prevProps.post.comments === nextProps.post.comments &&
     prevProps.post.images.length === nextProps.post.images.length &&
-    prevProps.post.videoUrl === nextProps.post.videoUrl
+    prevProps.post.videoUrl === nextProps.post.videoUrl &&
+    prevLiked === nextLiked
   );
 });
 
@@ -273,6 +352,7 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   capsuleDot: {
+    width: 18,
     height: 6,
     borderRadius: 3,
   },

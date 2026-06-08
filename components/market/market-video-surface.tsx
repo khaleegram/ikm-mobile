@@ -20,7 +20,7 @@ function clampUnitVolume(value: number | undefined, fallback: number): number {
   return Math.max(0, Math.min(1, Number(value)));
 }
 
-export function MarketVideoSurface({
+export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   active,
   externalSoundUri,
   externalSoundVolume,
@@ -94,7 +94,7 @@ export function MarketVideoSurface({
       />
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {

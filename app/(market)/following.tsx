@@ -9,7 +9,9 @@ import { FlashListCompat } from '@/components/layout/flash-list-compat';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPostsByPosterIds } from '@/lib/firebase/firestore/market-posts';
-import { useBlockedUserIds, useFollowingUserIds } from '@/lib/firebase/firestore/market-social';
+import { useBlockedUserIds, useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
+import { FeedSocialProvider } from '@/lib/context/feed-social-context';
+import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
 import { getMarketBranding } from '@/lib/market-branding';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
@@ -23,7 +25,8 @@ export default function FollowingScreen() {
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { ids: followingIds, loading: followsLoading } = useFollowingUserIds(user?.uid || null);
+  const { ids: followingIds, idSet: followingIdSet, loading: followsLoading } = useFollowingUserIds(user?.uid || null);
+  const { idSet: savedIdSet } = useUserSavedPostIds(user?.uid || null);
   const { idSet: blockedIdSet } = useBlockedUserIds(user?.uid || null);
   const { posts, loading: postsLoading, error } = useMarketPostsByPosterIds(followingIds, 120);
 
@@ -31,7 +34,6 @@ export default function FollowingScreen() {
     return posts.filter((post) => !blockedIdSet.has(String(post.posterId || '')));
   }, [blockedIdSet, posts]);
 
-  const [activePostId, setActivePostId] = React.useState<string | null>(null);
   const viewportHeight = Math.max(1, Math.round(windowHeight));
   const [refreshing, setRefreshing] = React.useState(false);
   const flatListRef = useRef<any>(null);
@@ -41,7 +43,7 @@ export default function FollowingScreen() {
     const firstVisible = viewableItems?.[0]?.item;
     const firstIndex = Number(viewableItems?.[0]?.index || 0);
     if (Number.isFinite(firstIndex)) activeIndexRef.current = Math.max(0, firstIndex);
-    setActivePostId(firstVisible?.id || null);
+    setFeedActivePostId(firstVisible?.id || null, firstIndex);
   }).current;
 
   useFocusEffect(
@@ -62,16 +64,22 @@ export default function FollowingScreen() {
     setTimeout(() => setRefreshing(false), 800);
   };
 
+  useFeedMediaPrefetch(visiblePosts);
+
   const renderItem = useCallback(
-    ({ item }: any) => (
-      <FeedCard
-        post={item}
-        itemHeight={viewportHeight}
-        isActive={item.id === activePostId}
-      />
-    ),
-    [activePostId, viewportHeight]
+    ({ item, index }: any) => <FeedCard post={item} itemHeight={viewportHeight} index={index} />,
+    [viewportHeight]
   );
+
+  React.useEffect(() => {
+    if (!visiblePosts.length) {
+      setFeedActivePostId(null);
+      return;
+    }
+    if (!getFeedActivePostId()) {
+      setFeedActivePostId(visiblePosts[0]?.id || null);
+    }
+  }, [visiblePosts]);
 
   const keyExtractor = useCallback((item: any) => buildMarketPostStableKey(item), []);
   const getItemLayout = useCallback(
@@ -153,6 +161,7 @@ export default function FollowingScreen() {
           </TouchableOpacity>
         </View>
       ) : (
+        <FeedSocialProvider followingIdSet={followingIdSet} savedIdSet={savedIdSet}>
         <View style={{ flex: 1, backgroundColor: '#000' }}>
           <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 6 }]}>
             <Text style={styles.headerSuper}>{marketBrand.headerLine}</Text>
@@ -162,7 +171,6 @@ export default function FollowingScreen() {
             key={`following-feed-${viewportHeight}`}
             ref={flatListRef}
             data={visiblePosts}
-            extraData={`${activePostId || ''}-${viewportHeight}`}
             renderItem={renderItem}
             keyExtractor={keyExtractor}
             estimatedItemSize={viewportHeight}
@@ -178,7 +186,10 @@ export default function FollowingScreen() {
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
             getItemLayout={getItemLayout}
-            removeClippedSubviews={false}
+            removeClippedSubviews
+            maxToRenderPerBatch={2}
+            windowSize={3}
+            initialNumToRender={2}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -189,6 +200,7 @@ export default function FollowingScreen() {
             }
           />
         </View>
+        </FeedSocialProvider>
       )}
     </View>
   );

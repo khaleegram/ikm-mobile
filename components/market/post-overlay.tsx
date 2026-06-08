@@ -1,9 +1,10 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Alert, Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Circle, Path } from 'react-native-svg';
 
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { CommentsSheet } from '@/components/market/comments-sheet';
@@ -14,9 +15,10 @@ import { showToast } from '@/components/toast';
 import { buildDirectConversationId, marketMessagesApi } from '@/lib/api/market-messages';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { marketSocialApi } from '@/lib/api/market-social';
+import { useFeedSocial } from '@/lib/context/feed-social-context';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useIsFollowing, useIsSaved, toggleMarketSave } from '@/lib/firebase/firestore/market-social';
-import { usePublicUserProfile } from '@/lib/firebase/firestore/users';
+import { toggleMarketSave, useIsFollowing, useIsSaved } from '@/lib/firebase/firestore/market-social';
+import { usePublicUserProfileOnce } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import { getMarketPostPrimaryImage } from '@/lib/utils/market-media';
@@ -26,6 +28,55 @@ import { MarketPost } from '@/types';
 const lightBrown = '#A67C52';
 const TAB_BAR_CLEARANCE = 88;
 
+interface LucideIconProps {
+  name: 'Heart' | 'MessageCircle' | 'Bookmark' | 'Send' | 'Ellipsis';
+  size?: number;
+  color?: string;
+  fill?: string;
+}
+
+function LucideIcon({ name, size = 20, color = '#FFFFFF', fill = 'none' }: LucideIconProps) {
+  if (name === 'Heart') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
+      </Svg>
+    );
+  }
+  if (name === 'MessageCircle') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />
+      </Svg>
+    );
+  }
+  if (name === 'Bookmark') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" />
+      </Svg>
+    );
+  }
+  if (name === 'Send') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Path d="m22 2-7 20-4-9-9-4Z" />
+        <Path d="M22 2 11 13" />
+      </Svg>
+    );
+  }
+  if (name === 'Ellipsis') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Circle cx={12} cy={12} r={1} fill={color} />
+        <Circle cx={19} cy={12} r={1} fill={color} />
+        <Circle cx={5} cy={12} r={1} fill={color} />
+      </Svg>
+    );
+  }
+  return null;
+}
+
 interface PostOverlayProps {
   post: MarketPost;
   likes: number;
@@ -34,22 +85,37 @@ interface PostOverlayProps {
   onComment?: () => void;
   onShare?: () => void;
   onAskForPrice?: () => void;
-  likeScaleAnim?: Animated.Value;
 }
 
-export function PostOverlay({
+function RailIconButton({
+  onPress,
+  children,
+  liked,
+}: {
+  onPress: () => void;
+  children: React.ReactNode;
+  liked?: boolean;
+}) {
+  return (
+    <AnimatedPressable style={styles.railAction} onPress={onPress} scaleValue={0.88}>
+      <View style={[styles.buttonContainer, liked && styles.iconBackdropLiked]}>
+        {children}
+      </View>
+    </AnimatedPressable>
+  );
+}
+
+export const PostOverlay = React.memo(function PostOverlay({
   post,
   likes,
   isLiked,
   onLike,
   onAskForPrice,
-  likeScaleAnim,
 }: PostOverlayProps) {
   const { user } = useUser();
+  const { enabled: feedSocialEnabled, followingIdSet, savedIdSet } = useFeedSocial();
   const insets = useSafeAreaInsets();
-  const { user: poster } = usePublicUserProfile(post.posterId);
-  const defaultAnim = useRef(new Animated.Value(1)).current;
-  const animValue = likeScaleAnim || defaultAnim;
+  const { user: poster } = usePublicUserProfileOnce(post.posterId);
   const isOwnPost = user?.uid === post.posterId;
   const marketLoginRoute = getLoginRouteForVariant('market');
   const [manageVisible, setManageVisible] = useState(false);
@@ -58,16 +124,38 @@ export function PostOverlay({
   const [isDeleting, setIsDeleting] = useState(false);
   const [followPending, setFollowPending] = useState(false);
   const [optimisticFollowing, setOptimisticFollowing] = useState<boolean | null>(null);
+  const [optimisticSaved, setOptimisticSaved] = useState<boolean | null>(null);
   const openingChatRef = useRef(false);
-  const { isFollowing } = useIsFollowing(user?.uid ?? null, post.posterId ?? null);
-  const { isSaved } = useIsSaved(user?.uid ?? null, post.id);
+  const posterId = String(post.posterId || '').trim();
+  const postId = String(post.id || '').trim();
+  const { isFollowing: hookIsFollowing } = useIsFollowing(
+    feedSocialEnabled ? null : (user?.uid ?? null),
+    feedSocialEnabled ? null : (post.posterId ?? null)
+  );
+  const { isSaved: hookIsSaved } = useIsSaved(
+    feedSocialEnabled ? null : (user?.uid ?? null),
+    feedSocialEnabled ? null : (post.id ?? null)
+  );
+  const isFollowing = feedSocialEnabled
+    ? (posterId ? followingIdSet.has(posterId) : false)
+    : hookIsFollowing;
+  const isSaved = feedSocialEnabled
+    ? (postId ? savedIdSet.has(postId) : false)
+    : hookIsSaved;
   const isEffectivelyFollowing = optimisticFollowing ?? isFollowing;
+  const isEffectivelySaved = optimisticSaved ?? isSaved;
 
   React.useEffect(() => {
     if (optimisticFollowing !== null && optimisticFollowing === isFollowing) {
       setOptimisticFollowing(null);
     }
   }, [isFollowing, optimisticFollowing]);
+
+  React.useEffect(() => {
+    if (optimisticSaved !== null && optimisticSaved === isSaved) {
+      setOptimisticSaved(null);
+    }
+  }, [isSaved, optimisticSaved]);
 
   const bottomClearance = TAB_BAR_CLEARANCE + Math.max(insets.bottom, 8);
 
@@ -90,10 +178,13 @@ export function PostOverlay({
       router.push(marketLoginRoute as any);
       return;
     }
+    const nextSaved = !isEffectivelySaved;
+    setOptimisticSaved(nextSaved);
     haptics.light();
     try {
       await toggleMarketSave(user.uid, post.id, isSaved);
     } catch (error) {
+      setOptimisticSaved(isSaved);
       console.error('Error toggling save state:', error);
       showToast('Failed to save post', 'error');
     }
@@ -335,48 +426,51 @@ export function PostOverlay({
         </View>
 
         {/* Like */}
-        <AnimatedPressable style={styles.railAction} onPress={onLike} scaleValue={0.88}>
-          <Animated.View style={[{ transform: [{ scale: animValue }] }, styles.iconShadow]}>
-            <IconSymbol
-              name={isLiked ? 'heart.fill' : 'heart'}
-              size={27}
-              color={isLiked ? '#FF3B55' : '#FFFFFF'}
-            />
-          </Animated.View>
-          <Text style={styles.railCount}>{likes > 999 ? `${(likes / 1000).toFixed(1)}k` : likes}</Text>
-        </AnimatedPressable>
+        <View style={styles.railAction}>
+          <TouchableOpacity
+            onPress={onLike}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <View style={[styles.buttonContainer, isLiked && styles.iconBackdropLiked]}>
+              <LucideIcon
+                name="Heart"
+                size={20}
+                color={isLiked ? '#FF3B55' : '#FFFFFF'}
+                fill={isLiked ? '#FF3B55' : 'none'}
+              />
+            </View>
+          </TouchableOpacity>
+          <Text style={styles.railLabel}>{likes > 999 ? `${(likes / 1000).toFixed(1)}k` : likes}</Text>
+        </View>
 
         {/* Comment */}
-        <AnimatedPressable style={styles.railAction} onPress={() => setCommentsVisible(true)} scaleValue={0.88}>
-          <View style={styles.iconShadow}>
-            <IconSymbol name="bubble" size={26} color="#FFFFFF" />
-          </View>
-          <Text style={styles.railCount}>{post.comments || 0}</Text>
-        </AnimatedPressable>
-
-        {/* Share */}
-        <AnimatedPressable style={styles.railAction} onPress={handleShare} scaleValue={0.88}>
-          <View style={styles.iconShadow}>
-            <IconSymbol name="paperplane" size={25} color="#FFFFFF" />
-          </View>
-        </AnimatedPressable>
+        <View style={styles.railAction}>
+          <RailIconButton onPress={() => setCommentsVisible(true)}>
+            <LucideIcon name="MessageCircle" size={20} color="#FFFFFF" />
+          </RailIconButton>
+          <Text style={styles.railLabel}>{post.comments || 0}</Text>
+        </View>
 
         {/* Save */}
-        <AnimatedPressable style={styles.railAction} onPress={handleSaveToggle} scaleValue={0.88}>
-          <View style={styles.iconShadow}>
-            <IconSymbol name={isSaved ? 'bookmark.fill' : 'bookmark'} size={25} color={isSaved ? '#A67C52' : '#FFFFFF'} />
-          </View>
-        </AnimatedPressable>
+        <RailIconButton onPress={handleSaveToggle}>
+          <LucideIcon
+            name="Bookmark"
+            size={20}
+            color="#FFFFFF"
+            fill={isEffectivelySaved ? '#FFFFFF' : 'none'}
+          />
+        </RailIconButton>
+
+        {/* Share */}
+        <RailIconButton onPress={handleShare}>
+          <LucideIcon name="Send" size={20} color="#FFFFFF" />
+        </RailIconButton>
 
         {/* More / Manage */}
-        <AnimatedPressable
-          style={styles.railAction}
-          onPress={() => isOwnPost ? setManageVisible(true) : setActionsVisible(true)}
-          scaleValue={0.88}>
-          <View style={styles.iconShadow}>
-            <IconSymbol name="ellipsis" size={22} color="#FFFFFF" />
-          </View>
-        </AnimatedPressable>
+        <RailIconButton
+          onPress={() => (isOwnPost ? setManageVisible(true) : setActionsVisible(true))}>
+          <LucideIcon name="Ellipsis" size={20} color="#FFFFFF" />
+        </RailIconButton>
       </View>
 
       {/* Left-side content */}
@@ -457,31 +551,45 @@ export function PostOverlay({
       </View>
 
       {/* Sheets */}
-      <CommentsSheet
-        postId={post.id ?? null}
-        visible={commentsVisible}
-        onClose={() => setCommentsVisible(false)}
-        totalComments={post.comments ?? 0}
-      />
+      {commentsVisible && (
+        <CommentsSheet
+          postId={post.id ?? null}
+          visible={commentsVisible}
+          onClose={() => setCommentsVisible(false)}
+          totalComments={post.comments ?? 0}
+        />
+      )}
 
-      <PostActionsSheet
-        visible={actionsVisible}
-        onClose={() => setActionsVisible(false)}
-        posterName={posterName}
-        actions={nonOwnActions}
-      />
+      {actionsVisible && (
+        <PostActionsSheet
+          visible={actionsVisible}
+          onClose={() => setActionsVisible(false)}
+          posterName={posterName}
+          actions={nonOwnActions}
+        />
+      )}
 
-      <PostManageSheet
-        visible={manageVisible}
-        onClose={() => setManageVisible(false)}
-        onEdit={handleEditPost}
-        onShare={handleShare}
-        onDelete={handleDeletePost}
-        deleting={isDeleting}
-      />
+      {manageVisible && (
+        <PostManageSheet
+          visible={manageVisible}
+          onClose={() => setManageVisible(false)}
+          onEdit={handleEditPost}
+          onShare={handleShare}
+          onDelete={handleDeletePost}
+          deleting={isDeleting}
+        />
+      )}
     </>
   );
-}
+}, (prev, next) =>
+  prev.post.id === next.post.id &&
+  prev.likes === next.likes &&
+  prev.isLiked === next.isLiked &&
+  prev.post.comments === next.post.comments &&
+  prev.post.posterId === next.post.posterId &&
+  prev.post.description === next.post.description &&
+  prev.post.price === next.post.price
+);
 
 const styles = StyleSheet.create({
   gradient: {
@@ -502,7 +610,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 10,
     alignItems: 'center',
-    gap: 18,
+    gap: 14,
     zIndex: 10,
   },
   avatarWrap: {
@@ -582,20 +690,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
-  iconShadow: {
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.8,
-    shadowRadius: 2,
-    elevation: 4,
+  buttonContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.42)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
   },
-  railCount: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '600',
-    textShadowColor: 'rgba(0,0,0,0.7)',
+  railLabel: {
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 10,
+    fontWeight: '900',
+    textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+    textShadowRadius: 1,
   },
   content: {
     position: 'absolute',
