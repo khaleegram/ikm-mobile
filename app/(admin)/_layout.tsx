@@ -6,20 +6,15 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { ActivityIndicator, Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { getAppVariant } from '@/lib/utils/app-variant';
-import { useConfirmedMissingMarketPhone } from '@/lib/hooks/use-phone-gate-settled';
-import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 
 const lightBrown = '#A67C52';
 
 export default function AdminTabLayout() {
   const { colors } = useTheme();
   const { user, loading } = useUser();
-  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid || null);
   const insets = useSafeAreaInsets();
-  const phoneReady = isMarketPhoneGateSatisfied(profile);
 
   // Admin lives inside the Seller app only.
   if (getAppVariant() !== 'seller') {
@@ -36,26 +31,6 @@ export default function AdminTabLayout() {
 
   if (!user) {
     return <Redirect href="/(auth)/seller-login" />;
-  }
-
-  if (profileLoading) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
-  if (!phoneReady && !missingPhoneConfirmed) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
-  if (!phoneReady && missingPhoneConfirmed) {
-    return <Redirect href="/complete-phone" />;
   }
 
   if (!hasAppAccess(user)) {
@@ -153,4 +128,3 @@ export default function AdminTabLayout() {
     </Tabs>
   );
 }
-

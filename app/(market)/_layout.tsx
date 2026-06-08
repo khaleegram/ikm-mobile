@@ -6,14 +6,11 @@ import { CustomTabBar } from '@/components/custom-tab-bar';
 import { UploadProgressBanner } from '@/components/market/upload-progress-banner';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { UploadProgressProvider } from '@/lib/context/upload-progress';
 import {
   useMarketChatMessageNotifications,
   useMarketChatNotificationTapNavigation,
 } from '@/lib/hooks/use-market-chat-notifications';
-import { useConfirmedMissingMarketPhone } from '@/lib/hooks/use-phone-gate-settled';
-import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 import { useTheme } from '@/lib/theme/theme-context';
 
 function MarketChatNotificationsBridge() {
@@ -26,32 +23,6 @@ function MarketChatNotificationsBridge() {
 export default function MarketTabLayout() {
   const { colors } = useTheme();
   const { user } = useUser();
-  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid || null);
-  const phoneReady = isMarketPhoneGateSatisfied(profile);
-  const missingPhoneConfirmed = useConfirmedMissingMarketPhone(phoneReady);
-
-  if (user && profileLoading) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
-  // Avoid redirect ping-pong right after saving phone (stale cache snapshot).
-  if (user && !phoneReady && !missingPhoneConfirmed) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
-  // Guests can browse freely. Only authenticated users are gated.
-  if (user && !phoneReady && missingPhoneConfirmed) {
-    return <Redirect href="/complete-phone" />;
-  }
-
   const renderTabBar = useCallback((props: any) => <CustomTabBar {...props} />, []);
 
   const screenOptions = useMemo(() => {

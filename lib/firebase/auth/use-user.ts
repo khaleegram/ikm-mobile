@@ -7,6 +7,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SESSION_KEY = '@ikm_session';
 
+function isOfflineFirestoreError(error: any): boolean {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code === 'unavailable' || message.includes('client is offline');
+}
+
 export interface AuthUser {
   uid: string;
   email: string | null;
@@ -140,7 +146,9 @@ export function useUser() {
                   !!userData.storeName;
               }
             } catch (error) {
-              console.error('Error checking seller status:', error);
+              if (!isOfflineFirestoreError(error)) {
+                console.warn('Could not check seller status:', error);
+              }
               // Default to false if error
             }
           }

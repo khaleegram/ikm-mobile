@@ -7,7 +7,6 @@ import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { getDeviceCoordinates } from '@/lib/utils/device-location';
-import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 import { isValidPhoneNumber, normalizePhoneInput } from '@/lib/utils/phone';
 import { haptics } from '@/lib/utils/haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -46,7 +45,6 @@ export default function CompletePhoneScreen() {
     () => normalizePhoneInput(String(profile?.phone || profile?.marketBuyerPhone || '').trim()),
     [profile?.marketBuyerPhone, profile?.phone],
   );
-  const phoneComplete = useMemo(() => isMarketPhoneGateSatisfied(profile), [profile]);
   const normalizedPhone = useMemo(() => normalizePhoneInput(phone || existingPhone), [existingPhone, phone]);
   const isValidPhone = isValidPhoneNumber(normalizedPhone);
 
@@ -68,10 +66,7 @@ export default function CompletePhoneScreen() {
       router.replace('/(market)' as any);
       return;
     }
-    if (phoneComplete && !allowEdit) {
-      router.replace('/(market)' as any);
-    }
-  }, [allowEdit, authLoading, phoneComplete, user]);
+  }, [authLoading, user]);
 
   React.useEffect(() => {
     if (!existingPhone) return;

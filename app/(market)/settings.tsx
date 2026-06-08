@@ -25,7 +25,6 @@ import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { showToast } from '@/components/toast';
-import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 
 const lightBrown = '#A67C52';
 
@@ -42,10 +41,6 @@ export default function SettingsScreen() {
   const normalizedPhone = React.useMemo(() => {
     return String((profile as any)?.marketBuyerPhone || profile?.phone || '').trim();
   }, [profile]);
-  const phoneComplete = React.useMemo(
-    () => isMarketPhoneGateSatisfied(profile ?? null),
-    [profile],
-  );
 
   React.useEffect(() => {
     if (profile) {
@@ -272,7 +267,7 @@ export default function SettingsScreen() {
               </Text>
             </View>
           </View>
-          {phoneComplete ? (
+          {normalizedPhone ? (
             <IconSymbol name="checkmark.circle.fill" size={18} color={colors.success} />
           ) : (
             <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />

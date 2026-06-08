@@ -3,11 +3,8 @@ import { ActivityIndicator, Alert, View } from 'react-native';
 import { useEffect, useRef } from 'react';
 
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { getAppVariant } from '@/lib/utils/app-variant';
-import { useConfirmedMissingMarketPhone } from '@/lib/hooks/use-phone-gate-settled';
-import { isMarketPhoneGateSatisfied } from '@/lib/utils/market-phone-gate';
 
 export default function Index() {
   const { user, loading, signOut } = useUser();
@@ -20,12 +17,6 @@ export default function Index() {
 
   const userHasAccess = user ? hasAppAccess(user) : false;
   const isAdmin = user?.isAdmin === true;
-  const { user: marketProfile, loading: marketProfileLoading } = useUserProfile(
-    isMarketApp ? user?.uid || null : null
-  );
-
-  const marketPhoneReady = isMarketPhoneGateSatisfied(marketProfile);
-  const marketMissingPhoneConfirmed = useConfirmedMissingMarketPhone(marketPhoneReady);
 
   // If a logged-in user opens the seller/admin app but isn't allowed, alert once and sign out once.
   useEffect(() => {
@@ -69,26 +60,6 @@ export default function Index() {
           <ActivityIndicator size="large" />
         </View>
       );
-    }
-
-    if (user && marketProfileLoading) {
-      return (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator size="large" />
-        </View>
-      );
-    }
-
-    if (user && !marketPhoneReady && !marketMissingPhoneConfirmed) {
-      return (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator size="large" />
-        </View>
-      );
-    }
-
-    if (user && !marketPhoneReady && marketMissingPhoneConfirmed) {
-      return <Redirect href="/complete-phone" />;
     }
 
     return <Redirect href="/(market)" />;

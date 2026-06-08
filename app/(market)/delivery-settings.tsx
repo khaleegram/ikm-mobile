@@ -129,11 +129,6 @@ export default function MarketDeliverySettingsScreen() {
       router.replace('/(market)' as any);
       return;
     }
-    if (!phone) {
-      showToast('Verify your phone first.', 'error');
-      router.push('/complete-phone' as any);
-      return;
-    }
     if (!deliveryState) {
       showToast('Select delivery state.', 'error');
       return;
@@ -152,7 +147,7 @@ export default function MarketDeliverySettingsScreen() {
       await setDoc(
         doc(firestore, 'users', user.uid),
         {
-          marketBuyerPhone: phone,
+          ...(phone ? { marketBuyerPhone: phone } : {}),
           marketBuyerLocation: {
             state: deliveryState,
             city: deliveryCity,
