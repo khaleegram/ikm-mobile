@@ -649,7 +649,7 @@ export default function ProfileScreen() {
               </View>
               <Text style={[styles.emptyTitle, { color: colors.text }]}>Nothing listed yet</Text>
               <Text style={[styles.emptySub, { color: colors.textSecondary }]}>
-                Tap "New Post" above to list your first item.
+                Tap &quot;New Post&quot; above to list your first item.
               </Text>
               <TouchableOpacity
                 style={[styles.emptyBtn, { backgroundColor: ACCENT }]}

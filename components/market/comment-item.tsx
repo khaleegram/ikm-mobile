@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { MarketComment } from '@/types';
-import { usePublicUserProfile } from '@/lib/firebase/firestore/users';
+import { usePublicUserProfileOnce } from '@/lib/firebase/firestore/users';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { marketCommentsApi } from '@/lib/api/market-comments';
 import { formatRelativeTime } from '@/lib/utils/date-format';
@@ -28,7 +28,7 @@ export function CommentItem({ comment, onDeleted, darkMode }: CommentItemProps) 
       }
     : themeColors;
   const { user } = useUser();
-  const { user: commenter } = usePublicUserProfile(comment.userId);
+  const { user: commenter } = usePublicUserProfileOnce(comment.userId);
   const isOwner = user?.uid === comment.userId;
 
   const handleDelete = () => {

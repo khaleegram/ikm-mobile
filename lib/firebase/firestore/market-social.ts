@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, limit, onSnapshot, orderBy, query, Unsubscribe, where } from 'firebase/firestore';
+import { collection, doc, getDoc, limit, onSnapshot, orderBy, query, Unsubscribe, where } from 'firebase/firestore';
 
 import { firestore } from '../config';
 
@@ -102,20 +102,23 @@ export function useIsFollowing(followerId: string | null, followedId: string | n
     }
 
     setLoading(true);
-    const unsubscribe = onSnapshot(
-      doc(firestore, 'marketFollows', followDocId(follower, followed)),
-      (snapshot) => {
-        setIsFollowing(snapshot.exists());
-        setLoading(false);
-      },
-      (err) => {
-        // Do not flip to "unfollowed" on transient errors (permissions/offline) — that felt like auto-unfollow.
-        console.warn('[useIsFollowing] snapshot error', err);
-        setLoading(false);
-      }
-    );
+    let cancelled = false;
 
-    return () => unsubscribe();
+    getDoc(doc(firestore, 'marketFollows', followDocId(follower, followed)))
+      .then((snapshot) => {
+        if (!cancelled) {
+          setIsFollowing(snapshot.exists());
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn('[useIsFollowing] fetch error', err);
+          setLoading(false);
+        }
+      });
+
+    return () => { cancelled = true; };
   }, [followerId, followedId]);
 
   return { isFollowing, loading };
@@ -222,19 +225,23 @@ export function useIsSaved(userId: string | null, postId: string | null) {
     }
 
     setLoading(true);
-    const unsubscribe = onSnapshot(
-      doc(firestore, 'marketSaves', saveDocId(user, post)),
-      (snapshot) => {
-        setIsSaved(snapshot.exists());
-        setLoading(false);
-      },
-      (err) => {
-        console.warn('[useIsSaved] snapshot error', err);
-        setLoading(false);
-      }
-    );
+    let cancelled = false;
 
-    return () => unsubscribe();
+    getDoc(doc(firestore, 'marketSaves', saveDocId(user, post)))
+      .then((snapshot) => {
+        if (!cancelled) {
+          setIsSaved(snapshot.exists());
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn('[useIsSaved] fetch error', err);
+          setLoading(false);
+        }
+      });
+
+    return () => { cancelled = true; };
   }, [userId, postId]);
 
   return { isSaved, loading };

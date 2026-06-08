@@ -5,6 +5,7 @@ import {
   collection,
   doc,
   DocumentData,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
@@ -201,7 +202,7 @@ export function useMarketPosts() {
     };
   }, [refreshKey]);
 
-  const loadMore = () => {
+  const loadMore = async () => {
     if (!hasMore || loading || !lastDocRef.current) return;
 
     setLoading(true);
@@ -213,29 +214,24 @@ export function useMarketPosts() {
       limit(MARKET_FEED_PAGE_SIZE)
     );
 
-    const unsubscribe = onSnapshot(
-      nextQuery,
-      (snapshot) => {
-        const nextPosts = snapshot.docs.map((documentSnapshot) =>
-          normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())
-        );
-        if (snapshot.docs.length > 0) {
-          lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
-          setHasMore(snapshot.docs.length === MARKET_FEED_PAGE_SIZE);
-          setPosts((previous) => [...previous, ...nextPosts]);
-        } else {
-          setHasMore(false);
-        }
-        setLoading(false);
-        unsubscribe();
-      },
-      (err) => {
-        console.error('Error loading more market posts:', err);
-        setError(err);
-        setLoading(false);
-        unsubscribe();
+    try {
+      const snapshot = await getDocs(nextQuery);
+      const nextPosts = snapshot.docs.map((documentSnapshot) =>
+        normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())
+      );
+      if (snapshot.docs.length > 0) {
+        lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
+        setHasMore(snapshot.docs.length === MARKET_FEED_PAGE_SIZE);
+        setPosts((previous) => [...previous, ...nextPosts]);
+      } else {
+        setHasMore(false);
       }
-    );
+    } catch (err) {
+      console.error('Error loading more market posts:', err);
+      setError(err as Error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const refresh = () => {
