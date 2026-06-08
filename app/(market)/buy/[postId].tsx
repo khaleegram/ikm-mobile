@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,34 +14,26 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
-import { PaystackCheckout } from '@/components/market/paystack-checkout';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
+import PaymentSheetModal from '@/components/market/payment-sheet-modal';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
+import { firestore } from '@/lib/firebase/config';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
-import {
-  savePendingEscrowCheckout,
-} from '@/lib/utils/pending-escrow-checkout';
 
 const lightBrown = '#A67C52';
-const NIGERIA_STATES = [...new Set(NIGERIA_LOCATION_OPTIONS.map((item) => item.state))].sort((a, b) =>
-  a.localeCompare(b)
-);
 
 function formatAmount(value: number): string {
   return `NGN ${value.toLocaleString()}`;
-}
-
-function buildDefaultReference(): string {
-  return `ikm_escrow_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function resolveDisplayName(profile: any, fallback: string): string {
@@ -54,30 +46,6 @@ function resolveDisplayName(profile: any, fallback: string): string {
   const store = String(profile?.storeName || '').trim();
   if (store) return store;
   return fallback;
-}
-
-function extractPaymentReference(url: string): string {
-  const normalizedUrl = String(url || '').trim();
-  if (!normalizedUrl) return '';
-
-  try {
-    const parsed = Linking.parse(normalizedUrl);
-    const reference =
-      String(parsed.queryParams?.reference || '').trim() ||
-      String(parsed.queryParams?.trxref || '').trim() ||
-      String(parsed.queryParams?.ref || '').trim();
-    if (reference) return reference;
-  } catch {
-    // Fallback to raw parsing below.
-  }
-
-  const match = normalizedUrl.match(/[?&](reference|trxref|ref)=([^&#]+)/i);
-  if (!match?.[2]) return '';
-  try {
-    return decodeURIComponent(match[2]).trim();
-  } catch {
-    return String(match[2]).trim();
-  }
 }
 
 function CheckoutSkeleton({ colors }: { colors: any }) {
@@ -124,16 +92,12 @@ export default function MarketBuyScreen() {
   const { post, loading: postLoading } = useMarketPost(postId || null);
   const { user: sellerProfile } = useUserProfile(post?.posterId || null);
   const [submitting, setSubmitting] = useState(false);
+  const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [quantity, setQuantity] = useState('1');
-  const [addressLine, setAddressLine] = useState('');
-  const [deliveryState, setDeliveryState] = useState('');
-  const [deliveryCity, setDeliveryCity] = useState('');
+  const [deliveryLocation, setDeliveryLocation] = useState('');
   const [locationPickerVisible, setLocationPickerVisible] = useState(false);
   const [locationSearch, setLocationSearch] = useState('');
-  const [paymentReference, setPaymentReference] = useState(() => buildDefaultReference());
-  const [paystackVisible, setPaystackVisible] = useState(false);
 
-  const PAYSTACK_KEY = process.env.EXPO_PUBLIC_PAYSTACK_PUBLIC_KEY || '';
   const savedBuyerPhone = useMemo(
     () =>
       String((profile as any)?.marketBuyerPhone || profile?.phone || '')
@@ -141,20 +105,18 @@ export default function MarketBuyScreen() {
     [profile]
   );
   const savedBuyerLocation = useMemo(() => {
-    const raw = (profile as any)?.marketBuyerLocation || {};
-    return {
-      state: String(raw.state || '').trim(),
-      city: String(raw.city || '').trim(),
-      address: String(raw.address || '').trim(),
-    };
+    const raw = (profile as any)?.marketBuyerLocation;
+    if (!raw) return '';
+    if (typeof raw === 'string') return raw.trim();
+    // Backward compat: old format was { address, city, state }
+    const obj = raw as Record<string, string>;
+    return [obj.address, obj.city, obj.state].filter(Boolean).join(', ').trim();
   }, [profile]);
   const buyerPhone = useMemo(() => String(savedBuyerPhone || '').trim(), [savedBuyerPhone]);
 
-  React.useEffect(() => {
-    if (!savedBuyerLocation.state && !savedBuyerLocation.city && !savedBuyerLocation.address) return;
-    setDeliveryState((prev) => prev || savedBuyerLocation.state);
-    setDeliveryCity((prev) => prev || savedBuyerLocation.city);
-    setAddressLine((prev) => prev || savedBuyerLocation.address);
+  useEffect(() => {
+    if (!savedBuyerLocation.trim()) return;
+    setDeliveryLocation((prev) => prev || savedBuyerLocation);
   }, [savedBuyerLocation]);
 
   const lockedPrice = useMemo(() => {
@@ -166,13 +128,11 @@ export default function MarketBuyScreen() {
     return 0;
   }, [offerSellerId, offeredPrice, post?.posterId, post?.price]);
 
+  const buyerEmail = useMemo(() => String(user?.email || '').trim(), [user]);
   const hasLockedPrice = lockedPrice > 0;
   const numericQuantity = Math.max(1, Number(quantity) || 1);
   const total = hasLockedPrice ? lockedPrice * numericQuantity : 0;
-  const selectedStateLabel = deliveryState || 'Select delivery state';
-  const selectedCityLabel = deliveryCity || 'Select delivery city';
-  const trimmedAddressLine = addressLine.trim();
-  const builtDeliveryAddress = [trimmedAddressLine, deliveryCity, deliveryState].filter(Boolean).join(', ');
+  const trimmedLocation = deliveryLocation.trim();
 
   const ALL_LOCATIONS = useMemo(() => {
     const list: Array<{ city: string; state: string; label: string }> = [];
@@ -196,17 +156,13 @@ export default function MarketBuyScreen() {
     !submitting &&
     hasLockedPrice &&
     numericQuantity > 0 &&
-    trimmedAddressLine.length >= 5 &&
-    !!deliveryState &&
-    !!deliveryCity &&
+    trimmedLocation.length >= 5 &&
     buyerPhone.length >= 10;
 
   const missingChecks: string[] = [];
   if (!hasLockedPrice) missingChecks.push('seller final price');
   if (!buyerPhone) missingChecks.push('phone');
-  if (!deliveryState) missingChecks.push('state');
-  if (!deliveryCity) missingChecks.push('city');
-  if (trimmedAddressLine.length < 5) missingChecks.push('address');
+  if (trimmedLocation.length < 5) missingChecks.push('delivery location');
   if (numericQuantity <= 0) missingChecks.push('quantity');
   const requirementsHint = missingChecks.length
     ? `Complete: ${missingChecks.join(', ')}`
@@ -220,11 +176,6 @@ export default function MarketBuyScreen() {
   const priceSourceLabel = hasValidOffer ? 'Seller offer accepted' : 'Post listed price';
   const subtotal = hasLockedPrice ? lockedPrice * numericQuantity : 0;
 
-  const handleOpenDeliverySettings = () => {
-    haptics.light();
-    router.push('/(market)/delivery-settings' as any);
-  };
-
   const handleSubmit = async () => {
     if (!user) {
       router.push(getLoginRouteForVariant('market') as any);
@@ -235,22 +186,8 @@ export default function MarketBuyScreen() {
       showToast('Seller must set a final price before escrow payment.', 'error');
       return;
     }
-    if (!buyerPhone) {
-      showToast('Verify your phone to continue.', 'error');
-      haptics.light();
-      router.push('/complete-phone' as any);
-      return;
-    }
-    if (!deliveryState) {
-      showToast('Select delivery state.', 'error');
-      return;
-    }
-    if (!deliveryCity) {
-      showToast('Select delivery city.', 'error');
-      return;
-    }
-    if (trimmedAddressLine.length < 5) {
-      showToast('Enter a valid delivery address.', 'error');
+    if (trimmedLocation.length < 5) {
+      showToast('Enter a valid delivery location.', 'error');
       return;
     }
     if (numericQuantity <= 0) {
@@ -263,44 +200,22 @@ export default function MarketBuyScreen() {
       return;
     }
 
-    const buyerEmail = String(user.email || '').trim();
     if (!buyerEmail) {
       showToast('A valid account email is required for payment.', 'error');
       return;
     }
 
+    // Auto-save delivery location to Firestore for next time
     try {
-      setSubmitting(true);
-      haptics.medium();
-
-      const paymentReference = buildDefaultReference();
-
-      // Save pending checkout so the callback screen can finalize the order
-      await savePendingEscrowCheckout({
-        reference: paymentReference,
-        amount: total,
-        buyerId: user.uid,
-        buyerName: profile?.displayName || user.displayName || user.email || 'Market Buyer',
-        buyerEmail,
-        buyerPhone,
-        post,
-        quantity: numericQuantity,
-        finalPrice: lockedPrice,
-        deliveryAddress: builtDeliveryAddress,
-        fromChatId: chatId || null,
-        deliveryState,
-        deliveryCity,
-        addressLine: trimmedAddressLine,
-        createdAtMs: Date.now(),
-      });
-
-      // Launch custom Paystack checkout
-      setPaystackVisible(true);
-    } catch (error: any) {
-      haptics.error();
-      showToast(error?.message || 'Unable to process payment right now.', 'error');
-      setSubmitting(false);
+      await setDoc(doc(firestore, 'users', user.uid), {
+        marketBuyerLocation: trimmedLocation,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    } catch (saveErr) {
+      console.warn('Failed to save delivery location:', saveErr);
     }
+
+    setPaymentModalVisible(true);
   };
 
   if (!user) {
@@ -463,51 +378,50 @@ export default function MarketBuyScreen() {
               ]}
               onPress={() => {
                 haptics.light();
-                router.push('/complete-phone' as any);
+                router.push('/complete-phone?edit=1' as any);
               }}>
               <IconSymbol name="plus.circle.fill" size={18} color={lightBrown} />
-              <Text style={[styles.verifyPhoneText, { color: lightBrown }]}>Add & Verify Phone</Text>
+              <Text style={[styles.verifyPhoneText, { color: lightBrown }]}>Add Phone (Optional)</Text>
             </TouchableOpacity>
           )}
 
           <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery Location</Text>
-          <TouchableOpacity
-            style={[
-              styles.locationPicker,
-              {
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}
-            onPress={() => setLocationPickerVisible(true)}>
-            <IconSymbol name="location.fill" size={16} color={lightBrown} />
-            <Text
+          <View style={{ position: 'relative' }}>
+            <TextInput
+              value={deliveryLocation}
+              onChangeText={setDeliveryLocation}
+              placeholder="Area, city, state — e.g. Wuse 2, Abuja, FCT"
+              placeholderTextColor={colors.textSecondary}
               style={[
-                styles.locationPickerText,
-                { color: deliveryCity ? colors.text : colors.textSecondary },
-              ]}>
-              {deliveryCity && deliveryState ? `${deliveryCity}, ${deliveryState}` : 'Search city or area'}
-            </Text>
-            <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
-          </TouchableOpacity>
-
-          <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery Address</Text>
-          <TextInput
-            value={addressLine}
-            onChangeText={setAddressLine}
-            placeholder="House, street, area, nearest landmark"
-            placeholderTextColor={colors.textSecondary}
-            multiline
-            style={[
-              styles.input,
-              styles.multiline,
-              {
-                color: colors.text,
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}
-          />
+                styles.input,
+                styles.multiline,
+                {
+                  color: colors.text,
+                  borderColor: colors.border,
+                  backgroundColor: colors.backgroundSecondary,
+                  paddingRight: 42,
+                },
+              ]}
+            />
+            <TouchableOpacity
+              style={styles.locationPickButton}
+              onPress={() => {
+                haptics.light();
+                setLocationPickerVisible(true);
+              }}>
+              <IconSymbol name="location.fill" size={18} color={lightBrown} />
+            </TouchableOpacity>
+          </View>
+          {savedBuyerLocation && !deliveryLocation.trim() ? (
+            <TouchableOpacity
+              style={styles.savedLocationRow}
+              onPress={() => setDeliveryLocation(savedBuyerLocation)}>
+              <IconSymbol name="clock.arrow.circlepath" size={14} color={colors.textSecondary} />
+              <Text style={[styles.savedLocationText, { color: colors.textSecondary }]} numberOfLines={1}>
+                {savedBuyerLocation}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <View style={[styles.summaryCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -660,13 +574,12 @@ export default function MarketBuyScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.stateRowItem, { borderBottomColor: colors.border }]}
-                  onPress={() => {
-                    haptics.light();
-                    setDeliveryState(item.state);
-                    setDeliveryCity(item.city);
-                    setLocationSearch('');
-                    setLocationPickerVisible(false);
-                  }}>
+              onPress={() => {
+                haptics.light();
+                setDeliveryLocation(`${item.city}, ${item.state}`);
+                setLocationSearch('');
+                setLocationPickerVisible(false);
+              }}>
                   <Text style={[styles.stateRowText, { color: colors.text }]}>{item.label}</Text>
                 </TouchableOpacity>
               )}
@@ -675,36 +588,28 @@ export default function MarketBuyScreen() {
         </Pressable>
       </Modal>
 
-      <PaystackCheckout
-        visible={paystackVisible}
-        paystackKey={PAYSTACK_KEY}
-        amount={total}
-        billingEmail={user.email || ''}
-        billingName={profile?.displayName || user?.displayName || user?.email || 'Buyer'}
-        refNumber={paymentReference}
-        onCancel={() => {
-          setPaystackVisible(false);
-          showToast('Payment not completed.', 'info');
-          setSubmitting(false);
-          setPaymentReference(buildDefaultReference());
-        }}
-        onSuccess={(res: any) => {
-          setPaystackVisible(false);
-          const finalReference = res.transactionRef?.reference || res.reference || paymentReference;
-          showToast('Payment submitted. Confirming now...', 'info');
-          router.replace({
-            pathname: '/paystack-callback',
-            params: { reference: finalReference },
-          } as any);
-        }}
-        onError={(err: any) => {
-          setPaystackVisible(false);
-          haptics.error();
-          showToast(err?.message || 'Unable to process payment right now.', 'error');
-          setSubmitting(false);
-          setPaymentReference(buildDefaultReference());
-        }}
-      />
+      {post && (
+        <PaymentSheetModal
+          visible={paymentModalVisible}
+          onClose={() => setPaymentModalVisible(false)}
+          post={post}
+          quantity={numericQuantity}
+          deliveryAddress={trimmedLocation}
+          deliveryState={''}
+          deliveryCity={''}
+          addressLine={trimmedLocation}
+          buyerPhone={buyerPhone}
+          buyerEmail={buyerEmail}
+          buyerName={profile?.displayName || user.displayName || user.email || 'Market Buyer'}
+          buyerId={user.uid}
+          fromChatId={chatId}
+          onSuccess={(orderId) => {
+            setPaymentModalVisible(false);
+            router.replace(`/(market)/orders/${orderId}` as any);
+          }}
+        />
+      )}
+
     </View>
   );
 }
@@ -1093,5 +998,28 @@ const styles = StyleSheet.create({
   emptyCityText: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  locationPickButton: {
+    position: 'absolute',
+    right: 10,
+    top: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(166, 124, 82, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  savedLocationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+    paddingVertical: 4,
+  },
+  savedLocationText: {
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
   },
 });

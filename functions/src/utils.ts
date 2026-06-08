@@ -131,3 +131,84 @@ export function sendError(response: Response, error: string, statusCode: number 
   });
 }
 
+/**
+ * In-memory rate limiter
+ * Tracks requests per user within time window
+ */
+const rateLimitStore = new Map<string, number[]>();
+
+export function checkRateLimit(
+  key: string,
+  maxRequests: number = 10,
+  windowMs: number = 60000
+): void {
+  const now = Date.now();
+  const userRequests = rateLimitStore.get(key) || [];
+
+  // Clean old requests outside the window
+  const validRequests = userRequests.filter(time => now - time < windowMs);
+
+  if (validRequests.length >= maxRequests) {
+    throw new Error(
+      `Rate limit exceeded: maximum ${maxRequests} requests per ${windowMs / 1000} seconds`
+    );
+  }
+
+  validRequests.push(now);
+  rateLimitStore.set(key, validRequests);
+
+  // Cleanup: remove old entries from map
+  if (rateLimitStore.size > 10000) {
+    const keysToDelete: string[] = [];
+    rateLimitStore.forEach((requests, k) => {
+      const validCount = requests.filter(time => now - time < windowMs).length;
+      if (validCount === 0) {
+        keysToDelete.push(k);
+      }
+    });
+    keysToDelete.forEach(k => rateLimitStore.delete(k));
+  }
+}
+
+/**
+ * Validate payment amount range
+ */
+export function validatePaymentAmount(amount: any): number {
+  const num = Number(amount || 0);
+  if (!Number.isFinite(num)) {
+    throw new Error('Invalid payment amount');
+  }
+  if (num <= 0) {
+    throw new Error('Payment amount must be positive');
+  }
+  if (num > 999999999) {
+    throw new Error('Payment amount exceeds maximum allowed');
+  }
+  return num;
+}
+
+/**
+ * Normalize and validate email
+ */
+export function normalizeEmail(email: any): string {
+  if (typeof email !== 'string') {
+    throw new Error('Email must be a string');
+  }
+  const normalized = email.trim().toLowerCase();
+  if (!normalized.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
+    throw new Error('Invalid email format');
+  }
+  return normalized;
+}
+
+/**
+ * Extract firebase UID from metadata with fallbacks
+ */
+export function extractFirebaseUid(metadata: any): string | null {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+  return String(
+    metadata.firebaseUid || metadata.firebase_uid || metadata.userId || ''
+  ).trim() || null;
+}

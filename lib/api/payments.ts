@@ -3,9 +3,11 @@ import { coreCloudClient } from './core-cloud-client';
 const PAYMENT_FUNCTIONS = {
   initializePaystackTransaction: 'https://initializepaystacktransaction-q3rjv54uka-uc.a.run.app',
   verifyPaystackTransaction: 'https://verifypaystacktransaction-q3rjv54uka-uc.a.run.app',
+  getTransactionTruth: 'https://gettransactiontruth-q3rjv54uka-uc.a.run.app',
   paystackWebhook: 'https://paystackwebhook-q3rjv54uka-uc.a.run.app',
   verifyPaymentAndCreateOrder: 'https://verifypaymentandcreateorder-q3rjv54uka-uc.a.run.app',
   findRecentTransactionByEmail: 'https://findrecenttransactionbyemail-q3rjv54uka-uc.a.run.app',
+  finalizeMarketEscrowPayment: 'https://finalizemarketescrowpayment-q3rjv54uka-uc.a.run.app',
 };
 
 type InitializePaymentInput = {
@@ -50,6 +52,11 @@ function buildDefaultReference(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isMissingTransactionTruthEndpoint(error: any): boolean {
+  const functionName = asNonEmptyString(error?.functionName).toLowerCase();
+  return functionName === 'gettransactiontruth' && Number(error?.status) === 404;
 }
 
 export const paymentsApi = {
@@ -126,12 +133,44 @@ export const paymentsApi = {
     const maxAttempts = Math.max(1, Number(input.maxAttempts || 3));
     const attemptDelayMs = Math.max(200, Number(input.attemptDelayMs || 1500));
 
+    // TRANSACTION TRUTH FIRST: Try to read cached result from Firestore
+    try {
+      const cachedResult = await coreCloudClient.request<any>(
+        PAYMENT_FUNCTIONS.getTransactionTruth,
+        {
+          method: 'POST',
+          body: { reference: normalizedReference },
+          requiresAuth: true,
+        }
+      );
+
+      if (cachedResult?.found && cachedResult?.status === 'success') {
+        return {
+          paid: true,
+          reference: cachedResult.reference,
+          status: 'success',
+          amount: cachedResult.amount || normalizedAmount,
+          currency: cachedResult.currency || 'NGN',
+          channel: cachedResult.channel,
+          paidAt: cachedResult.paidAt,
+        };
+      }
+    } catch (cacheError) {
+      // Fall through to polling if cache read fails
+      if (!isMissingTransactionTruthEndpoint(cacheError)) {
+        console.warn('Transaction truth cache read failed, falling back to polling:', cacheError);
+      }
+    }
+
+    // POLLING FALLBACK: Poll Paystack verification endpoint with retry logic
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const verification = await coreCloudClient.request<any>(PAYMENT_FUNCTIONS.verifyPaystackTransaction, {
           method: 'POST',
           body: {
             reference: normalizedReference,
+            expectedAmount: normalizedAmount,
+            expectedEmail: normalizedEmail,
           },
           requiresAuth: true,
         });
@@ -200,5 +239,33 @@ export const paymentsApi = {
 
     throw new Error('Payment could not be verified yet. Please try again in a moment.');
   },
-};
 
+  async finalizeMarketEscrowPayment(input: {
+    reference: string;
+    postId: string;
+    quantity: number;
+    deliveryAddress: string;
+    buyerPhone: string;
+  }): Promise<{ success: boolean; orderId: string; alreadyExists?: boolean; message?: string }> {
+    if (!input.reference) throw new Error('Payment reference is required to finalize order');
+    if (!input.postId) throw new Error('Market post ID is required to finalize order');
+    if (input.quantity <= 0) throw new Error('Invalid quantity');
+    if (!input.deliveryAddress) throw new Error('Delivery address is required to finalize order');
+    if (!input.buyerPhone) throw new Error('Buyer phone number is required to finalize order');
+
+    return coreCloudClient.request<{ success: boolean; orderId: string; alreadyExists?: boolean; message?: string }>(
+      PAYMENT_FUNCTIONS.finalizeMarketEscrowPayment,
+      {
+        method: 'POST',
+        body: {
+          reference: input.reference,
+          postId: input.postId,
+          quantity: input.quantity,
+          deliveryAddress: input.deliveryAddress,
+          buyerPhone: input.buyerPhone,
+        },
+        requiresAuth: true,
+      }
+    );
+  },
+};

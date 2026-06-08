@@ -29,7 +29,9 @@ function marketPostProductId(postId: string): string {
 }
 
 function buildIdempotencyKey(data: CreateMarketOrderInput): string {
-  const raw = `${data.buyerId}_${data.post.id}_${data.quantity}_${data.finalPrice}_${Date.now()}`;
+  const reference = String(data.paystackReference || data.paymentReference || '').trim();
+  const suffix = reference || `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const raw = `${data.buyerId}_${data.post.id}_${data.quantity}_${data.finalPrice}_${suffix}`;
   return raw.replace(/[^a-zA-Z0-9_]/g, '');
 }
 

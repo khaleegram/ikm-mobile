@@ -7,10 +7,12 @@ import cors = require('cors');
 import crypto from 'crypto';
 import {
     getPaystackSecretKey,
+    requireAdmin,
     requireAuth,
     sendError,
     sendResponse,
     verifyIdToken,
+    getPlatformCommissionRate,
 } from './utils';
 
 // CORS configuration - allow all origins for mobile/web apps
@@ -153,7 +155,7 @@ export const initializePaystackTransaction = onRequest(
           signal: AbortSignal.timeout(10000),
         });
 
-        const payload = await paystackResponse.json().catch(() => ({}));
+        const payload: any = await paystackResponse.json().catch(() => ({}));
         if (!paystackResponse.ok || !payload?.status || !payload?.data?.authorization_url) {
           const message =
             payload?.message ||
@@ -263,7 +265,7 @@ export const verifyPaystackTransaction = onRequest(
           }
         );
 
-        const payload = await paystackResponse.json().catch(() => ({}));
+        const payload: any = await paystackResponse.json().catch(() => ({}));
         if (!paystackResponse.ok || !payload?.status || !payload?.data) {
           const message =
             payload?.message ||
@@ -564,7 +566,7 @@ export const verifyPaymentAndCreateOrder = onRequest(
         signal: AbortSignal.timeout(10000),
       });
 
-      const paystackResult = await paystackResponse.json();
+      const paystackResult: any = await paystackResponse.json();
       if (!paystackResult.status || paystackResult.data.status !== 'success') {
         return sendError(response, 'Payment verification failed');
       }
@@ -646,7 +648,7 @@ export const findRecentTransactionByEmail = onRequest(
         return sendError(response, 'Failed to fetch transactions from Paystack');
       }
 
-      const result = await paystackResponse.json();
+      const result: any = await paystackResponse.json();
       const transactions = result.data || [];
       const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
 
@@ -684,7 +686,7 @@ export const getBanksList = onRequest(
   async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
-      if (request.method !== 'GET') {
+      if (request.method !== 'GET' && request.method !== 'POST') {
         return sendError(response, 'Method not allowed', 405);
       }
       const paystackSecretKey = getPaystackSecretKey(paystackSecret.value());
@@ -693,7 +695,7 @@ export const getBanksList = onRequest(
       });
 
       if (!paystackResponse.ok) return sendError(response, 'Failed to fetch banks');
-      const result = await paystackResponse.json();
+      const result: any = await paystackResponse.json();
       const banks = (result.data || []).map((bank: any) => ({ code: bank.code, name: bank.name, id: bank.id }));
       return sendResponse(response, { success: true, banks: banks.sort((a: any, b: any) => a.name.localeCompare(b.name)) });
     } catch (error: any) {
@@ -720,7 +722,7 @@ export const resolveAccountNumber = onRequest(
       });
 
       if (!paystackResponse.ok) return sendError(response, 'Failed to resolve account number');
-      const result = await paystackResponse.json();
+      const result: any = await paystackResponse.json();
       return sendResponse(response, { success: true, account_name: result.data.account_name, account_number: result.data.account_number });
     } catch (error: any) {
       return sendError(response, error.message || 'Internal server error', 500);
@@ -761,18 +763,119 @@ export const requestPayout = onRequest(
       if (request.method !== 'POST') return sendError(response, 'Method not allowed', 405);
       const auth = await requireAuth(request.headers.authorization || null);
       const { amount } = request.body;
-      if (!amount || amount <= 0) return sendError(response, 'Valid amount is required');
+      if (!amount || amount <= 0) return sendError(response, 'Valid amount is required', 400);
 
       const firestore = admin.firestore();
+
+      // Check if user has payout details first
       const userDoc = await firestore.collection('users').doc(auth.uid).get();
-      if (!userDoc.data()?.payoutDetails) return sendError(response, 'Payout details not set');
+      if (!userDoc.exists) {
+        return sendError(response, 'User profile not found', 404);
+      }
+      const userData = userDoc.data()!;
+      if (!userData.payoutDetails) {
+        return sendError(response, 'Please set up your bank account details first', 400);
+      }
+
+      // Check for minimum payout amount from settings
+      const settingsDoc = await firestore.collection('platform_settings').doc('platform_settings').get();
+      const minimumPayout = settingsDoc.exists 
+        ? (settingsDoc.data()?.minimumPayoutAmount as number) || 5000
+        : 5000;
+
+      if (amount < minimumPayout) {
+        return sendError(response, `Minimum payout is ₦${minimumPayout.toLocaleString()}`, 400);
+      }
+
+      // Check for existing pending payout request to prevent double-draw
+      const pendingPayoutsSnapshot = await firestore.collection('payouts')
+        .where('sellerId', '==', auth.uid)
+        .where('status', '==', 'pending')
+        .get();
+
+      if (!pendingPayoutsSnapshot.empty) {
+        return sendError(response, 'You already have a pending payout request. Please wait for it to be processed.', 400);
+      }
+
+      // Calculate earnings server-side to verify balance
+      let totalEarnings = 0;
+      const transactionsSnapshot = await firestore.collection('transactions')
+        .where('sellerId', '==', auth.uid)
+        .where('type', '==', 'sale')
+        .where('status', '==', 'completed')
+        .get();
+
+      if (!transactionsSnapshot.empty) {
+        transactionsSnapshot.forEach(doc => {
+          totalEarnings += doc.data().amount || 0;
+        });
+      } else {
+        // Fallback: calculate from completed orders
+        const ordersSnapshot = await firestore.collection('orders')
+          .where('sellerId', '==', auth.uid)
+          .where('status', '==', 'Completed')
+          .get();
+        const commissionRate = await getPlatformCommissionRate();
+        ordersSnapshot.forEach(doc => {
+          const order = doc.data();
+          const orderTotal = order.total || 0;
+          const orderCommissionRate = order.commissionRate || commissionRate;
+          const commission = orderTotal * orderCommissionRate;
+          totalEarnings += (orderTotal - commission);
+        });
+      }
+
+      const completedPayoutsSnapshot = await firestore.collection('payouts')
+        .where('sellerId', '==', auth.uid)
+        .where('status', '==', 'completed')
+        .get();
+
+      let totalPayouts = 0;
+      completedPayoutsSnapshot.forEach(doc => {
+        totalPayouts += doc.data().amount || 0;
+      });
+
+      // Sum any currently pending payouts (already fetched)
+      let pendingPayoutsSum = 0;
+      pendingPayoutsSnapshot.forEach(doc => {
+        pendingPayoutsSum += doc.data().amount || 0;
+      });
+
+      const availableBalance = Math.max(0, totalEarnings - totalPayouts - pendingPayoutsSum);
+
+      if (amount > availableBalance) {
+        return sendError(response, `Insufficient balance. Available: ₦${availableBalance.toLocaleString()}`, 400);
+      }
+
+      // Calculate expected processing date (business days)
+      const payoutProcessingDays = settingsDoc.exists
+        ? (settingsDoc.data()?.payoutProcessingDays as number) || 3
+        : 3;
+
+      const addBusinessDays = (date: Date, days: number): Date => {
+        const result = new Date(date);
+        let addedDays = 0;
+        while (addedDays < days) {
+          result.setDate(result.getDate() + 1);
+          if (result.getDay() !== 0 && result.getDay() !== 6) {
+            addedDays++;
+          }
+        }
+        return result;
+      };
+
+      const expectedProcessingDate = addBusinessDays(new Date(), payoutProcessingDays);
 
       await firestore.collection('payouts').add({
         sellerId: auth.uid,
         amount,
-        ...userDoc.data()?.payoutDetails,
+        bankName: userData.payoutDetails.bankName,
+        bankCode: userData.payoutDetails.bankCode,
+        accountNumber: userData.payoutDetails.accountNumber,
+        accountName: userData.payoutDetails.accountName,
         status: 'pending',
         requestedAt: FieldValue.serverTimestamp(),
+        expectedProcessingDate: admin.firestore.Timestamp.fromDate(expectedProcessingDate),
         createdAt: FieldValue.serverTimestamp(),
       });
 
@@ -805,12 +908,589 @@ export const cancelPayoutRequest = onRequest(async (request, response) => {
 export const getAllPayouts = onRequest(async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
-      await verifyIdToken(request.headers.authorization || null);
-      const snapshot = await admin.firestore().collection('payouts').orderBy('createdAt', 'desc').get();
-      const payouts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      return sendResponse(response, { success: true, payouts });
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        return sendError(response, 'Method not allowed', 405);
+      }
+
+      await requireAdmin(request.headers.authorization || null);
+      const firestore = admin.firestore();
+
+      const status = (request.query.status as string) || request.body?.status;
+      let query: admin.firestore.Query = firestore.collection('payouts').orderBy('createdAt', 'desc');
+
+      if (status) {
+        query = query.where('status', '==', status);
+      }
+
+      const snapshot = await query.get();
+
+      const serializeTimestamp = (ts: any): any => {
+        if (!ts) return null;
+        if (ts.toDate && typeof ts.toDate === 'function') {
+          return {
+            _seconds: ts.seconds || Math.floor(ts.toMillis() / 1000),
+            _nanoseconds: ts.nanoseconds || 0,
+          };
+        }
+        if (ts._seconds !== undefined) {
+          return { _seconds: ts._seconds, _nanoseconds: ts._nanoseconds || 0 };
+        }
+        return null;
+      };
+
+      const payouts = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        const result: any = {
+          id: doc.id,
+          ...data,
+        };
+
+        if (data.createdAt) result.createdAt = serializeTimestamp(data.createdAt);
+        if (data.requestedAt) result.requestedAt = serializeTimestamp(data.requestedAt);
+        if (data.processedAt) result.processedAt = serializeTimestamp(data.processedAt);
+        if (data.cancelledAt) result.cancelledAt = serializeTimestamp(data.cancelledAt);
+        if (data.expectedProcessingDate) result.expectedProcessingDate = serializeTimestamp(data.expectedProcessingDate);
+
+        return result;
+      });
+
+      return sendResponse(response, {
+        success: true,
+        payouts,
+      });
     } catch (error: any) {
-      return sendError(response, error.message, 500);
+      console.error('Error in getAllPayouts:', error);
+      return sendError(response, error.message || 'Internal server error', 500);
     }
   });
 });
+
+/**
+ * Get transaction truth from Firestore (cached result)
+ * Used by client for transaction-truth-first pattern
+ */
+export const getTransactionTruth = onRequest(async (request, response) => {
+  return corsHandler(request, response, async () => {
+    try {
+      if (request.method !== 'POST') {
+        return sendError(response, 'Method not allowed', 405);
+      }
+
+      const auth = await requireAuth(request.headers.authorization || null);
+      const { reference } = request.body;
+
+      if (!reference) {
+        return sendError(response, 'Transaction reference required', 400);
+      }
+
+      const firestore = admin.firestore();
+      const txDoc = await firestore.collection('transactions').doc(reference).get();
+
+      if (!txDoc.exists) {
+        return sendResponse(response, { success: true, found: false });
+      }
+
+      const data = txDoc.data();
+      if (!data) {
+        return sendResponse(response, { success: true, found: false });
+      }
+
+      const txUid = String(data?.metadata?.firebaseUid || data?.uid || '').trim();
+
+      // Authorization check: user can only read their own transactions
+      if (txUid && txUid !== auth.uid && !auth.isAdmin) {
+        return sendError(response, 'Forbidden: Transaction belongs to another user', 403);
+      }
+
+      // Return transaction truth with all relevant fields
+      return sendResponse(response, {
+        success: true,
+        found: true,
+        reference: data.reference,
+        status: data.status,
+        paid: data.status === 'success',
+        amount: Number.isFinite(Number(data.amount)) ? Number(data.amount) : null,
+        currency: data.currency || 'NGN',
+        channel: data.channel || null,
+        paidAt: data.paidAt || null,
+        customerEmail: data.customerEmail || null,
+        metadata: data.metadata || null,
+        source: data.source, // 'paystack-webhook' | 'paystack-verify'
+        createdAt: data.createdAt || null
+      });
+    } catch (error: any) {
+      console.error('Error in getTransactionTruth:', error);
+      const statusCode = error?.message?.includes('Unauthorized') ? 401 : 500;
+      return sendError(response, error?.message || 'Internal server error', statusCode);
+    }
+  });
+});
+
+// Define schema for finalizeMarketEscrowPayment
+const finalizeMarketEscrowPaymentSchema = z.object({
+  reference: z.string().min(6),
+  postId: z.string().min(1),
+  quantity: z.number().int().positive(),
+  deliveryAddress: z.string().min(5),
+  buyerPhone: z.string().min(10),
+});
+
+/**
+ * Finalize Marketplace Escrow Payment:
+ * Verifies Paystack status, secures inventory, creates the order, and updates ledger.
+ */
+export const finalizeMarketEscrowPayment = onRequest(
+  { secrets: [paystackSecret] },
+  async (request, response) => {
+    return corsHandler(request, response, async () => {
+      try {
+        if (request.method !== 'POST') {
+          return sendError(response, 'Method not allowed', 405);
+        }
+
+        const auth = await requireAuth(request.headers.authorization || null);
+        const validation = finalizeMarketEscrowPaymentSchema.safeParse(request.body);
+        if (!validation.success) {
+          return sendError(response, `Invalid completion data: ${validation.error.message}`, 400);
+        }
+
+        const { reference, postId, quantity, deliveryAddress, buyerPhone } = validation.data;
+        const firestore = admin.firestore();
+
+        // 1. Check if order already exists for this payment to ensure idempotency
+        const existingOrderQuery = await firestore
+          .collection('orders')
+          .where('paystackReference', '==', reference)
+          .limit(1)
+          .get();
+
+        if (!existingOrderQuery.empty) {
+          return sendResponse(response, {
+            success: true,
+            orderId: existingOrderQuery.docs[0].id,
+            alreadyExists: true,
+            message: 'Order already finalized for this payment',
+          });
+        }
+
+        // 2. Query/Verify transaction truth cached or via Paystack
+        let txStatus = '';
+        let paidAmount = 0;
+        let customerEmail = '';
+        let txMetadata: any = {};
+
+        // Try reading cache first
+        const cachedTx = await firestore.collection('transactions').doc(reference).get();
+        if (cachedTx.exists) {
+          const txData = cachedTx.data() || {};
+          txStatus = String(txData.status || '').toLowerCase();
+          paidAmount = Number(txData.amount || 0);
+          customerEmail = String(txData.customerEmail || '').trim().toLowerCase();
+          txMetadata = txData.metadata || {};
+        }
+
+        // If not in cache or not successful, call Paystack verify
+        if (txStatus !== 'success') {
+          const paystackSecretKey = getPaystackSecretKey(paystackSecret.value());
+          const paystackResponse = await fetch(
+            `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+            {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${paystackSecretKey}`,
+              },
+              signal: AbortSignal.timeout(10000),
+            }
+          );
+
+          const payload: any = await paystackResponse.json().catch(() => ({}));
+          if (!paystackResponse.ok || !payload?.status || !payload?.data) {
+            const message = payload?.message || `Paystack verify failed with status ${paystackResponse.status}`;
+            return sendError(response, message, 400);
+          }
+
+          const tx = payload.data;
+          txStatus = String(tx?.status || '').toLowerCase();
+          if (txStatus !== 'success') {
+            return sendError(response, `Payment not successful. Status: ${txStatus || 'unknown'}`, 400);
+          }
+
+          paidAmount = Number(tx?.amount || 0) / 100;
+          customerEmail = String(tx?.customer?.email || tx?.customer_email || '').trim().toLowerCase();
+          txMetadata = tx?.metadata || {};
+
+          // Write verification status to transactions collection
+          await writeTransactionTruth({
+            reference,
+            status: txStatus,
+            amount: paidAmount,
+            currency: String(tx?.currency || 'NGN'),
+            channel: String(tx?.channel || ''),
+            customerEmail,
+            paidAt: tx?.paid_at || null,
+            metadata: txMetadata,
+            gatewayEvent: null,
+            gatewayId: String(tx?.id || ''),
+            source: 'paystack-verify',
+          });
+        }
+
+        // Verify Firebase UID in payment metadata matches calling user
+        const txMetadataUid = String(
+          txMetadata?.firebaseUid ||
+          txMetadata?.firebase_uid ||
+          txMetadata?.userId ||
+          ''
+        ).trim();
+
+        if (txMetadataUid && txMetadataUid !== auth.uid && !auth.isAdmin) {
+          return sendError(response, 'Forbidden: Payment belongs to another user', 403);
+        }
+
+        // 3. Process order creation in a database transaction to lock post and decrement stock/sold status
+        const orderRef = firestore.collection('orders').doc();
+        const userDoc = await firestore.collection('users').doc(auth.uid).get();
+        const userData = userDoc.exists ? userDoc.data() : null;
+        const buyerName = String(userData?.displayName || auth.email || 'Market Buyer').trim();
+
+        const commissionRate = await getPlatformCommissionRate();
+
+        await firestore.runTransaction(async (transaction) => {
+          const postRef = firestore.collection('marketPosts').doc(postId);
+          const postSnap = await transaction.get(postRef);
+
+          if (!postSnap.exists) {
+            throw new Error('Post not found');
+          }
+
+          const postData = postSnap.data()!;
+          if (postData.status === 'sold') {
+            throw new Error('This item has already been purchased');
+          }
+
+          const postPrice = Number(postData.price || 0);
+          const calculatedTotal = postPrice * quantity;
+
+          // Double check amount matches paid amount
+          if (Math.abs(calculatedTotal - paidAmount) > 0.01) {
+            throw new Error(`Amount mismatch. Paid: ₦${paidAmount}, Order cost: ₦${calculatedTotal}`);
+          }
+
+          const sellerId = postData.posterId;
+          if (!sellerId) {
+            throw new Error('Seller ID missing from post');
+          }
+          if (sellerId === auth.uid) {
+            throw new Error('You cannot purchase your own item');
+          }
+
+          // Lock post status to 'sold'
+          transaction.update(postRef, {
+            status: 'sold',
+            buyerId: auth.uid,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+
+          // Compute commissions
+          const commission = calculatedTotal * commissionRate;
+          const sellerEarning = calculatedTotal - commission;
+
+          // Write Transaction Ledger directly in transaction
+          const ledgerRef = firestore.collection('transactions').doc(`ledger_${reference}`);
+          transaction.set(ledgerRef, {
+            id: `ledger_${reference}`,
+            type: 'sale',
+            amount: sellerEarning,
+            commission: commission,
+            commissionRate,
+            orderId: orderRef.id,
+            sellerId,
+            customerId: auth.uid,
+            description: `Sale from order #${orderRef.id.slice(0, 7)}`,
+            status: 'completed',
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+
+          // Create order document
+          transaction.set(orderRef, {
+            customerId: auth.uid,
+            sellerId,
+            items: [
+              {
+                productId: `market_post_${postId}`,
+                name: String(postData.description || 'Marketplace Item').slice(0, 70),
+                price: postPrice,
+                quantity,
+              },
+            ],
+            total: calculatedTotal,
+            shippingPrice: 0,
+            shippingType: 'pickup',
+            status: 'Processing',
+            deliveryAddress: deliveryAddress.trim(),
+            customerInfo: {
+              name: buyerName,
+              email: auth.email || customerEmail,
+              phone: buyerPhone.trim(),
+            },
+            paymentMethod: 'Paystack Escrow',
+            paymentReference: reference,
+            paystackReference: reference,
+            escrowStatus: 'held',
+            commissionRate,
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+            paymentVerifiedAt: FieldValue.serverTimestamp(),
+          });
+        });
+
+        return sendResponse(response, {
+          success: true,
+          orderId: orderRef.id,
+          message: 'Order created successfully',
+        });
+      } catch (error: any) {
+        console.error('Error in finalizeMarketEscrowPayment:', error);
+        const message = error.message || 'Internal server error';
+        const statusCode =
+          message === 'Post not found'
+            ? 404
+            : message === 'This item has already been purchased'
+              ? 409
+              : message.startsWith('Amount mismatch')
+                ? 400
+                : message === 'You cannot purchase your own item'
+                  ? 403
+                  : 500;
+        return sendError(response, message, statusCode);
+      }
+    });
+  }
+);
+
+/**
+ * Calculate seller earnings
+ */
+export const calculateSellerEarnings = onRequest(
+  { secrets: [paystackSecret] },
+  async (request, response) => {
+    return corsHandler(request, response, async () => {
+      try {
+        if (request.method !== 'GET' && request.method !== 'POST') {
+          return sendError(response, 'Method not allowed', 405);
+        }
+
+        const auth = await requireAuth(request.headers.authorization || null);
+        const sellerId = request.query.sellerId as string || request.body?.sellerId || auth.uid;
+
+        // Verify seller owns this request or is admin
+        if (sellerId !== auth.uid && !auth.isAdmin) {
+          return sendError(response, 'Unauthorized: Can only view your own earnings', 403);
+        }
+
+        const firestore = admin.firestore();
+        const commissionRate = await getPlatformCommissionRate();
+
+        let totalEarnings = 0;
+        let totalOrders = 0;
+        let commissionPaid = 0;
+
+        // Try to calculate from transactions collection first
+        const transactionsSnapshot = await firestore.collection('transactions')
+          .where('sellerId', '==', sellerId)
+          .where('type', '==', 'sale')
+          .where('status', '==', 'completed')
+          .get();
+
+        if (!transactionsSnapshot.empty) {
+          transactionsSnapshot.forEach(doc => {
+            const transaction = doc.data();
+            totalEarnings += transaction.amount || 0;
+            commissionPaid += transaction.commission || 0;
+            totalOrders++;
+          });
+        } else {
+          // Fallback: Calculate from orders
+          const ordersSnapshot = await firestore.collection('orders')
+            .where('sellerId', '==', sellerId)
+            .where('status', '==', 'Completed')
+            .get();
+
+          ordersSnapshot.forEach(doc => {
+            const order = doc.data();
+            const orderTotal = order.total || 0;
+            const orderCommissionRate = order.commissionRate || commissionRate;
+            const commission = orderTotal * orderCommissionRate;
+            const sellerEarning = orderTotal - commission;
+
+            totalEarnings += sellerEarning;
+            commissionPaid += commission;
+            totalOrders++;
+          });
+        }
+
+        // Get pending payouts
+        const pendingPayoutsSnapshot = await firestore.collection('payouts')
+          .where('sellerId', '==', sellerId)
+          .where('status', '==', 'pending')
+          .get();
+
+        let pendingPayouts = 0;
+        pendingPayoutsSnapshot.forEach(doc => {
+          const payout = doc.data();
+          pendingPayouts += payout.amount || 0;
+        });
+
+        // Get completed payouts
+        const completedPayoutsSnapshot = await firestore.collection('payouts')
+          .where('sellerId', '==', sellerId)
+          .where('status', '==', 'completed')
+          .get();
+
+        let totalPayouts = 0;
+        completedPayoutsSnapshot.forEach(doc => {
+          const payout = doc.data();
+          totalPayouts += payout.amount || 0;
+        });
+
+        const availableBalance = Math.max(0, totalEarnings - totalPayouts - pendingPayouts);
+
+        return sendResponse(response, {
+          success: true,
+          earnings: {
+            totalEarnings,
+            availableBalance,
+            pendingPayouts,
+            totalPayouts,
+            commissionPaid,
+            totalOrders,
+          },
+        });
+      } catch (error: any) {
+        console.error('Error in calculateSellerEarnings:', error);
+        return sendError(response, error.message || 'Internal server error', 500);
+      }
+    });
+  }
+);
+
+/**
+ * Get seller transactions
+ */
+export const getSellerTransactions = onRequest(
+  { secrets: [paystackSecret] },
+  async (request, response) => {
+    return corsHandler(request, response, async () => {
+      try {
+        if (request.method !== 'GET' && request.method !== 'POST') {
+          return sendError(response, 'Method not allowed', 405);
+        }
+
+        const auth = await requireAuth(request.headers.authorization || null);
+        const sellerId = request.query.sellerId as string || request.body?.sellerId || auth.uid;
+        const limit = parseInt(request.query.limit as string) || request.body?.limit || 50;
+
+        // Verify seller owns this request or is admin
+        if (sellerId !== auth.uid && !auth.isAdmin) {
+          return sendError(response, 'Unauthorized: Can only view your own transactions', 403);
+        }
+
+        const firestore = admin.firestore();
+        const commissionRate = await getPlatformCommissionRate();
+        const transactions: any[] = [];
+
+        // Try load from transactions ledger collection
+        const ledgerSnapshot = await firestore.collection('transactions')
+          .where('sellerId', '==', sellerId)
+          .orderBy('createdAt', 'desc')
+          .limit(limit)
+          .get();
+
+        if (!ledgerSnapshot.empty) {
+          ledgerSnapshot.forEach(doc => {
+            const data = doc.data();
+            transactions.push({
+              id: doc.id,
+              ...data,
+              createdAt: data.createdAt?.toDate?.() || data.createdAt,
+              updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+            });
+          });
+        } else {
+          // Fallback to orders calculation if ledger is empty (migration path)
+          const ordersSnapshot = await firestore.collection('orders')
+            .where('sellerId', '==', sellerId)
+            .orderBy('createdAt', 'desc')
+            .limit(limit)
+            .get();
+
+          ordersSnapshot.forEach(doc => {
+            const order = doc.data();
+            const orderTotal = order.total || 0;
+            const orderCommissionRate = order.commissionRate || commissionRate;
+            const commission = orderTotal * orderCommissionRate;
+            const sellerEarning = orderTotal - commission;
+
+            if (order.status === 'Completed') {
+              transactions.push({
+                id: `sale_${doc.id}`,
+                type: 'sale',
+                amount: sellerEarning,
+                orderId: doc.id,
+                description: `Sale from order #${doc.id.slice(0, 7)}`,
+                status: 'completed',
+                createdAt: order.createdAt,
+              });
+
+              transactions.push({
+                id: `commission_${doc.id}`,
+                type: 'commission',
+                amount: -commission,
+                orderId: doc.id,
+                description: `Platform commission (${(orderCommissionRate * 100).toFixed(1)}%)`,
+                status: 'completed',
+                createdAt: order.createdAt,
+              });
+            }
+          });
+        }
+
+        // Get payout transactions and merge
+        const payoutsSnapshot = await firestore.collection('payouts')
+          .where('sellerId', '==', sellerId)
+          .orderBy('createdAt', 'desc')
+          .limit(limit)
+          .get();
+
+        payoutsSnapshot.forEach(doc => {
+          const payout = doc.data();
+          transactions.push({
+            id: `payout_${doc.id}`,
+            type: 'payout',
+            amount: -payout.amount,
+            payoutId: doc.id,
+            description: `Payout to ${payout.bankName || 'bank account'}`,
+            status: payout.status,
+            createdAt: payout.createdAt?.toDate?.() || payout.createdAt,
+          });
+        });
+
+        // Sort by date (most recent first)
+        transactions.sort((a, b) => {
+          const dateA = new Date(a.createdAt?.toDate?.() || a.createdAt || 0).getTime();
+          const dateB = new Date(b.createdAt?.toDate?.() || b.createdAt || 0).getTime();
+          return dateB - dateA;
+        });
+
+        return sendResponse(response, {
+          success: true,
+          transactions: transactions.slice(0, limit),
+        });
+      } catch (error: any) {
+        console.error('Error in getSellerTransactions:', error);
+        return sendError(response, error.message || 'Internal server error', 500);
+      }
+    });
+  }
+);

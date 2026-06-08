@@ -66,9 +66,22 @@ export const markOrderAsSent = onRequest(async (request, response) => {
 export const markOrderAsReceived = onRequest(async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
-      await requireAuth(request.headers.authorization || null);
+      const auth = await requireAuth(request.headers.authorization || null);
       const { orderId } = request.body;
-      await admin.firestore().collection('orders').doc(orderId).update({
+      if (!orderId) return sendError(response, 'Order ID is required', 400);
+
+      const firestore = admin.firestore();
+      const orderRef = firestore.collection('orders').doc(orderId);
+      const orderDoc = await orderRef.get();
+
+      if (!orderDoc.exists) return sendError(response, 'Order not found', 404);
+      const order = orderDoc.data()!;
+
+      if (order.customerId !== auth.uid && !auth.isAdmin) {
+        return sendError(response, 'Unauthorized: Only the buyer can confirm receipt', 403);
+      }
+
+      await orderRef.update({
         status: 'Completed',
         escrowStatus: 'completed',
         receivedAt: FieldValue.serverTimestamp(),

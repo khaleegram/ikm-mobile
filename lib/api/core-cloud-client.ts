@@ -77,10 +77,16 @@ export class CoreCloudClient {
     return message.includes('post not found');
   }
 
+  private isExpectedTransactionTruthMissing(error: CloudFunctionError): boolean {
+    const functionName = String(error?.functionName || '').trim().toLowerCase();
+    return functionName === 'gettransactiontruth' && Number(error?.status) === 404;
+  }
+
   private reportFunctionError(error: CloudFunctionError): void {
     if (
       this.isExpectedPaymentVerificationState(error) ||
-      this.isExpectedIncrementViewsNotFound(error)
+      this.isExpectedIncrementViewsNotFound(error) ||
+      this.isExpectedTransactionTruthMissing(error)
     ) {
       cloudDebug('[Cloud Function] Expected payment verification state:', error);
       return;

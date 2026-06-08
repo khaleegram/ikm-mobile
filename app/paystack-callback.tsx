@@ -85,7 +85,7 @@ function isRetryablePaymentState(error: any): boolean {
 
 export default function PaystackCallbackScreen() {
   const { colors } = useTheme();
-  const { user } = useUser();
+  const { user, loading: userLoading } = useUser();
   const params = useLocalSearchParams<Record<string, string>>();
   const [runNonce, setRunNonce] = useState(0);
   const [status, setStatus] = useState<'verifying' | 'done' | 'error'>('verifying');
@@ -141,7 +141,8 @@ export default function PaystackCallbackScreen() {
 
         const pending = await readPendingEscrowCheckout();
         const referenceFromLink = extractPaymentReference(linkUrl || '');
-        const reference = referenceFromParams || referenceFromLink || pending?.reference || '';
+        const pendingReference = String(pending?.reference || '').trim();
+        const reference = referenceFromParams || pendingReference || referenceFromLink || '';
 
         if (!reference) {
           throw new Error('Missing payment reference.');
@@ -159,6 +160,10 @@ export default function PaystackCallbackScreen() {
 
         if (!pending) {
           throw new Error('Missing pending checkout details. Please return to checkout and retry.');
+        }
+
+        if (userLoading) {
+          return;
         }
 
         if (!user) {
@@ -297,7 +302,7 @@ export default function PaystackCallbackScreen() {
     return () => {
       cancelled = true;
     };
-  }, [linkUrl, referenceFromParams, runNonce, user]);
+  }, [linkUrl, referenceFromParams, runNonce, user, userLoading]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
