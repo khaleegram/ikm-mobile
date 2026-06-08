@@ -855,5 +855,26 @@ service cloud.firestore {
       allow update: if isAdmin(); // Admin only - update parks
       allow delete: if isAdmin(); // Admin only - delete parks
     }
+
+    // Payment Audit Trail Collection
+    // - Immutable log of all payment events (for compliance and debugging)
+    // - Admin-only read and list
+    // - Backend/Cloud Functions only (no client writes)
+    match /payment_audit/{eventId} {
+      allow read: if isAdmin();
+      allow list: if isAdmin() && request.query.limit != null && request.query.limit <= 1000;
+      allow create, update, delete: if false;
+    }
+
+    // Payment Verifications Collection (optional - detailed verification logs)
+    // - User can read their own payment verifications
+    // - Backend writes only
+    match /payment_verifications/{reference} {
+      allow read: if isAdmin()
+        || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
   }
 }
+
