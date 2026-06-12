@@ -7,6 +7,7 @@ import {
   useMarketChatMeta,
   useMarketConversationMessages,
 } from '@/lib/firebase/firestore/market-messages';
+import { useMarketChatStore } from '@/lib/stores/marketChatStore';
 import { getQueuedMarketMessages, removeQueuedWrite } from '@/lib/utils/offline';
 import { MarketMessage } from '@/types';
 
@@ -267,6 +268,39 @@ export function useChatMessages({
     setUnreadSnapshotCount(0);
     setUnreadSnapshotMessageId('');
   }, [activeChatId]);
+
+  useEffect(() => {
+    if (!activeChatId) return;
+    const stagedQuote = useMarketChatStore.getState().peekPendingQuoteMessage(activeChatId);
+    if (!stagedQuote) return;
+
+    const clientMessageId = String(stagedQuote.clientMessageId || stagedQuote.id || '').trim();
+    setPendingMessages((previous) => {
+      if (
+        clientMessageId &&
+        previous.some(
+          (message) => String(message.clientMessageId || message.id || '').trim() === clientMessageId
+        )
+      ) {
+        return previous;
+      }
+      return [...previous, stagedQuote];
+    });
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (!activeChatId) return;
+    const stagedQuote = useMarketChatStore.getState().peekPendingQuoteMessage(activeChatId);
+    if (!stagedQuote) return;
+    const clientMessageId = String(stagedQuote.clientMessageId || stagedQuote.id || '').trim();
+    if (!clientMessageId) return;
+    const isVisible = pendingMessages.some(
+      (message) => String(message.clientMessageId || message.id || '').trim() === clientMessageId
+    );
+    if (isVisible) {
+      useMarketChatStore.getState().clearPendingQuoteMessage(activeChatId);
+    }
+  }, [activeChatId, pendingMessages]);
 
   useEffect(() => {
     if (!userId || unreadSnapshotCount > 0) return;

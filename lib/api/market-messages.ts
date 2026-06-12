@@ -74,36 +74,32 @@ async function ensureDirectConversation(
   }
 
   const participantIds = [parsed.userA, parsed.userB];
+  const updatePayload: Record<string, any> = {
+    updatedAt: serverTimestamp(),
+  };
+  if (postId) {
+    updatePayload.lastContextPostId = postId;
+  }
 
-  try {
-    const updatePayload: Record<string, any> = {
-      updatedAt: serverTimestamp(),
-    };
-    if (postId) {
-      updatePayload.lastContextPostId = postId;
-    }
+  const existing = await getDoc(conversationRef);
+  if (existing.exists()) {
     await updateDoc(conversationRef, updatePayload);
     return { conversationId, isNew: false };
-  } catch (error: any) {
-    const errorCode = String(error?.code || '');
-    if (errorCode !== 'not-found' && errorCode !== 'permission-denied') {
-      throw error;
-    }
-
-    await setDoc(
-      conversationRef,
-      {
-        type: 'direct',
-        participantIds,
-        lastReadMessageIdByUser: {},
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        ...(postId ? { lastContextPostId: postId } : {}),
-      },
-      { merge: true }
-    );
-    return { conversationId, isNew: true };
   }
+
+  await setDoc(
+    conversationRef,
+    {
+      type: 'direct',
+      participantIds,
+      lastReadMessageIdByUser: {},
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      ...(postId ? { lastContextPostId: postId } : {}),
+    },
+    { merge: true }
+  );
+  return { conversationId, isNew: true };
 }
 
 type QuoteCardPayload = {

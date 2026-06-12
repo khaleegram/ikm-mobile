@@ -21,7 +21,6 @@ import { buildDirectConversationId, resolveDirectConversationPeerId } from '@/li
 import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
 import { SafeImage } from '@/components/safe-image';
 import { useInboxPeerSummaries, type InboxPeerSummary } from '@/lib/hooks/use-inbox-peer-summaries';
-import { SellerStoriesRow } from '@/components/market/seller-stories-row';
 import { haptics } from '@/lib/utils/haptics';
 
 const lightBrown = '#A67C52';
@@ -212,6 +211,7 @@ export default function MessagesScreen() {
   const [activeFilter, setActiveFilter] = useState<'chats' | 'unread'>('chats');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
+  const [activeInboxTab, setActiveInboxTab] = useState<'general' | 'orders'>('general');
   const marketLoginRoute = getLoginRouteForVariant('market');
 
   const unreadTotal = useMemo(
@@ -329,9 +329,35 @@ export default function MessagesScreen() {
         </View>
       )}
 
-      <SellerStoriesRow />
+      {renderInboxTabs()}
     </View>
   );
+
+  const renderInboxTabs = () => {
+    const tabs: { key: 'general' | 'orders'; label: string }[] = [
+      { key: 'general', label: 'General' },
+      { key: 'orders', label: 'Orders' },
+    ];
+
+    return (
+      <View style={[styles.tabBar, { borderBottomColor: colors.border }]}>
+        {tabs.map((tab) => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[styles.tab, activeInboxTab === tab.key && styles.tabActive]}
+            onPress={() => {
+              haptics.light();
+              setActiveInboxTab(tab.key);
+            }}>
+            <Text style={[styles.tabText, { color: activeInboxTab === tab.key ? colors.text : colors.textSecondary }]}>
+              {tab.label}
+            </Text>
+            {activeInboxTab === tab.key && <View style={[styles.tabIndicator, { backgroundColor: lightBrown }]} />}
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
 
   if (!user) {
     return (
@@ -609,5 +635,29 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
+  },
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    paddingHorizontal: 18,
+    marginTop: 4,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    position: 'relative',
+  },
+  tabActive: {},
+  tabText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    height: 2,
+    width: 28,
+    borderRadius: 1,
   },
 });
