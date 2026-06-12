@@ -46,15 +46,26 @@ function getStatusColor(status: string): string {
   const normalized = status.toLowerCase();
   if (normalized === 'completed' || normalized === 'received') return '#10B981';
   if (normalized === 'sent') return '#0EA5E9';
-  if (normalized === 'processing') return '#F59E0B';
+  if (normalized === 'paid' || normalized === 'accepted') return '#A67C52';
+  if (normalized === 'preparing') return '#F59E0B';
   if (normalized === 'disputed') return '#EF4444';
   if (normalized === 'cancelled') return '#9CA3AF';
+  if (normalized === 'processing') return '#F59E0B';
   return '#A67C52';
 }
 
 function isActiveStatus(status: string): boolean {
   const normalized = status.toLowerCase();
-  return normalized === 'processing' || normalized === 'sent' || normalized === 'received';
+  return normalized === 'paid' || normalized === 'accepted' || normalized === 'preparing' || normalized === 'sent' || normalized === 'processing';
+}
+
+function getStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    Paid: 'Paid', Accepted: 'Accepted', Preparing: 'Preparing',
+    Sent: 'Shipped', Received: 'Received', Completed: 'Completed',
+    Cancelled: 'Cancelled', Disputed: 'Disputed', Processing: 'Processing',
+  };
+  return map[status] || status;
 }
 
 export default function MarketOrdersScreen() {
@@ -247,7 +258,7 @@ export default function MarketOrdersScreen() {
                     </Text>
                   </View>
                   <View style={[styles.statusChip, { backgroundColor: `${statusColor}20` }]}>
-                    <Text style={[styles.statusText, { color: statusColor }]}>{item.status}</Text>
+                    <Text style={[styles.statusText, { color: statusColor }]}>{getStatusLabel(item.status)}</Text>
                   </View>
                 </View>
 

@@ -1,13 +1,13 @@
 // Order API endpoints - Uses Cloud Functions
 // 
-// NOTE: Firestore rules require order status to be 'Processing' (capital P) for new orders.
-// All status values must match exactly: 'Processing', 'Sent', 'Received', 'Completed', 'Cancelled', 'Disputed'
+// All status values: 'Paid', 'Accepted', 'Preparing', 'Sent', 'Received', 'Completed', 'Cancelled', 'Disputed'
 //
 import { coreCloudClient } from './core-cloud-client';
 import { Order, OrderStatus } from '@/types';
 
 const ORDER_FUNCTIONS = {
   updateOrderStatus: 'https://updateorderstatus-q3rjv54uka-uc.a.run.app',
+  sellerAcceptOrder: 'https://selleracceptorder-q3rjv54uka-uc.a.run.app',
   markOrderAsSent: 'https://markorderassent-q3rjv54uka-uc.a.run.app',
   markOrderAsReceived: 'https://markorderasreceived-q3rjv54uka-uc.a.run.app',
   getOrdersByCustomer: 'https://getordersbycustomer-q3rjv54uka-uc.a.run.app',
@@ -17,11 +17,7 @@ const ORDER_FUNCTIONS = {
 };
 
 export const orderApi = {
-  // Update order status
-  updateStatus: async (
-    orderId: string,
-    status: OrderStatus
-  ): Promise<Order> => {
+  updateStatus: async (orderId: string, status: OrderStatus): Promise<Order> => {
     return coreCloudClient.request<Order>(ORDER_FUNCTIONS.updateOrderStatus, {
       method: 'POST',
       body: { orderId, status },
@@ -29,13 +25,15 @@ export const orderApi = {
     });
   },
 
-  // Mark order as sent with optional photo
-  markAsSent: async (
-    orderId: string,
-    photoUrl?: string,
-    waybillParkId?: string,
-    waybillParkName?: string
-  ): Promise<Order> => {
+  sellerAccept: async (orderId: string): Promise<Order> => {
+    return coreCloudClient.request<Order>(ORDER_FUNCTIONS.sellerAcceptOrder, {
+      method: 'POST',
+      body: { orderId },
+      requiresAuth: true,
+    });
+  },
+
+  markAsSent: async (orderId: string, photoUrl?: string, waybillParkId?: string, waybillParkName?: string): Promise<Order> => {
     return coreCloudClient.request<Order>(ORDER_FUNCTIONS.markOrderAsSent, {
       method: 'POST',
       body: { orderId, photoUrl, waybillParkId, waybillParkName },
@@ -43,10 +41,7 @@ export const orderApi = {
     });
   },
 
-  // Mark order as received
-  markAsReceived: async (
-    orderId: string
-  ): Promise<Order> => {
+  markAsReceived: async (orderId: string): Promise<Order> => {
     return coreCloudClient.request<Order>(ORDER_FUNCTIONS.markOrderAsReceived, {
       method: 'POST',
       body: { orderId },
@@ -54,12 +49,7 @@ export const orderApi = {
     });
   },
 
-  // Mark order as not available
-  markAsNotAvailable: async (data: {
-    orderId: string;
-    reason?: string;
-    waitTimeDays?: number;
-  }): Promise<Order> => {
+  markAsNotAvailable: async (data: { orderId: string; reason?: string; waitTimeDays?: number }): Promise<Order> => {
     return coreCloudClient.request<Order>(ORDER_FUNCTIONS.markOrderAsNotAvailable, {
       method: 'POST',
       body: data,
@@ -67,11 +57,7 @@ export const orderApi = {
     });
   },
 
-  // Respond to availability check
-  respondToAvailability: async (data: {
-    orderId: string;
-    response: 'wait' | 'cancel';
-  }): Promise<Order> => {
+  respondToAvailability: async (data: { orderId: string; response: 'wait' | 'cancel' }): Promise<Order> => {
     return coreCloudClient.request<Order>(ORDER_FUNCTIONS.respondToAvailabilityCheck, {
       method: 'POST',
       body: data,
@@ -79,7 +65,6 @@ export const orderApi = {
     });
   },
 
-  // Get orders by seller
   getOrdersBySeller: async (): Promise<Order[]> => {
     return coreCloudClient.request<Order[]>(ORDER_FUNCTIONS.getOrdersBySeller, {
       method: 'POST',
@@ -88,7 +73,6 @@ export const orderApi = {
     });
   },
 
-  // Get orders by customer
   getOrdersByCustomer: async (): Promise<Order[]> => {
     return coreCloudClient.request<Order[]>(ORDER_FUNCTIONS.getOrdersByCustomer, {
       method: 'POST',
@@ -97,5 +81,3 @@ export const orderApi = {
     });
   },
 };
-
-

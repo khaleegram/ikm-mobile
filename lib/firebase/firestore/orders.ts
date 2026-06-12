@@ -22,6 +22,9 @@ function toOrder(docId: string, data: any): Order {
     receivedAt: data.receivedAt?.toDate?.(),
     autoReleaseDate: data.autoReleaseDate?.toDate?.(),
     fundsReleasedAt: data.fundsReleasedAt?.toDate?.(),
+    sellerAcceptedAt: data.sellerAcceptedAt?.toDate?.(),
+    preparingAt: data.preparingAt?.toDate?.(),
+    paymentVerifiedAt: data.paymentVerifiedAt?.toDate?.(),
   } as Order;
 }
 

@@ -1,37 +1,31 @@
 import { coreCloudClient } from './core-cloud-client';
-import { OrderMessage } from '@/types';
 
-const CHAT_FUNCTIONS = {
-  sendOrderMessage: 'https://sendordermessage-q3rjv54uka-uc.a.run.app',
-  markOrderMessagesAsRead: 'https://markordermessagesasread-q3rjv54uka-uc.a.run.app',
+const ORDER_CHAT_FUNCTIONS = {
+  sendOrderChatMessage: 'https://us-central1-ikm-marketplace.cloudfunctions.net/sendOrderChatMessage',
+  markOrderMessagesRead: 'https://us-central1-ikm-marketplace.cloudfunctions.net/markOrderMessagesRead',
 };
-
-export interface SendMessageData {
-  orderId: string;
-  message: string;
-}
 
 export const orderChatApi = {
-  // Send a message in order chat
-  sendMessage: async (data: SendMessageData): Promise<OrderMessage> => {
-    return coreCloudClient.request<OrderMessage>(CHAT_FUNCTIONS.sendOrderMessage, {
+  sendMessage: async (params: {
+    orderId: string;
+    text?: string;
+    type?: 'text' | 'image' | 'proof';
+    mediaUrl?: string;
+    mediaType?: string;
+    proofCategory?: 'packaging' | 'dispatch' | 'receipt' | 'damage';
+  }): Promise<{ success: boolean; messageId: string }> => {
+    return coreCloudClient.request(ORDER_CHAT_FUNCTIONS.sendOrderChatMessage, {
       method: 'POST',
-      body: {
-        orderId: data.orderId,
-        message: data.message,
-      },
+      body: params,
       requiresAuth: true,
     });
   },
 
-  // Mark messages as read
-  markAsRead: async (orderId: string, messageIds: string[]): Promise<void> => {
-    await coreCloudClient.request(CHAT_FUNCTIONS.markOrderMessagesAsRead, {
+  markMessagesRead: async (orderId: string): Promise<{ success: boolean; marked: number }> => {
+    return coreCloudClient.request(ORDER_CHAT_FUNCTIONS.markOrderMessagesRead, {
       method: 'POST',
-      body: { orderId, messageIds },
+      body: { orderId },
       requiresAuth: true,
     });
   },
 };
-
-

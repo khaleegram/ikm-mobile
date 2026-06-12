@@ -1,22 +1,13 @@
-// Client-side hooks for order chat messages (read-only)
-import { useEffect, useState } from 'react';
-import {
-  collection,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  Unsubscribe,
-  Timestamp,
-} from 'firebase/firestore';
-import { firestore } from '../config';
+import { useEffect, useRef, useState } from 'react';
+import { collection, onSnapshot, query, orderBy, limit, Unsubscribe } from 'firebase/firestore';
+import { firestore } from '@/lib/firebase/config';
 import { OrderMessage } from '@/types';
 
-// Get messages for an order with real-time updates
 export function useOrderMessages(orderId: string | null) {
   const [messages, setMessages] = useState<OrderMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const unsubRef = useRef<Unsubscribe | null>(null);
 
   useEffect(() => {
     if (!orderId) {
@@ -25,43 +16,80 @@ export function useOrderMessages(orderId: string | null) {
       return;
     }
 
+    setLoading(true);
+    setError(null);
+
     const q = query(
-      collection(firestore, 'order_messages'),
-      where('orderId', '==', orderId),
-      orderBy('createdAt', 'asc')
+      collection(firestore, 'orders', orderId, 'messages'),
+      orderBy('createdAt', 'asc'),
+      limit(100)
     );
 
-    const unsubscribe: Unsubscribe = onSnapshot(
+    const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const messagesList: OrderMessage[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          messagesList.push({
-            id: doc.id,
-            orderId: data.orderId,
-            senderId: data.senderId,
-            senderRole: data.senderRole,
-            message: data.message,
-            read: data.read || false,
-            createdAt: data.createdAt?.toDate() || new Date(),
-          });
-        });
-        console.log('[Chat] Fetched messages:', messagesList.length, 'for order:', orderId);
-        setMessages(messagesList);
+        const items: OrderMessage[] = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        } as OrderMessage));
+        setMessages(items);
         setLoading(false);
-        setError(null);
       },
       (err) => {
-        console.error('[Chat] Error fetching order messages:', err);
-        setError(err);
+        console.error('Error fetching order messages:', err);
+        setError(err as Error);
         setLoading(false);
       }
     );
 
-    return () => unsubscribe();
+    unsubRef.current = unsub;
+
+    return () => {
+      unsub();
+      unsubRef.current = null;
+    };
   }, [orderId]);
 
   return { messages, loading, error };
 }
 
+export function useOrderTimeline(orderId: string | null) {
+  const [events, setEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!orderId) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+
+    const q = query(
+      collection(firestore, 'orders', orderId, 'timeline'),
+      orderBy('createdAt', 'asc'),
+      limit(50)
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const items = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setEvents(items);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Error fetching order timeline:', err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsub();
+  }, [orderId]);
+
+  return { events, loading };
+}
