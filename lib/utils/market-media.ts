@@ -58,6 +58,14 @@ export function getMarketPostPrimaryImage(post: MarketPost | null | undefined): 
   return cover || firstImage;
 }
 
+export function getMarketPostVideoCover(post: MarketPost | null | undefined): string {
+  if (!post) return '';
+  const primary = getMarketPostPrimaryImage(post);
+  if (primary) return primary;
+  const artwork = String(post.soundMeta?.artworkUrl || '').trim();
+  return artwork;
+}
+
 export function buildMarketPostStableKey(post: MarketPost | null | undefined): string {
   if (!post) return 'market-post-unknown';
   if (post.id) return post.id;
