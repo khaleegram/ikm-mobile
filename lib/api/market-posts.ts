@@ -362,6 +362,31 @@ export const marketPostsApi = {
 
     batch.set(postRef, payload);
 
+    batch.set(
+      doc(firestore, 'marketPostScores', postRef.id),
+      {
+        postId: postRef.id,
+        posterId: user.uid,
+        hashtags,
+        status: 'active',
+        totalPoints: 0,
+        score: 0,
+        breakdown: {
+          fullCompletion: 0,
+          loops: 0,
+          dwell: 0,
+          chat: 0,
+          likes: 0,
+          favorites: 0,
+          skips: 0,
+        },
+        views: 0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
     hashtags.forEach((tag) => {
       batch.set(
         doc(firestore, 'trendingHashtags', tag),

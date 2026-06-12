@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   FieldPath,
@@ -18,6 +18,7 @@ import {
 
 import { firestore } from '../config';
 import type { MarketPost } from '@/types';
+import { marketFeedApi } from '@/lib/api/market-feed';
 import { cacheData, getCachedData } from '@/lib/utils/offline';
 
 const MARKET_POSTS_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -45,10 +46,13 @@ function asStringArray(value: unknown): string[] {
 
 export function normalizeMarketPostRecord(id: string, data: DocumentData): MarketPost {
   const videoUrl = String(data.videoUrl || '').trim();
-  const coverImageUrl = String(data.coverImageUrl || '').trim();
   const soundTitle = String(data.soundMeta?.title || '').trim();
   const soundSourceUri = String(data.soundMeta?.sourceUri || '').trim();
   const images = asStringArray(data.images);
+  const resolvedCoverImageUrl =
+    String(data.coverImageUrl || '').trim() ||
+    (videoUrl && images[0] ? images[0] : '');
+  const coverImageUrl = resolvedCoverImageUrl;
 
   return {
     id,
@@ -141,6 +145,204 @@ function buildPostsCacheUpdater(
 }
 
 const MARKET_FEED_PAGE_SIZE = 15;
+const PERSONALIZED_FEED_PAGE_SIZE = 25;
+
+function filterOutExcludedPosts(posts: MarketPost[], excludeIds: Set<string>): MarketPost[] {
+  if (!excludeIds.size) return posts;
+  return posts.filter((post) => !post.id || !excludeIds.has(post.id));
+}
+
+export function usePersonalizedMarketFeed(userId: string | null) {
+  const { likedPostIds } = useUserLikedPostIds(userId);
+  const [posts, setPosts] = useState<MarketPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const likedIdsRef = useRef<string[]>(likedPostIds);
+  likedIdsRef.current = likedPostIds;
+
+  const buildExcludeIds = useCallback(() => {
+    const exclude = new Set<string>(likedIdsRef.current);
+    seenIdsRef.current.forEach((id) => exclude.add(id));
+    return Array.from(exclude);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!userId) {
+      const cacheKey = 'market_posts_feed';
+      setLoading(true);
+      setError(null);
+
+      (async () => {
+        const cached = await getCachedData<MarketPost[]>(cacheKey);
+        if (!cancelled && cached && cached.length > 0) {
+          setPosts(normalizeCachedPosts(cached));
+          setLoading(false);
+        }
+      })();
+
+      const baseQuery = query(
+        collection(firestore, 'marketPosts'),
+        orderBy('createdAt', 'desc'),
+        limit(MARKET_FEED_PAGE_SIZE)
+      );
+
+      const unsubscribe = onSnapshot(
+        baseQuery,
+        (snapshot) => {
+          const nextPosts = snapshot.docs.map((documentSnapshot) =>
+            normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())
+          );
+          if (snapshot.docs.length > 0) {
+            lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
+            setHasMore(snapshot.docs.length === MARKET_FEED_PAGE_SIZE);
+          } else {
+            lastDocRef.current = null;
+            setHasMore(false);
+          }
+          setPosts(nextPosts);
+          cacheData(cacheKey, nextPosts, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
+          setLoading(false);
+          setError(null);
+        },
+        (err) => {
+          console.error('Error fetching market posts:', err);
+          setError(err);
+          setLoading(false);
+        }
+      );
+
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+
+    const cacheKey = `market_personalized_feed_${userId}`;
+    setLoading(true);
+    setError(null);
+    seenIdsRef.current = new Set();
+    lastDocRef.current = null;
+
+    (async () => {
+      const cached = await getCachedData<MarketPost[]>(cacheKey);
+      if (!cancelled && cached && cached.length > 0) {
+        setPosts(normalizeCachedPosts(cached));
+        cached.forEach((post) => {
+          if (post.id) seenIdsRef.current.add(post.id);
+        });
+        setLoading(false);
+      }
+
+      try {
+        const result = await marketFeedApi.getPersonalizedFeed(buildExcludeIds());
+        if (cancelled) return;
+        const excludeIds = new Set(likedIdsRef.current);
+        const nextPosts = filterOutExcludedPosts(
+          result.posts.map((post) =>
+            normalizeMarketPostRecord(String(post.id || ''), post as DocumentData)
+          ),
+          excludeIds
+        );
+        seenIdsRef.current = new Set(
+          nextPosts.map((post) => post.id).filter((id): id is string => Boolean(id))
+        );
+        setPosts(nextPosts);
+        setHasMore(nextPosts.length >= PERSONALIZED_FEED_PAGE_SIZE);
+        cacheData(cacheKey, nextPosts, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
+        setError(null);
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Error fetching personalized market feed:', err);
+          setError(err as Error);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [buildExcludeIds, userId, refreshKey]);
+
+  const loadMore = async () => {
+    if (!hasMore || loading) return;
+
+    if (!userId) {
+      if (!lastDocRef.current) return;
+      setLoading(true);
+      const nextQuery = query(
+        collection(firestore, 'marketPosts'),
+        orderBy('createdAt', 'desc'),
+        startAfter(lastDocRef.current),
+        limit(MARKET_FEED_PAGE_SIZE)
+      );
+
+      try {
+        const snapshot = await getDocs(nextQuery);
+        const nextPosts = snapshot.docs.map((documentSnapshot) =>
+          normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())
+        );
+        if (snapshot.docs.length > 0) {
+          lastDocRef.current = snapshot.docs[snapshot.docs.length - 1];
+          setHasMore(snapshot.docs.length === MARKET_FEED_PAGE_SIZE);
+          setPosts((previous) => [...previous, ...nextPosts]);
+        } else {
+          setHasMore(false);
+        }
+      } catch (err) {
+        console.error('Error loading more market posts:', err);
+        setError(err as Error);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await marketFeedApi.getPersonalizedFeed(buildExcludeIds());
+      const excludeIds = new Set([...likedIdsRef.current, ...seenIdsRef.current]);
+      const nextPosts = filterOutExcludedPosts(
+        result.posts
+          .map((post) => normalizeMarketPostRecord(String(post.id || ''), post as DocumentData))
+          .filter((post) => post.id && !seenIdsRef.current.has(post.id)),
+        excludeIds
+      );
+
+      nextPosts.forEach((post) => {
+        if (post.id) seenIdsRef.current.add(post.id);
+      });
+
+      if (nextPosts.length > 0) {
+        setPosts((previous) => [...previous, ...nextPosts]);
+      }
+      setHasMore(nextPosts.length >= PERSONALIZED_FEED_PAGE_SIZE / 2);
+      setError(null);
+    } catch (err) {
+      console.error('Error loading more personalized feed:', err);
+      setError(err as Error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refresh = () => {
+    seenIdsRef.current = new Set();
+    lastDocRef.current = null;
+    setHasMore(true);
+    setError(null);
+    setRefreshKey((previous) => previous + 1);
+  };
+
+  return { posts, loading, error, loadMore, hasMore, refresh };
+}
 
 export function useMarketPosts() {
   const [posts, setPosts] = useState<MarketPost[]>([]);
@@ -166,7 +368,6 @@ export function useMarketPosts() {
 
     const baseQuery = query(
       collection(firestore, 'marketPosts'),
-      where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
       limit(MARKET_FEED_PAGE_SIZE)
     );
@@ -208,7 +409,6 @@ export function useMarketPosts() {
     setLoading(true);
     const nextQuery = query(
       collection(firestore, 'marketPosts'),
-      where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
       startAfter(lastDocRef.current),
       limit(MARKET_FEED_PAGE_SIZE)
@@ -269,7 +469,6 @@ export function useUserMarketPosts(userId: string | null) {
     const baseQuery = query(
       collection(firestore, 'marketPosts'),
       where('posterId', '==', userId),
-      where('status', '==', 'active'),
       orderBy('createdAt', 'desc')
     );
 
@@ -292,6 +491,42 @@ export function useUserMarketPosts(userId: string | null) {
   return { posts, loading, error };
 }
 
+export function useUserLikedPostIds(userId: string | null) {
+  const [likedPostIds, setLikedPostIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!userId) {
+      setLikedPostIds([]);
+      setLoading(false);
+      return;
+    }
+
+    const likesQuery = query(
+      collection(firestore, 'marketPosts'),
+      where('likedBy', 'array-contains', userId),
+      orderBy('createdAt', 'desc'),
+      limit(300)
+    );
+
+    const unsubscribe = onSnapshot(
+      likesQuery,
+      (snapshot) => {
+        setLikedPostIds(snapshot.docs.map((docSnap) => docSnap.id).filter(Boolean));
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Error fetching liked post ids:', err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userId]);
+
+  return { likedPostIds, idSet: new Set(likedPostIds), loading };
+}
+
 export function useUserLikesCount(userId: string | null) {
   const [likesCount, setLikesCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -305,8 +540,7 @@ export function useUserLikesCount(userId: string | null) {
 
     const likesQuery = query(
       collection(firestore, 'marketPosts'),
-      where('likedBy', 'array-contains', userId),
-      where('status', '==', 'active')
+      where('likedBy', 'array-contains', userId)
     );
 
     const unsubscribe: Unsubscribe = onSnapshot(
@@ -448,7 +682,6 @@ export function useMarketPostsSearch(searchQuery: string | null) {
     if (isHashtag && hashtag) {
       const hashtagQuery = query(
         collection(firestore, 'marketPosts'),
-        where('status', '==', 'active'),
         where('hashtags', 'array-contains', hashtag),
         orderBy('createdAt', 'desc'),
         limit(50)
@@ -473,7 +706,6 @@ export function useMarketPostsSearch(searchQuery: string | null) {
 
     const textSearchQuery = query(
       collection(firestore, 'marketPosts'),
-      where('status', '==', 'active'),
       orderBy('createdAt', 'desc'),
       limit(100)
     );
@@ -533,7 +765,6 @@ export function useMarketPostsBySound(soundId: string | null) {
 
     const soundPostsQuery = query(
       collection(firestore, 'marketPosts'),
-      where('status', '==', 'active'),
       where('soundMeta.soundId', '==', soundId),
       orderBy('createdAt', 'desc'),
       limit(50)
@@ -602,7 +833,6 @@ export function useMarketPostsByPosterIds(posterIds: string[], maxItems: number 
     chunks.forEach((chunk, chunkIndex) => {
       const q = query(
         collection(firestore, 'marketPosts'),
-        where('status', '==', 'active'),
         where(new FieldPath('posterId'), 'in', chunk),
         orderBy('createdAt', 'desc'),
         limit(Math.min(50, maxItems))
@@ -639,7 +869,6 @@ export function useMarketPostsByPosterIds(posterIds: string[], maxItems: number 
 export function subscribeToMarketPosts(onPostsUpdate: (posts: MarketPost[]) => void): Unsubscribe {
   const q = query(
     collection(firestore, 'marketPosts'),
-    where('status', '==', 'active'),
     orderBy('createdAt', 'desc'),
     limit(20)
   );
@@ -665,7 +894,7 @@ export function useMarketPostsByIds(postIds: string[], maxItems: number = 20) {
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const validIds = Array.from(new Set(postIds.filter(Boolean))).slice(0, 10); // Firestore max IN clause is 10
+    const validIds = Array.from(new Set(postIds.filter(Boolean)));
     
     if (validIds.length === 0) {
       setPosts([]);
@@ -676,36 +905,58 @@ export function useMarketPostsByIds(postIds: string[], maxItems: number = 20) {
     setLoading(true);
     setError(null);
 
-    const q = query(
-      collection(firestore, 'marketPosts'),
-      where('__name__', 'in', validIds),
-      limit(maxItems)
-    );
+    // Split into chunks of 10 (Firestore `in` clause limit)
+    const chunks: string[][] = [];
+    for (let i = 0; i < validIds.length; i += 10) {
+      chunks.push(validIds.slice(i, i + 10));
+    }
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const results: MarketPost[] = [];
-        snapshot.forEach((docSnap) => {
-          results.push(normalizeMarketPostRecord(docSnap.id, docSnap.data()));
-        });
-        
-        // Preserve order from input postIds
-        const orderedResults = validIds
-          .map(id => results.find(p => p.id === id))
-          .filter((p): p is MarketPost => p !== undefined);
-          
-        setPosts(orderedResults);
-        setLoading(false);
-      },
-      (err) => {
-        console.error('Error fetching market posts by IDs:', err);
-        setError(err as Error);
-        setLoading(false);
-      }
-    );
+    const chunkResults = new Map<number, MarketPost[]>();
+    const unsubs: Unsubscribe[] = [];
 
-    return () => unsubscribe();
+    chunks.forEach((chunk, chunkIndex) => {
+      const q = query(
+        collection(firestore, 'marketPosts'),
+        where('__name__', 'in', chunk),
+        limit(chunk.length)
+      );
+
+      const unsub = onSnapshot(
+        q,
+        (snapshot) => {
+          const results: MarketPost[] = [];
+          snapshot.forEach((docSnap) => {
+            results.push(normalizeMarketPostRecord(docSnap.id, docSnap.data()));
+          });
+          chunkResults.set(chunkIndex, results);
+
+          // Merge all chunks, deduplicate, preserve original order
+          const combined = Array.from(chunkResults.values()).flat();
+          const dedup = new Map<string, MarketPost>();
+          combined.forEach((post) => {
+            if (post.id) dedup.set(post.id, post);
+          });
+          const ordered = validIds
+            .map((id) => dedup.get(id))
+            .filter((p): p is MarketPost => p !== undefined)
+            .slice(0, Math.max(1, maxItems));
+
+          setPosts(ordered);
+          setLoading(false);
+        },
+        (err) => {
+          console.error('Error fetching market posts by IDs:', err);
+          chunkResults.set(chunkIndex, []);
+          setError(err as Error);
+          setLoading(false);
+        }
+      );
+      unsubs.push(unsub);
+    });
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+    };
   }, [postIds, maxItems]);
 
   return { posts, loading, error };

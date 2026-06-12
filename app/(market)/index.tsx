@@ -10,13 +10,13 @@ import {
   StatusBar,
   TouchableOpacity,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { showToast } from '@/components/toast';
-import { useMarketPosts } from '@/lib/firebase/firestore/market-posts';
+import { usePersonalizedMarketFeed } from '@/lib/firebase/firestore/market-posts';
 import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
 import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
@@ -44,7 +44,7 @@ export default function MarketFeedScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { user: profile } = useUserProfile(user?.uid || null);
-  const { posts, loading, error, loadMore, hasMore, refresh } = useMarketPosts();
+  const { posts, loading, error, loadMore, hasMore, refresh } = usePersonalizedMarketFeed(user?.uid || null);
   const { idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
   const { idSet: savedIdSet } = useUserSavedPostIds(user?.uid || null);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -53,6 +53,10 @@ export default function MarketFeedScreen() {
   const isProgrammaticSnapRef = useRef(false);
   const activeIndexRef = useRef(0);
   const hasShownLocationPromptRef = useRef(false);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
+  const navigation = useNavigation();
 
   const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
   const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
@@ -73,6 +77,21 @@ export default function MarketFeedScreen() {
       return undefined;
     }, [viewportHeight])
   );
+
+  // Refresh feed and scroll to top when tapping Home tab while already on it
+  React.useEffect(() => {
+    const handler = (e: { preventDefault: () => void }) => {
+      if (!navigation.isFocused()) return;
+      e.preventDefault();
+      refreshRef.current();
+      const listRef = flatListRef.current;
+      if (listRef && typeof listRef.scrollToOffset === 'function') {
+        listRef.scrollToOffset({ offset: 0, animated: true });
+      }
+    };
+    navigation.addListener('tabPress' as any, handler);
+    return () => { navigation.removeListener('tabPress' as any, handler); };
+  }, [navigation]);
 
   React.useEffect(() => {
     if (!user?.uid || !profile) return;

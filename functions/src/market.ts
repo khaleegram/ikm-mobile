@@ -18,6 +18,7 @@ if (admin.apps.length === 0) {
 const corsHandler = cors({ origin: true });
 
 // Import utilities
+import { applyScoreDelta } from './feed-scoring';
 import {
   requireAuth,
   sendError,
@@ -511,7 +512,7 @@ export const likeMarketPost = onRequest(async (request, response) => {
       let likes = 0;
       let isLiked = false;
 
-      await firestore.runTransaction(async (transaction) => {
+      const txResult = await firestore.runTransaction(async (transaction) => {
         const postDoc = await transaction.get(postRef);
         if (!postDoc.exists) {
           throw new Error('Post not found');
@@ -532,7 +533,7 @@ export const likeMarketPost = onRequest(async (request, response) => {
             likes,
             updatedAt: FieldValue.serverTimestamp(),
           });
-          return;
+          return { likedDelta: -1 as const, postData };
         }
 
         likes = currentLikes + 1;
@@ -542,7 +543,21 @@ export const likeMarketPost = onRequest(async (request, response) => {
           likes,
           updatedAt: FieldValue.serverTimestamp(),
         });
+        return { likedDelta: 1 as const, postData };
       });
+
+      const posterId = String(txResult.postData.posterId || '').trim();
+      if (posterId && posterId !== auth.uid) {
+        await applyScoreDelta(postId, { like: txResult.likedDelta }, { postData: txResult.postData });
+        await firestore.collection('marketPostInteractions').add({
+          userId: auth.uid,
+          postId,
+          posterId,
+          actionType: txResult.likedDelta > 0 ? 'like' : 'unlike',
+          hashtags: Array.isArray(txResult.postData.hashtags) ? txResult.postData.hashtags : [],
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
 
       return sendResponse(response, {
         success: true,

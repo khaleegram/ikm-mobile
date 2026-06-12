@@ -14,14 +14,13 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { haptics } from '@/lib/utils/haptics';
 import { getMarketPostPrimaryImage, isVideoMarketPost } from '@/lib/utils/market-media';
+import { useFeedWatchSession } from '@/lib/hooks/use-feed-watch-session';
 import { useIsFeedItemActive, useShouldMountMedia } from '@/lib/hooks/use-feed-active-post';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { MarketVideoSurface } from './market-video-surface';
+import { MarketVideoSurface, type VideoPlaybackSnapshot } from './market-video-surface';
 import { PostOverlay } from './post-overlay';
 
 const { width, height } = Dimensions.get('window');
-const viewedPostIds = new Set<string>();
-
 function CapsuleDot({ active }: { active: boolean }) {
   const scaleAnim = useRef(new Animated.Value(active ? 1 : 0.33)).current;
 
@@ -73,6 +72,33 @@ export const FeedCard = React.memo(function FeedCard({
   const [isPaused, setIsPaused] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const scrollViewRef = useRef<ScrollView>(null);
+  const playbackSnapshotRef = useRef<VideoPlaybackSnapshot>({
+    currentTimeSec: 0,
+    durationSec: 0,
+  });
+
+  const isVideo = isVideoMarketPost(post);
+  const videoDurationSec = Number(post.videoMeta?.durationMs || 0) / 1000;
+  const isTrackingActive = Boolean(
+    post.id && isActive && isFocused && !isPaused && shouldMountMedia
+  );
+
+  const getPlaybackPosition = useCallback(() => playbackSnapshotRef.current, []);
+
+  useFeedWatchSession({
+    postId: isVideo ? post.id : null,
+    active: isVideo && isTrackingActive,
+    mediaType: 'video',
+    videoDurationSec,
+    getPlaybackPosition,
+  });
+
+  useFeedWatchSession({
+    postId: !isVideo ? post.id : null,
+    active: !isVideo && isTrackingActive,
+    mediaType: 'image_gallery',
+    videoDurationSec: 8,
+  });
 
   const serverLikes = post.likes ?? 0;
   const serverIsLiked = user?.uid ? (post.likedBy ?? []).includes(user.uid) : false;
@@ -107,7 +133,6 @@ export const FeedCard = React.memo(function FeedCard({
   }, [serverIsLiked, serverLikes, optimisticLike]);
 
   const cardHeight = itemHeight ?? height;
-  const isVideo = isVideoMarketPost(post);
   const aspectRatio =
     Number.isFinite(post.videoMeta?.aspectRatio) && Number(post.videoMeta?.aspectRatio) > 0
       ? Number(post.videoMeta?.aspectRatio)
@@ -188,21 +213,6 @@ export const FeedCard = React.memo(function FeedCard({
     setCurrentImageIndex(index);
   }, []);
 
-  useEffect(() => {
-    if (!post.id) return;
-    if (viewedPostIds.has(post.id)) return;
-
-    const timer = setTimeout(() => {
-      if (viewedPostIds.has(post.id!)) return;
-      viewedPostIds.add(post.id!);
-      marketPostsApi.incrementViews(post.id!).catch((error) => {
-        console.warn('Failed to increment views:', error);
-      });
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [post.id]);
-
   const imageRenderStart = Math.max(0, currentImageIndex - 1);
   const imageRenderEnd = Math.min(post.images.length - 1, currentImageIndex + 1);
   const posterUri = getMarketPostPrimaryImage(post);
@@ -218,6 +228,9 @@ export const FeedCard = React.memo(function FeedCard({
             <MarketVideoSurface
               active={isActive && isFocused && !isPaused}
               videoUri={post.videoUrl}
+              onPlaybackSnapshot={(snapshot) => {
+                playbackSnapshotRef.current = snapshot;
+              }}
               externalSoundUri={
                 post.soundMeta?.sourceType === 'original'
                   ? undefined
