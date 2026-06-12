@@ -29,6 +29,12 @@ service firebase.storage {
         && request.resource.size < 50 * 1024 * 1024;
     }
 
+    function isProductMediaUpload() {
+      // Product videos/audio may be sent as application/octet-stream on mobile.
+      return request.resource != null
+        && request.resource.size < 100 * 1024 * 1024;
+    }
+
     // Product images (legacy/current path requested)
     match /product_images/{userId}/{fileName} {
       allow read: if true;
@@ -49,10 +55,10 @@ service firebase.storage {
       allow write: if isOwner(userId) && isImageUploadUnder5MB();
     }
 
-    // Product images
+    // Product images, videos, and audio descriptions
     match /products/{userId}/{fileName} {
       allow read: if true;
-      allow write: if isOwner(userId) && isImageUploadUnder5MB();
+      allow write: if isOwner(userId) && (isImageUploadUnder5MB() || isProductMediaUpload());
     }
 
     // Market message images

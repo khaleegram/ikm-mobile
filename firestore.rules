@@ -57,6 +57,36 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/marketFollows/$(request.auth.uid + '_' + followedUserId)).data.followedId == followedUserId;
     }
 
+    // Authenticated users may bump a hashtag count by exactly 1 (batched with market post create).
+    function canIncrementTrendingHashtag(hashtagId) {
+      return isAuthenticated()
+        && request.resource.data.tag == hashtagId
+        && request.resource.data.tag is string
+        && request.resource.data.tag.size() > 0
+        && request.resource.data.tag.size() <= 50
+        && request.resource.data.count is int
+        && request.resource.data.count >= 1
+        && (
+          !exists(/databases/$(database)/documents/trendingHashtags/$(hashtagId))
+            ? request.resource.data.count == 1
+            : (
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['count', 'updatedAt', 'tag'])
+              && resource.data.count is int
+              && request.resource.data.count == resource.data.count + 1
+            )
+        );
+    }
+
+    // Any authenticated user may bump usageCount when reusing an existing market sound in a post.
+    function canIncrementMarketSoundUsage() {
+      return isAuthenticated()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usageCount', 'updatedAt'])
+        && request.resource.data.usageCount is int
+        && resource.data.usageCount is int
+        && request.resource.data.usageCount == resource.data.usageCount + 1
+        && request.resource.data.createdBy == resource.data.createdBy;
+    }
+
     // followerCount on users/{followedId}: -1 when deleting marketFollows/(auth + '_' + followedId) in same batch (unfollow).
     function followerCountMinusOneRemovingFollowEdge(followedUserId) {
       return isAuthenticated()
@@ -122,6 +152,25 @@ service cloud.firestore {
           && resource.data.posterId == request.auth.uid);
     }
 
+    match /marketPostInteractions/{interactionId} {
+      allow read: if isAdmin()
+        || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow list: if isAdmin() || isAuthenticated();
+      allow create, update, delete: if false;
+    }
+
+    match /marketPostScores/{postId} {
+      allow read: if true;
+      allow list: if true;
+      allow create: if isAuthenticated()
+        && request.resource.data.postId == postId
+        && request.resource.data.posterId == request.auth.uid
+        && request.resource.data.status == 'active'
+        && request.resource.data.totalPoints == 0
+        && request.resource.data.score == 0;
+      allow update, delete: if false;
+    }
+
     match /marketSounds/{soundId} {
       allow read: if true;
       allow list: if true;
@@ -142,7 +191,8 @@ service cloud.firestore {
           isAuthenticated()
           && resource.data.createdBy == request.auth.uid
           && request.resource.data.createdBy == resource.data.createdBy
-        );
+        )
+        || canIncrementMarketSoundUsage();
 
       allow delete: if isAdmin()
         || (isAuthenticated() && resource.data.createdBy == request.auth.uid);
@@ -334,15 +384,14 @@ service cloud.firestore {
     
     // Trending Hashtags Collection
     // - Public read access (anyone can view trending hashtags)
-    // - Only server-side (Cloud Functions) can write
+    // - Authenticated users may increment counts when publishing posts (batched writes)
     match /trendingHashtags/{hashtagId} {
       // Public read access
       allow read: if true;
       allow list: if true; // Allow listing with orderBy
       
-      // Only server-side can create/update (via Cloud Functions)
-      allow create: if isAdmin(); // Cloud Functions run with admin privileges
-      allow update: if isAdmin(); // Cloud Functions run with admin privileges
+      allow create: if isAdmin() || canIncrementTrendingHashtag(hashtagId);
+      allow update: if isAdmin() || canIncrementTrendingHashtag(hashtagId);
       allow delete: if isAdmin(); // Only admin can delete
     }
     
@@ -569,14 +618,15 @@ service cloud.firestore {
     }
 
     match /marketSaves/{saveId} {
+      // Doc id is always `${userId}_${postId}`; id-based checks work even before the doc exists.
       allow read: if isAdmin() || (isAuthenticated() && saveId.matches('^' + request.auth.uid + '_.*$'));
-      allow list: if isAdmin() || (isAuthenticated() && request.query.limit != null);
-      allow create: if isAuthenticated()
+      allow list: if isAdmin() || isAuthenticated();
+      allow create, update: if isAuthenticated()
+        && saveId.matches('^' + request.auth.uid + '_.*$')
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.postId is string
         && request.resource.data.postId.size() > 0;
-      allow update: if false;
-      allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin() || (isAuthenticated() && saveId.matches('^' + request.auth.uid + '_.*$'));
     }
 
     match /marketStatuses/{statusId} {
@@ -874,6 +924,76 @@ service cloud.firestore {
         || (isAuthenticated() && resource.data.uid == request.auth.uid);
       allow list: if isAdmin();
       allow create, update, delete: if false;
+    }
+
+    // ==================== ORDER COMMUNICATION ====================
+
+    // Order Chat Messages (sub-collection: orders/{orderId}/messages/{messageId})
+    // - Authenticated users can read (order access is gated by order detail page)
+    // - Creates must be server-side (cloud functions only)
+    // - Messages are immutable after creation
+    match /orders/{orderId}/messages/{messageId} {
+      allow read, list: if isAuthenticated();
+      allow create, update, delete: if false;
+    }
+
+    // Order Timeline Events (sub-collection: orders/{orderId}/timeline/{eventId})
+    // - Authenticated users can read (order access is gated by order detail page)
+    // - Written only by backend (system/cloud functions)
+    match /orders/{orderId}/timeline/{eventId} {
+      allow read, list: if isAuthenticated();
+      allow create, update, delete: if false;
+    }
+
+    // ==================== NOTIFICATIONS ====================
+
+    // Notifications Collection
+    // - User can only read their own notifications
+    // - Backend writes only
+    // - User can mark their own notifications as read
+    match /notifications/{notificationId} {
+      allow read: if isAdmin()
+        || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow list: if isAdmin()
+        || (isAuthenticated() && request.query.limit != null && request.query.limit <= 50);
+
+      allow create: if false;
+      allow delete: if false;
+
+      allow update: if isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+    }
+
+    // ==================== REVIEWS ====================
+
+    // Reviews Collection
+    // - Public read for marketplace transparency
+    // - Buyer can create one review per completed order
+    // - Reviews are immutable after creation
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow list: if true;
+
+      allow create: if isAuthenticated()
+        && request.resource.data.orderId is string
+        && request.resource.data.reviewerId == request.auth.uid
+        && request.resource.data.sellerId is string
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5;
+
+      allow update, delete: if false;
+    }
+
+    // ==================== FCM TOKENS ====================
+
+    // User FCM Tokens (sub-collection: users/{userId}/fcmTokens/{token})
+    // - Only the user can read and write their own tokens
+    match /users/{userId}/fcmTokens/{token} {
+      allow read: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow write: if isOwner(userId);
     }
   }
 }
