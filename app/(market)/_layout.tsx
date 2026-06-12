@@ -11,12 +11,19 @@ import {
   useMarketChatMessageNotifications,
   useMarketChatNotificationTapNavigation,
 } from '@/lib/hooks/use-market-chat-notifications';
+import { useFcmTokenRegistration } from '@/lib/hooks/use-fcm-token';
 import { useTheme } from '@/lib/theme/theme-context';
 
 function MarketChatNotificationsBridge() {
   const { user } = useUser();
   useMarketChatMessageNotifications(user?.uid ?? null);
   useMarketChatNotificationTapNavigation();
+  return null;
+}
+
+function FcmTokenBridge() {
+  const { user } = useUser();
+  useFcmTokenRegistration(user?.uid ?? null);
   return null;
 }
 
@@ -42,6 +49,7 @@ export default function MarketTabLayout() {
   return (
     <UploadProgressProvider>
       <MarketChatNotificationsBridge />
+      <FcmTokenBridge />
       <UploadProgressBanner />
       <Tabs tabBar={renderTabBar} screenOptions={screenOptions}>
       <Tabs.Screen
@@ -57,12 +65,12 @@ export default function MarketTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="messages"
+        name="saved"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol
               size={24}
-              name={focused ? 'message.fill' : 'message'}
+              name={focused ? 'bookmark.fill' : 'bookmark'}
               color={focused ? colors.primary : colors.textSecondary}
             />
           ),
@@ -81,12 +89,12 @@ export default function MarketTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="saved"
+        name="messages"
         options={{
           tabBarIcon: ({ focused }) => (
             <IconSymbol
               size={24}
-              name={focused ? 'bookmark.fill' : 'bookmark'}
+              name={focused ? 'message.fill' : 'message'}
               color={focused ? colors.primary : colors.textSecondary}
             />
           ),
@@ -108,6 +116,7 @@ export default function MarketTabLayout() {
       {/* Hidden screens */}
       <Tabs.Screen name="settings" options={{ href: null }} />
       <Tabs.Screen name="search" options={{ href: null }} />
+      <Tabs.Screen name="notifications" options={{ href: null }} />
       <Tabs.Screen name="post/[id]" options={{ href: null }} />
       <Tabs.Screen name="post-edit/[id]" options={{ href: null }} />
       <Tabs.Screen name="buy/[postId]" options={{ href: null }} />
@@ -117,6 +126,11 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="delivery-settings" options={{ href: null }} />
       <Tabs.Screen name="sound/[soundId]" options={{ href: null }} />
       <Tabs.Screen name="saved-sounds" options={{ href: null }} />
+      <Tabs.Screen name="following" options={{ href: null }} />
+      <Tabs.Screen name="seller/[sellerId]" options={{ href: null }} />
+      <Tabs.Screen name="post-view/[id]" options={{ href: null }} />
+      <Tabs.Screen name="status/index" options={{ href: null }} />
+      <Tabs.Screen name="status/new" options={{ href: null }} />
     </Tabs>
     </UploadProgressProvider>
   );
