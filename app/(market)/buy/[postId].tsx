@@ -416,7 +416,7 @@ export default function MarketBuyScreen() {
             <TouchableOpacity
               style={styles.savedLocationRow}
               onPress={() => setDeliveryLocation(savedBuyerLocation)}>
-              <IconSymbol name="clock.arrow.circlepath" size={14} color={colors.textSecondary} />
+              <IconSymbol name="clock.fill" size={14} color={colors.textSecondary} />
               <Text style={[styles.savedLocationText, { color: colors.textSecondary }]} numberOfLines={1}>
                 {savedBuyerLocation}
               </Text>

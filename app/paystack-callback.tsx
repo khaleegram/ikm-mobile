@@ -17,10 +17,10 @@ import {
 } from '@/lib/utils/pending-escrow-checkout';
 
 const lightBrown = '#A67C52';
-const VERIFY_POLL_MAX_ATTEMPTS = 12;
-const VERIFY_POLL_DELAY_MS = 2500;
-const VERIFY_FAST_MAX_ATTEMPTS = 3;
-const VERIFY_FAST_DELAY_MS = 750;
+const VERIFY_POLL_MAX_ATTEMPTS = 10;
+const VERIFY_POLL_DELAY_MS = 1200;
+const VERIFY_FAST_MAX_ATTEMPTS = 4;
+const VERIFY_FAST_DELAY_MS = 400;
 
 function extractPaymentReference(url: string): string {
   const normalizedUrl = String(url || '').trim();

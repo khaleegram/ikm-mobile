@@ -543,7 +543,7 @@ export const verifyPaymentAndCreateOrder = onRequest(
             sellerId,
             items: cartItems.map(({ id, name, price, quantity }: any) => ({ productId: id, name, price, quantity })),
             total: 0,
-            status: 'Processing',
+            status: 'Paid',
             deliveryAddress,
             customerInfo: { ...customerInfo, isGuest: isGuestOrder },
             escrowStatus: 'completed',
@@ -554,6 +554,9 @@ export const verifyPaymentAndCreateOrder = onRequest(
             deliveryFeePaidBy: deliveryFeePaidBy || 'buyer',
             paymentMethod: 'Free',
             createdAt: FieldValue.serverTimestamp(),
+            paymentVerifiedAt: FieldValue.serverTimestamp(),
+            sellerUnreadCount: 0,
+            buyerUnreadCount: 0,
           });
         });
 
@@ -596,7 +599,7 @@ export const verifyPaymentAndCreateOrder = onRequest(
           sellerId,
           items: cartItems.map(({ id, name, price, quantity }: any) => ({ productId: id, name, price, quantity })),
           total,
-          status: 'Processing',
+          status: 'Paid',
           deliveryAddress,
           customerInfo: { ...customerInfo, isGuest: isGuestOrder },
           escrowStatus: 'held',
@@ -608,8 +611,45 @@ export const verifyPaymentAndCreateOrder = onRequest(
           paymentMethod: 'Paystack',
           createdAt: FieldValue.serverTimestamp(),
           paymentVerifiedAt: FieldValue.serverTimestamp(),
+          sellerUnreadCount: 0,
+          buyerUnreadCount: 0,
         });
       });
+
+      const orderSummary = cartItems[0]?.name + (cartItems.length > 1 ? ` +${cartItems.length - 1} more` : '');
+
+      import('./notifications.js').then((mod) => {
+        mod.notifyBuyer({
+          buyerId: finalCustomerId!,
+          event: 'payment_success',
+          orderId: orderRef.id,
+          orderSummary: `${orderSummary} — NGN ${Number(total).toLocaleString()}`,
+        }).catch((e: any) => console.error('Failed to notify buyer:', e));
+
+        mod.notifySeller({
+          sellerId,
+          event: 'new_order',
+          orderId: orderRef.id,
+          orderSummary: `${orderSummary} — NGN ${Number(total).toLocaleString()}`,
+        }).catch((e: any) => console.error('Failed to notify seller:', e));
+      }).catch(() => {});
+
+      import('./order-chat.js').then((mod) => {
+        mod.createSystemMessage({
+          orderId: orderRef.id,
+          event: 'order_paid',
+          customText: `Order confirmed. Payment of NGN ${Number(total).toLocaleString()} received.`,
+        }).catch((e: any) => console.error('Failed to create system message:', e));
+
+        mod.createOrderTimelineEvent({
+          orderId: orderRef.id,
+          event: 'order_paid',
+          status: 'Paid',
+          text: 'Payment verified',
+          actorId: finalCustomerId!,
+          actorRole: 'buyer',
+        }).catch((e: any) => console.error('Failed to create timeline event:', e));
+      }).catch(() => {});
 
       return sendResponse(response, { success: true, orderId: orderRef.id, message: 'Order created successfully' });
     } catch (error: any) {
