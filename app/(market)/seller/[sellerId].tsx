@@ -3,6 +3,8 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Modal,
+  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,6 +14,8 @@ import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SellerBroadcastCard } from '@/components/market/seller-broadcast-card';
+import { SellerCardMediaViewer } from '@/components/market/seller-card-media-viewer';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { buildDirectConversationId } from '@/lib/api/market-messages';
@@ -22,15 +26,17 @@ import { useIsFollowing } from '@/lib/firebase/firestore/market-social';
 import { usePublicUserProfile } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
+import { startAskPriceChat } from '@/lib/utils/market-ask-price-chat';
+import { buildSellerFeedItems, type SellerFeedItem } from '@/lib/utils/seller-feed';
 import { useTheme } from '@/lib/theme/theme-context';
-import { getMarketPostPrimaryImage } from '@/lib/utils/market-media';
 import type { MarketPost } from '@/types';
 
 const lightBrown = '#A67C52';
+const TAB_BAR_CLEARANCE = 110;
 
 export default function SellerProfileScreen() {
   const { sellerId } = useLocalSearchParams<{ sellerId: string }>();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { user: seller, loading: sellerLoading } = usePublicUserProfile(sellerId ?? null);
@@ -38,6 +44,8 @@ export default function SellerProfileScreen() {
   const { isFollowing, loading: followLoading } = useIsFollowing(user?.uid ?? null, sellerId ?? null);
   const [followPending, setFollowPending] = useState(false);
   const [optimisticFollowing, setOptimisticFollowing] = useState<boolean | null>(null);
+  const [infoVisible, setInfoVisible] = useState(false);
+  const [viewingPost, setViewingPost] = useState<{ post: MarketPost; mediaIndex: number } | null>(null);
   const marketLoginRoute = getLoginRouteForVariant('market');
   const isEffectivelyFollowing = optimisticFollowing ?? isFollowing;
 
@@ -66,6 +74,35 @@ export default function SellerProfileScreen() {
     .toUpperCase()
     .slice(0, 2);
 
+  const headerSubtitle = useMemo(() => {
+    const parts: string[] = [];
+    if (seller?.bio) {
+      parts.push(seller.bio.length > 42 ? `${seller.bio.slice(0, 42)}…` : seller.bio);
+    } else if (seller?.storeLocation?.city || seller?.storeLocation?.state) {
+      parts.push([seller.storeLocation.city, seller.storeLocation.state].filter(Boolean).join(', '));
+    } else if ((seller?.followerCount ?? 0) > 0) {
+      parts.push(`${seller!.followerCount!.toLocaleString()} followers`);
+    } else {
+      parts.push('Tap for store info');
+    }
+    return parts[0];
+  }, [seller]);
+
+  const feedItems = useMemo(() => buildSellerFeedItems(posts), [posts]);
+  const cardColor = useMemo(() => {
+    if (colorScheme === 'dark') {
+      return colors.backgroundSecondary;
+    }
+    return colors.card;
+  }, [colorScheme, colors.backgroundSecondary, colors.card]);
+
+  const mediaFallbackColor = useMemo(() => {
+    if (colorScheme === 'dark') {
+      return colors.backgroundSecondary;
+    }
+    return colors.backgroundSecondary;
+  }, [colorScheme, colors.backgroundSecondary]);
+
   const handleFollow = async () => {
     if (!user) {
       Alert.alert('Login Required', 'Please log in to follow sellers', [
@@ -91,38 +128,74 @@ export default function SellerProfileScreen() {
     }
   };
 
-  const handleMessage = () => {
-    if (!user) { router.push(marketLoginRoute as any); return; }
+  const handleMessage = useCallback(() => {
+    if (!user) {
+      router.push(marketLoginRoute as any);
+      return;
+    }
     if (!sellerId) return;
     const chatId = buildDirectConversationId(user.uid, sellerId);
     router.push(`/(market)/messages/${chatId}?peerId=${encodeURIComponent(sellerId)}` as any);
-  };
+  }, [marketLoginRoute, sellerId, user]);
 
-  const renderPost = useCallback(({ item }: { item: MarketPost }) => {
-    const thumb = getMarketPostPrimaryImage(item);
-    const hasPrice = typeof item.price === 'number' && item.price > 0;
-    return (
-      <TouchableOpacity
-        style={styles.postThumb}
-        activeOpacity={0.82}
-        onPress={() => item.id && router.push(`/(market)/post-view/${item.id}` as any)}>
-        <Image
-          source={{ uri: thumb || '' }}
-          style={styles.postThumbImage}
-          contentFit="cover"
-          transition={150}
-          placeholder={{ blurhash: 'LGF5]+Yk^6#M@-5c,1J5@[or[Q6.' }}
-        />
-        {hasPrice && (
-          <View style={styles.postThumbPrice}>
-            <Text style={styles.postThumbPriceText} numberOfLines={1}>
-              ₦{Number(item.price).toLocaleString()}
-            </Text>
-          </View>
-        )}
-      </TouchableOpacity>
-    );
+  const handleAskPrice = useCallback(
+    (post: MarketPost) => {
+      void startAskPriceChat({
+        post,
+        buyerId: user?.uid || '',
+        sellerName,
+        marketLoginRoute,
+      });
+    },
+    [marketLoginRoute, sellerName, user?.uid]
+  );
+
+  const openPost = useCallback((post: MarketPost, mediaIndex = 0) => {
+    haptics.light();
+    setViewingPost({ post, mediaIndex });
   }, []);
+
+  const closeViewer = useCallback(() => {
+    setViewingPost(null);
+  }, []);
+
+  const openBuy = useCallback((post: MarketPost) => {
+    if (!post.id) return;
+    router.push(`/(market)/buy/${post.id}` as any);
+  }, []);
+
+  const renderItem = useCallback(
+    ({ item }: { item: SellerFeedItem }) => {
+      if (item.kind === 'date') {
+        return (
+          <View style={styles.dateSeparatorWrap}>
+            <View style={[styles.dateSeparator, { backgroundColor: cardColor }]}>
+              <Text style={[styles.dateSeparatorText, { color: colors.textSecondary }]}>{item.label}</Text>
+            </View>
+          </View>
+        );
+      }
+
+      const hasPrice = typeof item.post.price === 'number' && item.post.price > 0;
+
+      return (
+        <SellerBroadcastCard
+          post={item.post}
+          sellerAvatarUri={avatarUri}
+          bubbleColor={cardColor}
+          borderColor={colors.border}
+          mediaFallbackColor={mediaFallbackColor}
+          textColor={colors.text}
+          textSecondary={colors.textSecondary}
+          accentColor={lightBrown}
+          onPress={(mediaIndex) => openPost(item.post, mediaIndex)}
+          onBuyPress={hasPrice ? () => openBuy(item.post) : undefined}
+          onAskPress={!isOwnProfile ? () => handleAskPrice(item.post) : undefined}
+        />
+      );
+    },
+    [avatarUri, cardColor, colors.border, colors.text, colors.textSecondary, handleAskPrice, isOwnProfile, mediaFallbackColor, openBuy, openPost]
+  );
 
   if (sellerLoading) {
     return (
@@ -134,119 +207,205 @@ export default function SellerProfileScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Header bar */}
-      <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+      {/* Compact WhatsApp-style header */}
+      <View style={[styles.topBar, { paddingTop: insets.top + 4, borderBottomColor: colors.border, backgroundColor: colors.background }]}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.iconBtn}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <IconSymbol name="chevron.left" size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.topBarTitle, { color: colors.text }]} numberOfLines={1}>
-          {sellerName}
-        </Text>
-        <View style={{ width: 44 }} />
+
+        <TouchableOpacity
+          style={styles.headerIdentity}
+          activeOpacity={0.75}
+          onPress={() => setInfoVisible(true)}>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.headerAvatar} contentFit="cover" />
+          ) : (
+            <View style={[styles.headerAvatar, styles.avatarFallback, { backgroundColor: `${lightBrown}33` }]}>
+              <Text style={[styles.avatarInitials, { color: lightBrown }]}>{initials}</Text>
+            </View>
+          )}
+          <View style={styles.headerTextBlock}>
+            <Text style={[styles.headerName, { color: colors.text }]} numberOfLines={1}>
+              {sellerName}
+            </Text>
+            <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+              {headerSubtitle}
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        {!isOwnProfile ? (
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={handleFollow}
+              disabled={followPending || followLoading}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              {followPending ? (
+                <ActivityIndicator size="small" color={lightBrown} />
+              ) : (
+                <IconSymbol
+                  name={isEffectivelyFollowing ? 'checkmark.circle.fill' : 'plus.circle'}
+                  size={22}
+                  color={isEffectivelyFollowing ? lightBrown : colors.text}
+                />
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={handleMessage}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <IconSymbol name="message.fill" size={22} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={{ width: 44 }} />
+        )}
       </View>
 
+      {/* Feed */}
       <FlatList
-        data={posts}
-        keyExtractor={(item) => item.id ?? Math.random().toString()}
-        renderItem={renderPost}
-        numColumns={3}
+        data={feedItems}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItem}
         showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <View style={styles.profileHeader}>
-            {/* Avatar */}
-            <View style={styles.avatarRow}>
+        style={{ backgroundColor: colors.background }}
+        ListEmptyComponent={
+          postsLoading ? (
+            <View style={styles.emptyWrap}>
+              <ActivityIndicator color={lightBrown} />
+            </View>
+          ) : (
+            <View style={styles.emptyWrap}>
+              <IconSymbol name="bag" size={40} color={colors.textSecondary} />
+              <Text style={[styles.emptyTitle, { color: colors.text }]}>No listings yet</Text>
+              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+                When {sellerName} posts items, they will appear here.
+              </Text>
+            </View>
+          )
+        }
+        contentContainerStyle={{
+          paddingTop: 8,
+          paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
+          flexGrow: feedItems.length === 0 ? 1 : undefined,
+        }}
+      />
+
+      <SellerCardMediaViewer
+        post={viewingPost?.post ?? null}
+        initialMediaIndex={viewingPost?.mediaIndex ?? 0}
+        visible={viewingPost !== null}
+        onClose={closeViewer}
+        accentColor={lightBrown}
+        onBuyPress={
+          viewingPost &&
+          typeof viewingPost.post.price === 'number' &&
+          viewingPost.post.price > 0
+            ? () => {
+                closeViewer();
+                openBuy(viewingPost.post);
+              }
+            : undefined
+        }
+        onAskPress={
+          !isOwnProfile && viewingPost
+            ? () => {
+                const post = viewingPost.post;
+                closeViewer();
+                void startAskPriceChat({
+                  post,
+                  buyerId: user?.uid || '',
+                  sellerName,
+                  marketLoginRoute,
+                });
+              }
+            : undefined
+        }
+      />
+
+      {/* Store info modal */}
+      <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setInfoVisible(false)}>
+          <Pressable
+            style={[styles.infoSheet, { backgroundColor: colors.card, borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}>
+            <View style={styles.infoHeader}>
               {avatarUri ? (
-                <Image source={{ uri: avatarUri }} style={styles.avatar} contentFit="cover" />
+                <Image source={{ uri: avatarUri }} style={styles.infoAvatar} contentFit="cover" />
               ) : (
-                <View style={[styles.avatar, styles.avatarFallback, { backgroundColor: `${lightBrown}33` }]}>
-                  <Text style={[styles.avatarInitials, { color: lightBrown }]}>{initials}</Text>
+                <View style={[styles.infoAvatar, styles.avatarFallback, { backgroundColor: `${lightBrown}33` }]}>
+                  <Text style={[styles.avatarInitials, { color: lightBrown, fontSize: 28 }]}>{initials}</Text>
                 </View>
               )}
-
-              <View style={styles.statsRow}>
-                {[
-                  { label: 'Posts', value: posts.length },
-                  { label: 'Followers', value: seller?.followerCount ?? 0 },
-                  { label: 'Following', value: seller?.followingCount ?? 0 },
-                ].map((stat) => (
-                  <View key={stat.label} style={styles.stat}>
-                    <Text style={[styles.statValue, { color: colors.text }]}>{stat.value}</Text>
-                    <Text style={[styles.statLabel, { color: colors.textSecondary }]}>{stat.label}</Text>
-                  </View>
-                ))}
-              </View>
+              <Text style={[styles.infoName, { color: colors.text }]}>{sellerName}</Text>
+              {seller?.storeName && seller.storeName !== sellerName ? (
+                <Text style={[styles.infoStoreName, { color: colors.textSecondary }]}>{seller.storeName}</Text>
+              ) : null}
             </View>
 
-            {/* Name + bio */}
-            <Text style={[styles.name, { color: colors.text }]}>{sellerName}</Text>
-            {seller?.storeName && seller.storeName !== sellerName ? (
-              <Text style={[styles.storeName, { color: colors.textSecondary }]}>{seller.storeName}</Text>
-            ) : null}
             {seller?.bio ? (
-              <Text style={[styles.bio, { color: colors.text }]}>{seller.bio}</Text>
+              <Text style={[styles.infoBio, { color: colors.text }]}>{seller.bio}</Text>
             ) : null}
+
             {seller?.storeLocation?.city || seller?.storeLocation?.state ? (
-              <View style={styles.locationRow}>
-                <IconSymbol name="location.fill" size={12} color={colors.textSecondary} />
-                <Text style={[styles.locationText, { color: colors.textSecondary }]}>
+              <View style={styles.infoRow}>
+                <IconSymbol name="location.fill" size={14} color={colors.textSecondary} />
+                <Text style={[styles.infoRowText, { color: colors.textSecondary }]}>
                   {[seller.storeLocation.city, seller.storeLocation.state].filter(Boolean).join(', ')}
                 </Text>
               </View>
             ) : null}
 
-            {/* Action buttons */}
-            {!isOwnProfile && (
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  style={[
-                    styles.followBtn,
-                    isEffectivelyFollowing
-                      ? { backgroundColor: colors.backgroundSecondary, borderWidth: 1, borderColor: colors.border }
-                      : { backgroundColor: lightBrown },
-                  ]}
-                  onPress={handleFollow}
-                  activeOpacity={0.82}
-                  disabled={followPending || followLoading}>
-                  {followPending ? (
-                    <ActivityIndicator size="small" color={isEffectivelyFollowing ? colors.text : '#FFF'} />
-                  ) : (
-                    <Text style={[styles.followBtnText, { color: isEffectivelyFollowing ? colors.text : '#FFF' }]}>
-                      {isEffectivelyFollowing ? 'Following' : 'Follow'}
-                    </Text>
-                  )}
-                </TouchableOpacity>
+            <View style={styles.infoStatsRow}>
+              <View style={styles.infoStat}>
+                <Text style={[styles.infoStatValue, { color: colors.text }]}>{posts.length}</Text>
+                <Text style={[styles.infoStatLabel, { color: colors.textSecondary }]}>Listings</Text>
+              </View>
+              <View style={styles.infoStat}>
+                <Text style={[styles.infoStatValue, { color: colors.text }]}>{seller?.followerCount ?? 0}</Text>
+                <Text style={[styles.infoStatLabel, { color: colors.textSecondary }]}>Followers</Text>
+              </View>
+              <View style={styles.infoStat}>
+                <Text style={[styles.infoStatValue, { color: colors.text }]}>{seller?.followingCount ?? 0}</Text>
+                <Text style={[styles.infoStatLabel, { color: colors.textSecondary }]}>Following</Text>
+              </View>
+            </View>
 
+            {!isOwnProfile ? (
+              <View style={styles.infoActions}>
                 <TouchableOpacity
-                  style={[styles.dmBtn, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}
-                  onPress={handleMessage}
-                  activeOpacity={0.82}>
+                  style={[styles.infoFollowBtn, { backgroundColor: isEffectivelyFollowing ? colors.backgroundSecondary : lightBrown, borderColor: colors.border, borderWidth: isEffectivelyFollowing ? 1 : 0 }]}
+                  onPress={handleFollow}
+                  disabled={followPending || followLoading}>
+                  <Text style={[styles.infoFollowBtnText, { color: isEffectivelyFollowing ? colors.text : '#FFF' }]}>
+                    {isEffectivelyFollowing ? 'Following' : 'Follow store'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.infoMessageBtn, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}
+                  onPress={() => {
+                    setInfoVisible(false);
+                    handleMessage();
+                  }}>
                   <IconSymbol name="message.fill" size={16} color={colors.text} />
-                  <Text style={[styles.dmBtnText, { color: colors.text }]}>Message</Text>
+                  <Text style={[styles.infoMessageBtnText, { color: colors.text }]}>Message</Text>
                 </TouchableOpacity>
               </View>
-            )}
+            ) : null}
 
-            <View style={[styles.divider, { backgroundColor: colors.border }]} />
-          </View>
-        }
-        ListEmptyComponent={
-          postsLoading ? (
-            <View style={styles.center}>
-              <ActivityIndicator color={lightBrown} />
-            </View>
-          ) : (
-            <View style={styles.emptyPosts}>
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No posts yet</Text>
-            </View>
-          )
-        }
-        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-      />
+            <TouchableOpacity style={styles.infoCloseBtn} onPress={() => setInfoVisible(false)}>
+              <Text style={[styles.infoCloseBtnText, { color: colors.textSecondary }]}>Close</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
-
-const THUMB_SIZE = 124;
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -254,151 +413,187 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
+    paddingHorizontal: 4,
     paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  backBtn: {
+  iconBtn: {
     width: 44,
     height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  topBarTitle: {
+  headerIdentity: {
     flex: 1,
-    textAlign: 'center',
-    fontSize: 17,
-    fontWeight: '700',
-  },
-  profileHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-  },
-  avatarRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 20,
-    marginBottom: 12,
+    gap: 10,
+    minWidth: 0,
   },
-  avatar: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
+  headerAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
   },
   avatarFallback: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarInitials: {
-    fontSize: 32,
-    fontWeight: '800',
-  },
-  statsRow: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  stat: {
-    alignItems: 'center',
-    gap: 2,
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  statLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  name: {
-    fontSize: 17,
-    fontWeight: '800',
-    marginBottom: 2,
-  },
-  storeName: {
     fontSize: 13,
-    fontWeight: '500',
-    marginBottom: 4,
+    fontWeight: '800',
   },
-  bio: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 6,
-  },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: 6,
-  },
-  locationText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  actionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-    marginBottom: 16,
-  },
-  followBtn: {
+  headerTextBlock: {
     flex: 1,
-    height: 38,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
+    minWidth: 0,
   },
-  followBtnText: {
+  headerName: {
     fontSize: 15,
     fontWeight: '700',
   },
-  dmBtn: {
-    flex: 1,
-    height: 38,
+  headerSubtitle: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dateSeparatorWrap: {
+    alignItems: 'center',
+    marginVertical: 6,
+  },
+  dateSeparator: {
     borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  dateSeparatorText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  emptyWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingVertical: 60,
+    gap: 8,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  emptyText: {
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  infoSheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 28,
+  },
+  infoHeader: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  infoAvatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    marginBottom: 10,
+  },
+  infoName: {
+    fontSize: 20,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  infoStoreName: {
+    fontSize: 14,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  infoBio: {
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 16,
+  },
+  infoRowText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  infoStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 16,
+  },
+  infoStat: {
+    alignItems: 'center',
+    gap: 2,
+  },
+  infoStatValue: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  infoStatLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  infoActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 8,
+  },
+  infoFollowBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoFollowBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  infoMessageBtn: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     borderWidth: 1,
   },
-  dmBtnText: {
+  infoMessageBtnText: {
     fontSize: 15,
     fontWeight: '700',
   },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    marginBottom: 2,
-  },
-  postThumb: {
-    width: THUMB_SIZE,
-    height: THUMB_SIZE,
-    margin: 1,
-    position: 'relative',
-  },
-  postThumbImage: {
-    width: '100%',
-    height: '100%',
-  },
-  postThumbPrice: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 4,
-    paddingVertical: 3,
-  },
-  postThumbPriceText: {
-    color: '#FFF',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  emptyPosts: {
+  infoCloseBtn: {
     alignItems: 'center',
-    paddingVertical: 40,
+    paddingTop: 12,
   },
-  emptyText: {
+  infoCloseBtnText: {
     fontSize: 15,
-    fontWeight: '500',
+    fontWeight: '600',
   },
 });
