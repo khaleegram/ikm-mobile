@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
@@ -12,7 +12,7 @@ import { PostActionsSheet } from '@/components/market/post-actions-sheet';
 import { PostManageSheet } from '@/components/market/post-manage-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
-import { buildDirectConversationId, marketMessagesApi } from '@/lib/api/market-messages';
+import { marketFeedApi } from '@/lib/api/market-feed';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { marketSocialApi } from '@/lib/api/market-social';
 import { useFeedSocial } from '@/lib/context/feed-social-context';
@@ -21,7 +21,7 @@ import { toggleMarketSave, useIsFollowing, useIsSaved } from '@/lib/firebase/fir
 import { usePublicUserProfileOnce } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
-import { getMarketPostPrimaryImage } from '@/lib/utils/market-media';
+import { startPostQuoteChat } from '@/lib/utils/market-ask-price-chat';
 import { shareMarketPost } from '@/lib/utils/market-post-share';
 import { MarketPost } from '@/types';
 
@@ -84,7 +84,6 @@ interface PostOverlayProps {
   onLike: () => void;
   onComment?: () => void;
   onShare?: () => void;
-  onAskForPrice?: () => void;
 }
 
 function RailIconButton({
@@ -110,7 +109,6 @@ export const PostOverlay = React.memo(function PostOverlay({
   likes,
   isLiked,
   onLike,
-  onAskForPrice,
 }: PostOverlayProps) {
   const { user } = useUser();
   const { enabled: feedSocialEnabled, followingIdSet, savedIdSet } = useFeedSocial();
@@ -125,7 +123,6 @@ export const PostOverlay = React.memo(function PostOverlay({
   const [followPending, setFollowPending] = useState(false);
   const [optimisticFollowing, setOptimisticFollowing] = useState<boolean | null>(null);
   const [optimisticSaved, setOptimisticSaved] = useState<boolean | null>(null);
-  const openingChatRef = useRef(false);
   const posterId = String(post.posterId || '').trim();
   const postId = String(post.id || '').trim();
   const { isFollowing: hookIsFollowing } = useIsFollowing(
@@ -178,11 +175,15 @@ export const PostOverlay = React.memo(function PostOverlay({
       router.push(marketLoginRoute as any);
       return;
     }
+    if (!postId) return;
     const nextSaved = !isEffectivelySaved;
     setOptimisticSaved(nextSaved);
     haptics.light();
     try {
-      await toggleMarketSave(user.uid, post.id, isSaved);
+      await toggleMarketSave(user.uid, postId);
+      if (nextSaved) {
+        void marketFeedApi.logAction(postId, 'favorite');
+      }
     } catch (error) {
       setOptimisticSaved(isSaved);
       console.error('Error toggling save state:', error);
@@ -220,45 +221,17 @@ export const PostOverlay = React.memo(function PostOverlay({
   };
 
   /* ─── Open chat ─── */
-  const openChat = async (mode: 'ask-price' | 'dm') => {
-    if (onAskForPrice) { onAskForPrice(); return; }
-    if (!user) {
-      Alert.alert('Login Required', 'Please log in to message sellers', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Login', onPress: () => router.push(marketLoginRoute as any) },
-      ]);
-      return;
+  const openChat = (mode: 'ask-price' | 'dm') => {
+    if (postId && user?.uid) {
+      void marketFeedApi.logAction(postId, 'chat');
     }
-    if (!post.id || !post.posterId) { showToast('Unable to start chat for this post', 'error'); return; }
-    if (openingChatRef.current) return;
-    openingChatRef.current = true;
-    const chatId = buildDirectConversationId(user.uid, post.posterId);
-    const quotePreview = hasPrice
-      ? `Post preview - NGN ${Number(post.price).toLocaleString()}${locationText ? ` - ${locationText}` : ''}`
-      : `Post preview${locationText ? ` - ${locationText}` : ''}`;
-    const autoText = mode === 'ask-price'
-      ? `Hi ${posterName}, I'd like to ask for the price of this item.`
-      : `Hi ${posterName}, I'm interested in this post.`;
-    try {
-      haptics.medium();
-      router.push(`/(market)/messages/${chatId}?peerId=${encodeURIComponent(post.posterId)}` as any);
-    } catch (e: any) {
-      openingChatRef.current = false;
-      haptics.error();
-      showToast(e?.message || 'Failed to open chat', 'error');
-      return;
-    }
-    void (async () => {
-      try {
-        await marketMessagesApi.sendQuoteMessage(
-          chatId,
-          { postId: post.id, previewText: quotePreview, previewImage: getMarketPostPrimaryImage(post) || undefined },
-          autoText
-        );
-      } catch { /* silent */ } finally {
-        openingChatRef.current = false;
-      }
-    })();
+    void startPostQuoteChat({
+      post,
+      buyerId: user?.uid || '',
+      sellerName: posterName,
+      mode,
+      marketLoginRoute,
+    });
   };
 
   const handleBuyNow = () => {

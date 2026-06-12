@@ -58,6 +58,16 @@ import type { MarketSound } from "@/types";
 const LIGHT_BROWN = "#A67C52";
 const MAX_IMAGES = 20;
 const HASHTAG_REGEX = /(^|\s)#([a-zA-Z0-9_]+)/g;
+const FALLBACK_TRENDING_HASHTAGS = [
+  "fashion",
+  "lagos",
+  "abuja",
+  "sale",
+  "new",
+  "vintage",
+  "beauty",
+  "phones",
+];
 
 function extractHashtags(text: string): string[] {
   const found: string[] = [];
@@ -115,7 +125,11 @@ function Chip({
 
 function normalizeCreatePostError(error: unknown): string {
   const raw = (error as any)?.message || "Unable to publish post.";
+  const code = String((error as any)?.code || "").toLowerCase();
   const lower = String(raw).toLowerCase();
+  if (code.includes("permission") || lower.includes("permission")) {
+    return "Permission denied while publishing. Please try again in a moment.";
+  }
   if (lower.includes("photo")) return "Please add at least one photo.";
   if (lower.includes("video")) return "Please pick a video before publishing.";
   if (lower.includes("document picker"))
@@ -181,14 +195,21 @@ export default function CreatePostScreen() {
       orderBy("count", "desc"),
       limit(30),
     );
-    const unsub = onSnapshot(q, (snap) => {
-      const tags: string[] = [];
-      snap.forEach((d) => {
-        const tag = d.data()?.tag;
-        if (typeof tag === "string" && tag.trim()) tags.push(tag.trim().toLowerCase());
-      });
-      setTrendingSuggestions(tags);
-    }, () => { /* silent fail — suggestions are non-critical */ });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const tags: string[] = [];
+        snap.forEach((d) => {
+          const tag = d.data()?.tag;
+          if (typeof tag === "string" && tag.trim()) tags.push(tag.trim().toLowerCase());
+        });
+        setTrendingSuggestions(tags.length > 0 ? tags : FALLBACK_TRENDING_HASHTAGS);
+      },
+      (error) => {
+        console.warn("Trending hashtag suggestions unavailable:", error);
+        setTrendingSuggestions(FALLBACK_TRENDING_HASHTAGS);
+      },
+    );
     return unsub;
   }, []);
 
@@ -199,31 +220,51 @@ export default function CreatePostScreen() {
 
   const hashtags = useMemo(() => extractHashtags(description), [description]);
 
-  // Filtered suggestions: match partial, exclude already-used tags
-  const activeSuggestions = useMemo(() => {
-    if (!captionFocused) return [];
-    const lastWord = description.split(/\s/).pop() ?? "";
-    if (!lastWord.startsWith("#")) return [];
-    const partial = lastWord.slice(1).toLowerCase();
-    const usedTags = new Set(hashtags);          // hashtags already in caption
-    return trendingSuggestions
-      .filter((t) => !usedTags.has(t) && (partial === "" || t.startsWith(partial)))
-      .slice(0, 12);
+  const hashtagBar = useMemo(() => {
+    if (!captionFocused) {
+      return { visible: false, label: "TRENDING", chips: [] as string[] };
+    }
+
+    const pool = trendingSuggestions.length > 0
+      ? trendingSuggestions
+      : FALLBACK_TRENDING_HASHTAGS;
+    const usedTags = new Set(hashtags);
+    const unused = pool.filter((tag) => !usedTags.has(tag));
+    const lastWord = description.trimEnd().split(/\s/).pop() ?? "";
+
+    if (lastWord.startsWith("#")) {
+      const partial = lastWord.slice(1).toLowerCase();
+      const matches = unused
+        .filter((tag) => partial === "" || tag.startsWith(partial))
+        .slice(0, 12);
+
+      if (matches.length > 0) {
+        return { visible: true, label: "SUGGESTIONS", chips: matches };
+      }
+    }
+
+    return { visible: true, label: "TRENDING", chips: unused.slice(0, 12) };
   }, [captionFocused, description, trendingSuggestions, hashtags]);
 
-  // Autocomplete: replace the partial #word at the end with the tapped tag
   const applyHashtagSuggestion = useCallback((tag: string) => {
     haptics.light();
     setDescription((prev) => {
-      const words = prev.split(/(\s)/);          // keep whitespace tokens
-      // Walk backwards to replace the last word that starts with #
-      for (let i = words.length - 1; i >= 0; i--) {
-        if (words[i].startsWith("#")) {
-          words[i] = `#${tag}`;
-          break;
+      const trimmed = prev.trimEnd();
+      const lastWord = trimmed.split(/\s/).pop() ?? "";
+
+      if (lastWord.startsWith("#")) {
+        const words = prev.split(/(\s)/);
+        for (let i = words.length - 1; i >= 0; i--) {
+          if (words[i].startsWith("#")) {
+            words[i] = `#${tag}`;
+            break;
+          }
         }
+        return `${words.join("")} `;
       }
-      return words.join("") + " ";              // append space after completion
+
+      const spacer = trimmed.length > 0 && !trimmed.endsWith(" ") ? " " : "";
+      return `${trimmed}${spacer}#${tag} `;
     });
   }, []);
 
@@ -706,27 +747,31 @@ export default function CreatePostScreen() {
             </View>
           </View>
 
-          {/* Trending hashtag suggestions */}
-          {activeSuggestions.length > 0 && (
+          {/* Trending while caption is focused; autocomplete replaces it while typing #tag */}
+          {hashtagBar.visible && (
             <View style={[styles.suggestionsWrap, { borderTopColor: colors.border }]}>
-              <Text style={[styles.suggestionsLabel, { color: LIGHT_BROWN }]}>TRENDING</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.suggestionsRow}
-                keyboardShouldPersistTaps="always"
-              >
-                {activeSuggestions.map((tag) => (
-                  <TouchableOpacity
-                    key={tag}
-                    style={[styles.suggestionChip, { backgroundColor: `${LIGHT_BROWN}15`, borderColor: `${LIGHT_BROWN}40` }]}
-                    onPress={() => applyHashtagSuggestion(tag)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.suggestionChipText, { color: LIGHT_BROWN }]}>#{tag}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+              <Text style={[styles.suggestionsLabel, { color: LIGHT_BROWN }]}>
+                {hashtagBar.label}
+              </Text>
+              {hashtagBar.chips.length > 0 ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.suggestionsRow}
+                  keyboardShouldPersistTaps="always"
+                >
+                  {hashtagBar.chips.map((tag) => (
+                    <TouchableOpacity
+                      key={tag}
+                      style={[styles.suggestionChip, { backgroundColor: `${LIGHT_BROWN}15`, borderColor: `${LIGHT_BROWN}40` }]}
+                      onPress={() => applyHashtagSuggestion(tag)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.suggestionChipText, { color: LIGHT_BROWN }]}>#{tag}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              ) : null}
             </View>
           )}
 
