@@ -181,24 +181,32 @@ export function useUserSavedPostIds(userId: string | null) {
       return;
     }
 
+    // No orderBy: avoids needing a composite index. Sorted client-side below.
     const q = query(
       collection(firestore, 'marketSaves'),
       where('userId', '==', userId),
-      orderBy('savedAt', 'desc'),
       limit(500)
     );
 
     const unsubscribe: Unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        setIds(
-          snapshot.docs
-            .map((docSnap) => String(docSnap.data()?.postId || '').trim())
-            .filter(Boolean)
-        );
+        const entries = snapshot.docs
+          .map((docSnap) => {
+            const data = docSnap.data() || {};
+            const postId = String(data.postId || '').trim();
+            const savedAtMs =
+              typeof data.savedAt?.toMillis === 'function' ? data.savedAt.toMillis() : 0;
+            return { postId, savedAtMs };
+          })
+          .filter((entry) => Boolean(entry.postId));
+
+        entries.sort((a, b) => b.savedAtMs - a.savedAtMs);
+        setIds(entries.map((entry) => entry.postId));
         setLoading(false);
       },
-      () => {
+      (err) => {
+        console.error('[useUserSavedPostIds] snapshot error:', err);
         setIds([]);
         setLoading(false);
       }
@@ -247,12 +255,15 @@ export function useIsSaved(userId: string | null, postId: string | null) {
   return { isSaved, loading };
 }
 
-export async function toggleMarketSave(userId: string, postId: string, isCurrentlySaved: boolean) {
-  const { doc, setDoc, deleteDoc, serverTimestamp } = await import('firebase/firestore');
+export async function toggleMarketSave(userId: string, postId: string) {
+  const { doc, setDoc, deleteDoc, getDoc, serverTimestamp } = await import('firebase/firestore');
 
   const saveRef = doc(firestore, 'marketSaves', saveDocId(userId, postId));
 
-  if (isCurrentlySaved) {
+  // Always check the server state first — client-side state can be stale
+  const snap = await getDoc(saveRef);
+
+  if (snap.exists()) {
     await deleteDoc(saveRef);
   } else {
     await setDoc(saveRef, {

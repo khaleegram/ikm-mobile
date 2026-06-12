@@ -19,7 +19,7 @@ const CENTER_BUTTON_OFFSET = 12;
 const NOTCH_DEPTH = 22;
 const IOS_MARKET_BOTTOM_GAP = 6;
 const lightBrown = '#A67C52';
-const MARKET_TABS_ORDER = ['index', 'messages', 'create-post', 'saved', 'profile'] as const;
+const MARKET_TABS_ORDER = ['index', 'saved', 'create-post', 'messages', 'profile'] as const;
 type MarketTabName = (typeof MARKET_TABS_ORDER)[number];
 const MARKET_LABELS: Record<(typeof MARKET_TABS_ORDER)[number], string> = {
   index: 'Home',
@@ -140,7 +140,7 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   if (shouldHideTabBar) {
     return null;
   }
-  const isImmersiveMarketFeed = isMarketStreet && getMarketTabName(focusedRoute.name) === 'index';
+  const isImmersiveMarketFeed = isMarketStreet && (getMarketTabName(focusedRoute.name) === 'index' || getMarketTabName(focusedRoute.name) === 'saved');
   const focusedAccentColor = Platform.OS === 'ios' ? lightBrown : colors.primary;
 
   const totalHeight = TAB_BAR_HEIGHT + insets.bottom;
