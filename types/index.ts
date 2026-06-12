@@ -331,7 +331,7 @@ export interface Product {
 }
 
 // Order Collection - matches Firebase schema exactly
-export type OrderStatus = 'Processing' | 'Sent' | 'Received' | 'Completed' | 'Cancelled' | 'Disputed' | 'AvailabilityCheck';
+export type OrderStatus = 'PendingPayment' | 'Paid' | 'Processing' | 'Accepted' | 'Preparing' | 'Sent' | 'Received' | 'Completed' | 'Cancelled' | 'Disputed' | 'AvailabilityCheck';
 
 export interface Order {
   id?: string;                    // Document ID
@@ -429,29 +429,24 @@ export interface Order {
     createdAt: Timestamp | Date;
     processedAt?: Timestamp | Date;
   }>;
-  
+
+  // Order Communication
+  lastMessage?: {
+    text: string;
+    senderRole: string;
+    createdAt: Timestamp | Date;
+  };
+  sellerUnreadCount?: number;
+  buyerUnreadCount?: number;
+
+  // Extended State Timestamps
+  sellerAcceptedAt?: Timestamp | Date;
+  preparingAt?: Timestamp | Date;
+  paymentVerifiedAt?: Timestamp | Date;
+
   // Timestamps
   createdAt?: Timestamp | Date;
   updatedAt?: Timestamp | Date;
-}
-
-// Order Chat Message
-export interface OrderMessage {
-  id?: string;                    // Document ID
-  orderId: string;                // Order ID
-  senderId: string;               // User ID of sender (customer or seller)
-  senderRole: 'customer' | 'seller' | 'admin';
-  message: string;                // Message text
-  read: boolean;                  // Whether message has been read
-  createdAt?: Timestamp | Date;
-}
-
-// Order Item (simplified for display)
-export interface OrderItem {
-  productId: string;
-  name: string;
-  price: number;
-  quantity: number;
 }
 
 // Notification Collection
@@ -674,6 +669,53 @@ export interface MarketPost {
   expiresAt?: Timestamp | Date;  // Optional auto-hide
 }
 
+export type MarketPostInteractionAction =
+  | 'watch_session'
+  | 'full_completion'
+  | 'loop'
+  | 'immediate_skip'
+  | 'like'
+  | 'unlike'
+  | 'favorite'
+  | 'chat';
+
+export interface MarketPostInteraction {
+  id?: string;
+  userId: string;
+  postId: string;
+  posterId: string;
+  actionType: MarketPostInteractionAction;
+  watchTimeSec?: number;
+  videoDurationSec?: number;
+  loopCount?: number;
+  completionRate?: number;
+  hashtags?: string[];
+  createdAt: Timestamp | Date;
+}
+
+export interface MarketPostScoreBreakdown {
+  fullCompletion: number;
+  loops: number;
+  dwell: number;
+  chat: number;
+  likes: number;
+  favorites: number;
+  skips: number;
+}
+
+export interface MarketPostScore {
+  postId: string;
+  posterId: string;
+  hashtags: string[];
+  status: 'active' | 'hidden' | 'deleted';
+  totalPoints: number;
+  score: number;
+  breakdown: MarketPostScoreBreakdown;
+  views: number;
+  createdAt: Timestamp | Date;
+  updatedAt: Timestamp | Date;
+}
+
 // Market Message Collection
 export interface MarketMessage {
   id?: string;
@@ -708,4 +750,99 @@ export interface MarketComment {
   // Timestamps
   createdAt: Timestamp | Date;
   updatedAt?: Timestamp | Date;
+}
+
+// ─── Order Communication & Tracking Types ───
+
+export type OrderMessageType = 'text' | 'image' | 'proof' | 'system';
+export type OrderProofCategory = 'packaging' | 'dispatch' | 'receipt' | 'damage';
+export type OrderMessageSenderRole = 'buyer' | 'seller' | 'system';
+export type OrderSystemEvent =
+  | 'order_paid'
+  | 'seller_accepted'
+  | 'seller_preparing'
+  | 'order_shipped'
+  | 'order_delivered'
+  | 'buyer_confirmed'
+  | 'order_cancelled'
+  | 'dispute_opened'
+  | 'dispute_resolved'
+  | 'escrow_released'
+  | 'refund_processed';
+
+// Order-scoped chat message (sub-collection: orders/{orderId}/messages)
+export interface OrderMessage {
+  id?: string;
+  orderId: string;
+  senderId: string;
+  senderRole: OrderMessageSenderRole;
+  type: OrderMessageType;
+  text?: string;
+  mediaUrl?: string;
+  mediaType?: string;
+  proofCategory?: OrderProofCategory;
+  systemEvent?: OrderSystemEvent;
+  read: boolean;
+  readAt?: Timestamp | Date;
+  createdAt: Timestamp | Date;
+}
+
+// Immutable order event log (sub-collection: orders/{orderId}/timeline)
+export interface OrderTimelineEvent {
+  id?: string;
+  orderId: string;
+  event: OrderSystemEvent;
+  status: OrderStatus;
+  text: string;
+  actorId?: string;
+  actorRole?: 'buyer' | 'seller' | 'system';
+  metadata?: Record<string, unknown>;
+  createdAt: Timestamp | Date;
+}
+
+// Notification Collection
+export type NotificationType = 'order_update' | 'new_message' | 'payment' | 'dispute' | 'system';
+export type NotificationChannel = 'push' | 'in_app' | 'email';
+export type NotificationPriority = 'high' | 'medium' | 'low';
+
+export interface AppNotification {
+  id?: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  orderId?: string;
+  chatRoomId?: string;
+  actionUrl?: string;
+  read: boolean;
+  readAt?: Timestamp | Date;
+  deliveredVia: NotificationChannel[];
+  priority: NotificationPriority;
+  createdAt: Timestamp | Date;
+  expiresAt?: Timestamp | Date;
+}
+
+// Review Collection
+export interface Review {
+  id?: string;
+  orderId: string;
+  reviewerId: string;
+  sellerId: string;
+  rating: number;                   // 1-5
+  text?: string;
+  createdAt: Timestamp | Date;
+}
+
+// Extended Order fields (added to existing Order interface above via Firestore)
+export interface OrderChatSummary {
+  lastMessageText: string;
+  senderRole: OrderMessageSenderRole;
+  createdAt: Timestamp | Date;
+}
+
+// FCM Token record
+export interface FcmTokenRecord {
+  token: string;
+  platform: 'ios' | 'android';
+  createdAt: Timestamp | Date;
 }
