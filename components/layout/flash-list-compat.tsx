@@ -21,24 +21,34 @@ export type FlashListCompatProps<ItemT> = FlatListProps<ItemT> & {
 /**
  * Full-viewport vertical paging (TikTok-style) is unreliable with FlashList:
  * recycling + snap/paging fights fixed cell heights and breaks layout.
- * Use native FlatList for that case.
+ * Use native FlatList when paging or snapToInterval is set.
  */
 export const FlashListCompat = React.forwardRef<any, FlashListCompatProps<any>>(function FlashListCompat(
-  { estimatedItemSize, pagingEnabled, ...props },
+  { estimatedItemSize, pagingEnabled, snapToInterval, ...props },
   ref
 ) {
-  if (RuntimeFlashList && pagingEnabled !== true) {
+  const forceNativeList = pagingEnabled === true || typeof snapToInterval === 'number';
+
+  if (RuntimeFlashList && !forceNativeList) {
     const FlashListComponent = RuntimeFlashList as React.ComponentType<any>;
     return (
       <FlashListComponent
         ref={ref}
         {...props}
         pagingEnabled={pagingEnabled}
+        snapToInterval={snapToInterval}
         estimatedItemSize={estimatedItemSize}
       />
     );
   }
 
   const FlatListComponent = FlatList as unknown as React.ComponentType<any>;
-  return <FlatListComponent ref={ref} {...props} pagingEnabled={pagingEnabled} />;
+  return (
+    <FlatListComponent
+      ref={ref}
+      {...props}
+      pagingEnabled={pagingEnabled}
+      snapToInterval={snapToInterval}
+    />
+  );
 });

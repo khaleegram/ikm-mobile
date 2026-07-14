@@ -1,33 +1,16 @@
+import { apiUrl } from './api-base';
 import { coreCloudClient } from './core-cloud-client';
 import type { MarketPost, MarketSound } from '@/types';
-import {
-  collection,
-  doc,
-  increment,
-  serverTimestamp,
-  writeBatch,
-} from 'firebase/firestore';
 
-import { auth, firestore } from '@/lib/firebase/config';
+import { auth } from '@/lib/firebase/config';
+import { inferFileExtension } from '@/lib/utils/market-media';
 import {
-  buildOriginalSoundTitle,
-  buildUploadedSoundTitle,
-  inferFileExtension,
-} from '@/lib/utils/market-media';
-import {
-  uploadAudio,
   uploadImage,
   uploadImages,
   uploadVideo,
 } from '@/lib/utils/image-upload';
 
-const MARKET_POST_FUNCTIONS = {
-  likeMarketPost: 'https://likemarketpost-q3rjv54uka-uc.a.run.app',
-  deleteMarketPost: 'https://deletemarketpost-q3rjv54uka-uc.a.run.app',
-  incrementPostViews: 'https://incrementpostviews-q3rjv54uka-uc.a.run.app',
-};
-
-
+/** @deprecated Sound library removed — videos use their own audio only. */
 export interface CreateMarketPostSoundSelection {
   mode?: 'original' | 'existing' | 'uploaded' | 'none';
   existingSound?: MarketSound | null;
@@ -48,12 +31,14 @@ export interface CreateMarketPostData {
   hashtags?: string[];
   price?: number;
   isNegotiable?: boolean;
+  title?: string;
   description?: string;
   location?: {
     state?: string;
     city?: string;
   };
   contactMethod?: 'in-app' | 'whatsapp';
+  /** Ignored — kept for call-site compatibility. */
   soundSelection?: CreateMarketPostSoundSelection;
 }
 
@@ -74,11 +59,6 @@ function normalizeHashtags(value: string[] | undefined): string[] {
     : [];
 }
 
-function clampUnitVolume(value: number | undefined, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(0, Math.min(1, Number(value)));
-}
-
 function buildLocation(value: CreateMarketPostData['location']) {
   if (!value) return undefined;
   const state = String(value.state || '').trim();
@@ -90,84 +70,45 @@ function buildLocation(value: CreateMarketPostData['location']) {
   };
 }
 
-function sanitizeSoundMeta(
-  value: MarketPost['soundMeta'] | undefined
-): MarketPost['soundMeta'] | null {
-  if (!value) return null;
+function normalizeApiPost(raw: any): MarketPost {
   return {
-    soundId: value.soundId ?? null,
-    title: String(value.title || '').trim() || 'Original audio',
-    sourceUri: String(value.sourceUri || '').trim(),
-    sourceType: (value.sourceType ?? 'original') as MarketPost['soundMeta']['sourceType'],
-    artworkUrl: value.artworkUrl ?? null,
-    durationMs: Number.isFinite(value.durationMs) ? Number(value.durationMs) : null,
-    startMs: Number.isFinite(value.startMs) ? Number(value.startMs) : 0,
-    soundVolume: Number.isFinite(value.soundVolume) ? Number(value.soundVolume) : 1,
-    originalAudioVolume: Number.isFinite(value.originalAudioVolume)
-      ? Number(value.originalAudioVolume)
-      : 1,
-    useOriginalVideoAudio: value.useOriginalVideoAudio !== false,
-  };
-}
-
-function buildLocalMarketPostSnapshot(
-  id: string,
-  data: {
-    posterId: string;
-    mediaType: MarketPost['mediaType'];
-    images: string[];
-    coverImageUrl?: string;
-    videoUrl?: string;
-    videoDurationMs?: number;
-    hashtags: string[];
-    price?: number;
-    isNegotiable?: boolean;
-    description?: string;
-    location?: { state?: string; city?: string };
-    contactMethod: 'in-app' | 'whatsapp';
-    soundMeta?: MarketPost['soundMeta'];
-  }
-): MarketPost {
-  const now = new Date();
-  return {
-    id,
-    posterId: data.posterId,
-    mediaType: data.mediaType,
-    images: data.images,
-    coverImageUrl: data.coverImageUrl,
-    videoUrl: data.videoUrl,
-    videoMeta: data.videoUrl
-      ? {
-          durationMs: data.videoDurationMs,
-          originalAudioMuted:
-            Boolean(data.soundMeta && data.soundMeta.useOriginalVideoAudio === false) &&
-            clampUnitVolume(data.soundMeta?.originalAudioVolume, 0) <= 0,
-        }
-      : undefined,
-    soundMeta: data.soundMeta,
-    hashtags: data.hashtags,
-    price: data.price,
-    isNegotiable: Boolean(data.isNegotiable),
-    description: data.description,
-    location: data.location,
-    contactMethod: data.contactMethod,
-    likes: 0,
-    views: 0,
-    comments: 0,
-    likedBy: [],
-    status: 'active',
-    createdAt: now,
-    updatedAt: now,
-  };
+    ...raw,
+    id: String(raw?.id || ''),
+    createdAt: raw?.createdAt ? new Date(raw.createdAt) : new Date(),
+    updatedAt: raw?.updatedAt ? new Date(raw.updatedAt) : new Date(),
+    expiresAt: raw?.expiresAt ? new Date(raw.expiresAt) : undefined,
+  } as MarketPost;
 }
 
 export const marketPostsApi = {
+  async getById(postId: string): Promise<MarketPost | null> {
+    const response = await coreCloudClient.request<{ success: boolean; post: MarketPost }>(
+      apiUrl(`/posts/${encodeURIComponent(postId)}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return response.post ? normalizeApiPost(response.post) : null;
+  },
+
+  async getBatch(postIds: string[]): Promise<MarketPost[]> {
+    const ids = [...new Set(postIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(
+      0,
+      50
+    );
+    if (!ids.length) return [];
+    const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
+      apiUrl(`/posts/batch?ids=${encodeURIComponent(ids.join(','))}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];
+  },
+
   async create(data: CreateMarketPostData, onProgress?: (progress: number) => void): Promise<MarketPost> {
     const user = requireAuthenticatedUser();
-    const postRef = doc(collection(firestore, 'marketPosts'));
+    const postId = `mp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const mediaType: MarketPost['mediaType'] =
       data.mediaType || (String(data.videoUri || '').trim() ? 'video' : 'image_gallery');
     const hashtags = normalizeHashtags(data.hashtags);
+    const title = String(data.title || '').trim().slice(0, 80) || undefined;
     const description = String(data.description || '').trim() || undefined;
     const location = buildLocation(data.location);
     const contactMethod = data.contactMethod || 'in-app';
@@ -175,33 +116,24 @@ export const marketPostsApi = {
     let uploadedImages: string[] = [];
     let uploadedCoverImageUrl = '';
     let uploadedVideoUrl = '';
-    let soundMeta: MarketPost['soundMeta'] | undefined;
-    const batch = writeBatch(firestore);
 
     if (mediaType === 'image_gallery') {
       const images = Array.isArray(data.images) ? data.images.filter(Boolean) : [];
-      if (images.length === 0) {
-        throw new Error('Please add at least one photo.');
-      }
-      if (images.length > 20) {
-        throw new Error('Maximum 20 photos allowed.');
-      }
-
+      if (images.length === 0) throw new Error('Please add at least one photo.');
+      if (images.length > 20) throw new Error('Maximum 20 photos allowed.');
       onProgress?.(0.05);
       uploadedImages = await uploadImages(images, 'marketPosts', user.uid);
-      onProgress?.(0.80);
+      onProgress?.(0.85);
     } else {
       const videoUri = String(data.videoUri || '').trim();
-      if (!videoUri) {
-        throw new Error('Please pick a video before publishing.');
-      }
+      if (!videoUri) throw new Error('Please pick a video before publishing.');
 
       onProgress?.(0.05);
       const videoExtension = inferFileExtension(videoUri, 'mp4');
       const uploadedVideo = await uploadVideo(
         videoUri,
-        `marketPosts/${user.uid}/post_${postRef.id}.${videoExtension}`,
-        (videoProgress) => onProgress?.(0.05 + videoProgress * 0.65), // 5% → 70%
+        `marketPosts/${user.uid}/post_${postId}.${videoExtension}`,
+        (videoProgress) => onProgress?.(0.05 + videoProgress * 0.65)
       );
       uploadedVideoUrl = uploadedVideo.url;
       onProgress?.(0.72);
@@ -211,217 +143,63 @@ export const marketPostsApi = {
         const coverExtension = inferFileExtension(coverImageUri, 'jpg');
         const uploadedCover = await uploadImage(
           coverImageUri,
-          `marketPosts/${user.uid}/cover_${postRef.id}.${coverExtension}`
+          `marketPosts/${user.uid}/cover_${postId}.${coverExtension}`
         );
         uploadedCoverImageUrl = uploadedCover.url;
         uploadedImages = [uploadedCover.url];
       }
-      onProgress?.(0.80);
-
-      const soundSelection = data.soundSelection || { mode: 'original' };
-      const soundMode = soundSelection.mode || 'original';
-      const soundVolume = clampUnitVolume(soundSelection.soundVolume, soundMode === 'original' ? 1 : 0.9);
-      const originalAudioVolume = clampUnitVolume(
-        soundSelection.originalAudioVolume,
-        soundMode === 'original' ? 1 : 0
-      );
-      const startMs = Number.isFinite(soundSelection.startMs)
-        ? Math.max(0, Number(soundSelection.startMs))
-        : 0;
-      const useOriginalVideoAudio =
-        soundMode === 'original' ? true : Boolean(soundSelection.useOriginalVideoAudio);
-
-      if (soundMode === 'existing' && soundSelection.existingSound?.id) {
-        const existingSound = soundSelection.existingSound;
-        const soundId = existingSound.id!; // Checked in if condition
-        
-        soundMeta = {
-          soundId,
-          title: existingSound.title,
-          sourceUri: existingSound.sourceUri,
-          sourceType: existingSound.sourceType,
-          artworkUrl: existingSound.artworkUrl || uploadedCoverImageUrl || null,
-          durationMs: existingSound.durationMs ?? null,
-          startMs,
-          soundVolume,
-          originalAudioVolume,
-          useOriginalVideoAudio,
-        };
-
-        batch.set(
-          doc(firestore, 'marketSounds', soundId),
-          {
-            usageCount: increment(1),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      } else if (soundMode === 'uploaded' && soundSelection.uploadedAudioUri) {
-        const audioExtension = inferFileExtension(soundSelection.uploadedAudioUri, 'm4a');
-        const uploadedAudio = await uploadAudio(
-          soundSelection.uploadedAudioUri,
-          `marketSounds/${user.uid}/sound_${postRef.id}.${audioExtension}`
-        );
-        const soundRef = doc(collection(firestore, 'marketSounds'));
-        const soundTitle =
-          String(soundSelection.soundTitle || '').trim() ||
-          buildUploadedSoundTitle(soundSelection.uploadedAudioUri, user.displayName || user.email);
-
-        batch.set(soundRef, {
-          title: soundTitle,
-          createdBy: user.uid,
-          creatorName: String(user.displayName || user.email || '').trim() || null,
-          sourceType: 'uploaded',
-          sourceUri: uploadedAudio.url,
-          artworkUrl: uploadedCoverImageUrl || null,
-          durationMs: null,
-          usageCount: 1,
-          savedCount: 0,
-          rightsStatus: 'owned',
-          status: 'active',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        soundMeta = {
-          soundId: soundRef.id,
-          title: soundTitle,
-          sourceUri: uploadedAudio.url,
-          sourceType: 'uploaded',
-          artworkUrl: uploadedCoverImageUrl || null,
-          startMs,
-          soundVolume,
-          originalAudioVolume,
-          useOriginalVideoAudio,
-        };
-      } else if (soundMode !== 'none') {
-        const soundRef = doc(collection(firestore, 'marketSounds'));
-        const soundTitle = buildOriginalSoundTitle(user.displayName || user.email);
-
-        batch.set(soundRef, {
-          title: soundTitle,
-          createdBy: user.uid,
-          creatorName: String(user.displayName || user.email || '').trim() || null,
-          sourceType: 'original',
-          sourceUri: uploadedVideoUrl,
-          artworkUrl: uploadedCoverImageUrl || null,
-          durationMs: Number.isFinite(data.videoDurationMs) ? Number(data.videoDurationMs) : null,
-          usageCount: 1,
-          savedCount: 0,
-          rightsStatus: 'owned',
-          status: 'active',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        soundMeta = {
-          soundId: soundRef.id,
-          title: soundTitle,
-          sourceUri: uploadedVideoUrl,
-          sourceType: 'original',
-          artworkUrl: uploadedCoverImageUrl || null,
-          durationMs: Number.isFinite(data.videoDurationMs) ? Number(data.videoDurationMs) : null,
-          startMs,
-          soundVolume,
-          originalAudioVolume,
-          useOriginalVideoAudio: true,
-        };
-      }
+      onProgress?.(0.8);
     }
 
     const price = Number.isFinite(data.price) ? Number(data.price) : undefined;
-    const payload = {
-      posterId: user.uid,
-      mediaType,
-      images: uploadedImages,
-      coverImageUrl: uploadedCoverImageUrl || null,
-      videoUrl: uploadedVideoUrl || null,
-      videoMeta: uploadedVideoUrl
-        ? {
-            durationMs: Number.isFinite(data.videoDurationMs) ? Number(data.videoDurationMs) : null,
-            originalAudioMuted:
-              clampUnitVolume(soundMeta?.originalAudioVolume, 0) <= 0 &&
-              soundMeta?.useOriginalVideoAudio !== true,
-          }
-        : null,
-      soundMeta: sanitizeSoundMeta(soundMeta),
-      hashtags,
-      price: price ?? null,
-      isNegotiable: Boolean(price && data.isNegotiable),
-      description: description || null,
-      location: location || null,
-      contactMethod,
-      likes: 0,
-      views: 0,
-      comments: 0,
-      likedBy: [],
-      status: 'active',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
+    onProgress?.(0.92);
 
-    batch.set(postRef, payload);
-
-    batch.set(
-      doc(firestore, 'marketPostScores', postRef.id),
+    const response = await coreCloudClient.request<{ success: boolean; post: MarketPost }>(
+      apiUrl('/posts'),
       {
-        postId: postRef.id,
-        posterId: user.uid,
-        hashtags,
-        status: 'active',
-        totalPoints: 0,
-        score: 0,
-        breakdown: {
-          fullCompletion: 0,
-          loops: 0,
-          dwell: 0,
-          chat: 0,
-          likes: 0,
-          favorites: 0,
-          skips: 0,
+        method: 'POST',
+        requiresAuth: true,
+        body: {
+          id: postId,
+          mediaType,
+          images: uploadedImages,
+          coverImageUrl: uploadedCoverImageUrl || uploadedImages[0] || null,
+          videoUrl: uploadedVideoUrl || null,
+          videoMeta: uploadedVideoUrl
+            ? {
+                durationMs: Number.isFinite(data.videoDurationMs)
+                  ? Number(data.videoDurationMs)
+                  : null,
+                originalAudioMuted: false,
+              }
+            : null,
+          // No separate soundtrack — audio lives in the uploaded video file.
+          soundMeta: null,
+          hashtags,
+          price: price ?? null,
+          isNegotiable: Boolean(price && data.isNegotiable),
+          title: title || null,
+          description: description || null,
+          location: location || null,
+          contactMethod,
         },
-        views: 0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
+      }
     );
 
-    hashtags.forEach((tag) => {
-      batch.set(
-        doc(firestore, 'trendingHashtags', tag),
-        {
-          tag,
-          count: increment(1),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    });
+    onProgress?.(1);
+    return normalizeApiPost(response.post);
+  },
 
-    onProgress?.(0.95);
-    await batch.commit();
-    onProgress?.(1.0);
-
-    return buildLocalMarketPostSnapshot(postRef.id, {
-      posterId: user.uid,
-      mediaType,
-      images: uploadedImages,
-      coverImageUrl: uploadedCoverImageUrl || undefined,
-      videoUrl: uploadedVideoUrl || undefined,
-      videoDurationMs: Number.isFinite(data.videoDurationMs) ? Number(data.videoDurationMs) : undefined,
-      hashtags,
-      price,
-      isNegotiable: Boolean(price && data.isNegotiable),
-      description,
-      location,
-      contactMethod,
-      soundMeta,
-    });
+  async update(postId: string, patch: Record<string, unknown>): Promise<MarketPost> {
+    const response = await coreCloudClient.request<{ success: boolean; post: MarketPost }>(
+      apiUrl(`/posts/${encodeURIComponent(postId)}`),
+      { method: 'PATCH', body: patch, requiresAuth: true }
+    );
+    return normalizeApiPost(response.post);
   },
 
   async like(postId: string): Promise<{ likes: number; isLiked: boolean }> {
-    const response = await coreCloudClient.request<any>(MARKET_POST_FUNCTIONS.likeMarketPost, {
+    const response = await coreCloudClient.request<any>(apiUrl('/social/like'), {
       method: 'POST',
       body: { postId },
       requiresAuth: true,
@@ -433,23 +211,42 @@ export const marketPostsApi = {
   },
 
   async delete(postId: string): Promise<void> {
-    await coreCloudClient.request(MARKET_POST_FUNCTIONS.deleteMarketPost, {
-      method: 'POST',
-      body: { postId },
+    await coreCloudClient.request(apiUrl(`/posts/${postId}`), {
+      method: 'DELETE',
       requiresAuth: true,
     });
   },
 
   async incrementViews(postId: string): Promise<void> {
     try {
-      await coreCloudClient.request(MARKET_POST_FUNCTIONS.incrementPostViews, {
+      await coreCloudClient.request(apiUrl('/social/action'), {
         method: 'POST',
-        body: { postId },
+        body: { postId, actionType: 'view' },
         requiresAuth: true,
       });
     } catch (error: any) {
       console.warn('Failed to increment views:', error);
     }
   },
-};
 
+  async search(query: string, limit = 50): Promise<MarketPost[]> {
+    const q = String(query || '').trim();
+    if (!q) return [];
+    const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
+      apiUrl(`/posts/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];
+  },
+
+  async listTrendingHashtags(limit = 30): Promise<Array<{ id: string; tag: string; count: number }>> {
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      hashtags: Array<{ id: string; tag: string; count: number }>;
+    }>(apiUrl(`/trending-hashtags?limit=${limit}`), {
+      method: 'GET',
+      requiresAuth: true,
+    });
+    return Array.isArray(response.hashtags) ? response.hashtags : [];
+  },
+};

@@ -16,8 +16,7 @@ import { useMarketPostsSearch } from '@/lib/firebase/firestore/market-posts';
 import { FeedCard } from '@/components/market/feed-card';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
-import { firestore } from '@/lib/firebase/config';
+import { marketPostsApi } from '@/lib/api/market-posts';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
 import KeyboardFlatList from '@/components/layout/KeyboardFlatList';
 
@@ -59,34 +58,19 @@ export default function SearchScreen() {
     loadRecentSearches();
   }, []);
 
-  // Load trending hashtags
   useEffect(() => {
-    const q = query(
-      collection(firestore, 'trendingHashtags'),
-      orderBy('count', 'desc'),
-      limit(10)
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const trending: TrendingHashtag[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          trending.push({
-            id: doc.id,
-            tag: data.tag || '',
-            count: data.count || 0,
-          });
-        });
-        setTrendingHashtags(trending);
-      },
-      (error) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const trending = await marketPostsApi.listTrendingHashtags(10);
+        if (!cancelled) setTrendingHashtags(trending);
+      } catch (error) {
         console.error('Error fetching trending hashtags:', error);
       }
-    );
-
-    return () => unsubscribe();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const saveRecentSearch = useCallback(

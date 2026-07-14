@@ -18,29 +18,23 @@ export function useFollowingUserIds(userId: string | null) {
       return;
     }
 
-    const q = query(
-      collection(firestore, 'marketFollows'),
-      where('followerId', '==', userId),
-      limit(500)
-    );
-
-    const unsubscribe: Unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        setIds(
-          snapshot.docs
-            .map((docSnap) => String(docSnap.data()?.followedId || '').trim())
-            .filter(Boolean)
-        );
-        setLoading(false);
-      },
-      () => {
-        setIds([]);
-        setLoading(false);
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const { marketSocialApi } = await import('@/lib/api/market-social');
+        const next = await marketSocialApi.listFollowingIds();
+        if (!cancelled) setIds(next);
+      } catch {
+        if (!cancelled) setIds([]);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    );
+    })();
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
   const idSet = useMemo(() => new Set(ids), [ids]);
@@ -58,30 +52,23 @@ export function useBlockedUserIds(userId: string | null) {
       return;
     }
 
-    const q = query(
-      collection(firestore, 'marketBlocks'),
-      where('blockerId', '==', userId),
-      orderBy('createdAt', 'desc'),
-      limit(500)
-    );
-
-    const unsubscribe: Unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        setIds(
-          snapshot.docs
-            .map((docSnap) => String(docSnap.data()?.blockedId || '').trim())
-            .filter(Boolean)
-        );
-        setLoading(false);
-      },
-      () => {
-        setIds([]);
-        setLoading(false);
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const { marketSocialApi } = await import('@/lib/api/market-social');
+        const next = await marketSocialApi.listBlockedIds();
+        if (!cancelled) setIds(next);
+      } catch {
+        if (!cancelled) setIds([]);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    );
+    })();
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
   const idSet = useMemo(() => new Set(ids), [ids]);
@@ -104,66 +91,37 @@ export function useIsFollowing(followerId: string | null, followedId: string | n
     setLoading(true);
     let cancelled = false;
 
-    getDoc(doc(firestore, 'marketFollows', followDocId(follower, followed)))
-      .then((snapshot) => {
-        if (!cancelled) {
-          setIsFollowing(snapshot.exists());
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.warn('[useIsFollowing] fetch error', err);
-          setLoading(false);
-        }
-      });
+    (async () => {
+      try {
+        const { marketSocialApi } = await import('@/lib/api/market-social');
+        const next = await marketSocialApi.isFollowing(followed);
+        if (!cancelled) setIsFollowing(next);
+      } catch {
+        if (!cancelled) setIsFollowing(false);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [followerId, followedId]);
 
   return { isFollowing, loading };
 }
 
-// Transactional Follow logic
-export async function toggleFollow(followerId: string, followedId: string, isCurrentlyFollowing: boolean) {
-  const { runTransaction, doc, serverTimestamp } = await import('firebase/firestore');
-
-  const followingRef = doc(firestore, `following/${followerId}/list`, followedId);
-  const followerRef = doc(firestore, `followers/${followedId}/list`, followerId);
-  
-  const originUserRef = doc(firestore, 'users', followerId);
-  const targetUserRef = doc(firestore, 'users', followedId);
-
-  await runTransaction(firestore, async (transaction) => {
-    if (isCurrentlyFollowing) {
-      // Unfollow
-      transaction.delete(followingRef);
-      transaction.delete(followerRef);
-
-      const originSnap = await transaction.get(originUserRef);
-      const targetSnap = await transaction.get(targetUserRef);
-
-      const currentFollowing = (originSnap.data()?.followingCount || 1) - 1;
-      const currentFollowers = (targetSnap.data()?.followerCount || 1) - 1;
-
-      transaction.update(originUserRef, { followingCount: Math.max(0, currentFollowing) });
-      transaction.update(targetUserRef, { followerCount: Math.max(0, currentFollowers) });
-    } else {
-      // Follow
-      const now = serverTimestamp();
-      transaction.set(followingRef, { createdAt: now });
-      transaction.set(followerRef, { createdAt: now });
-
-      const originSnap = await transaction.get(originUserRef);
-      const targetSnap = await transaction.get(targetUserRef);
-
-      const currentFollowing = (originSnap.data()?.followingCount || 0) + 1;
-      const currentFollowers = (targetSnap.data()?.followerCount || 0) + 1;
-
-      transaction.update(originUserRef, { followingCount: currentFollowing });
-      transaction.update(targetUserRef, { followerCount: currentFollowers });
-    }
-  });
+export async function toggleFollow(
+  _followerId: string,
+  followedId: string,
+  isCurrentlyFollowing: boolean
+) {
+  const { marketSocialApi } = await import('@/lib/api/market-social');
+  if (isCurrentlyFollowing) {
+    await marketSocialApi.unfollowUser(followedId);
+  } else {
+    await marketSocialApi.followUser(followedId);
+  }
 }
 
 function saveDocId(userId: string, postId: string) {
@@ -181,38 +139,23 @@ export function useUserSavedPostIds(userId: string | null) {
       return;
     }
 
-    // No orderBy: avoids needing a composite index. Sorted client-side below.
-    const q = query(
-      collection(firestore, 'marketSaves'),
-      where('userId', '==', userId),
-      limit(500)
-    );
-
-    const unsubscribe: Unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const entries = snapshot.docs
-          .map((docSnap) => {
-            const data = docSnap.data() || {};
-            const postId = String(data.postId || '').trim();
-            const savedAtMs =
-              typeof data.savedAt?.toMillis === 'function' ? data.savedAt.toMillis() : 0;
-            return { postId, savedAtMs };
-          })
-          .filter((entry) => Boolean(entry.postId));
-
-        entries.sort((a, b) => b.savedAtMs - a.savedAtMs);
-        setIds(entries.map((entry) => entry.postId));
-        setLoading(false);
-      },
-      (err) => {
-        console.error('[useUserSavedPostIds] snapshot error:', err);
-        setIds([]);
-        setLoading(false);
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const { marketSocialApi } = await import('@/lib/api/market-social');
+        const saved = await marketSocialApi.listSaved();
+        if (!cancelled) setIds(saved.ids);
+      } catch {
+        if (!cancelled) setIds([]);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    );
+    })();
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
   const idSet = useMemo(() => new Set(ids), [ids]);
@@ -235,19 +178,17 @@ export function useIsSaved(userId: string | null, postId: string | null) {
     setLoading(true);
     let cancelled = false;
 
-    getDoc(doc(firestore, 'marketSaves', saveDocId(user, post)))
-      .then((snapshot) => {
-        if (!cancelled) {
-          setIsSaved(snapshot.exists());
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.warn('[useIsSaved] fetch error', err);
-          setLoading(false);
-        }
-      });
+    (async () => {
+      try {
+        const { marketSocialApi } = await import('@/lib/api/market-social');
+        const saved = await marketSocialApi.listSaved();
+        if (!cancelled) setIsSaved(saved.ids.includes(post));
+      } catch {
+        if (!cancelled) setIsSaved(false);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
 
     return () => { cancelled = true; };
   }, [userId, postId]);
@@ -255,21 +196,12 @@ export function useIsSaved(userId: string | null, postId: string | null) {
   return { isSaved, loading };
 }
 
-export async function toggleMarketSave(userId: string, postId: string) {
-  const { doc, setDoc, deleteDoc, getDoc, serverTimestamp } = await import('firebase/firestore');
-
-  const saveRef = doc(firestore, 'marketSaves', saveDocId(userId, postId));
-
-  // Always check the server state first — client-side state can be stale
-  const snap = await getDoc(saveRef);
-
-  if (snap.exists()) {
-    await deleteDoc(saveRef);
+export async function toggleMarketSave(_userId: string, postId: string) {
+  const { marketSocialApi } = await import('@/lib/api/market-social');
+  const saved = await marketSocialApi.listSaved();
+  if (saved.ids.includes(postId)) {
+    await marketSocialApi.unsavePost(postId);
   } else {
-    await setDoc(saveRef, {
-      userId,
-      postId,
-      savedAt: serverTimestamp(),
-    });
+    await marketSocialApi.savePost(postId);
   }
 }

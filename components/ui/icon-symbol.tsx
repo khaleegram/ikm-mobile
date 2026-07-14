@@ -227,6 +227,10 @@ const MAPPING = {
   'music.note': 'music-note',
   'waveform': 'graphic-eq',
   'waveform.fill': 'graphic-eq',
+  'mic.fill': 'mic',
+  'mic': 'mic-none',
+  'play.fill': 'play-arrow',
+  'pause.fill': 'pause',
   
   // Checkmarks
   'checkmark': 'check',

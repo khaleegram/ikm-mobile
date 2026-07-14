@@ -20,6 +20,7 @@ import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 
 import { PostManageSheet } from '@/components/market/post-manage-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { showToast } from '@/components/toast';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { useUser } from '@/lib/firebase/auth/use-user';
@@ -127,10 +128,16 @@ export default function ProfileScreen() {
   // ── Photo ──────────────────────────────────────────────────────────────────
   const persistPhoto = async (url: string | null) => {
     if (!user?.uid) return;
-    await updateDoc(doc(firestore, 'users', user.uid), {
-      storeLogoUrl: url,
-      updatedAt: serverTimestamp(),
-    });
+    try {
+      const { usersApi } = await import('@/lib/api/users-api');
+      await usersApi.updateMe({ storeLogoUrl: url, avatarUrl: url });
+    } catch {
+      // Fall back for seller/admin profile fields still on Firestore.
+      await updateDoc(doc(firestore, 'users', user.uid), {
+        storeLogoUrl: url,
+        updatedAt: serverTimestamp(),
+      });
+    }
   };
 
   const pickPhoto = async () => {
@@ -409,6 +416,7 @@ export default function ProfileScreen() {
         ) : (
           <TouchableOpacity style={styles.nameRow} activeOpacity={0.7} onPress={() => { setNameInput(displayName); setEditingName(true); }}>
             <Text style={[styles.displayName, { color: colors.text }]} numberOfLines={1}>{displayName}</Text>
+            <VerifiedBadge size={16} />
             <View style={[styles.editBadge, { backgroundColor: `${ACCENT}1A` }]}>
               <IconSymbol name="pencil" size={12} color={ACCENT} />
             </View>
@@ -417,12 +425,8 @@ export default function ProfileScreen() {
 
         <View style={styles.metaRow}>
           <View style={[styles.roleChip, { backgroundColor: `${ACCENT}18` }]}>
-            <IconSymbol name="checkmark.seal.fill" size={12} color={ACCENT} />
             <Text style={[styles.roleText, { color: ACCENT }]}>{roleLabel}</Text>
           </View>
-          {user.email ? (
-            <Text style={[styles.emailText, { color: colors.textSecondary }]} numberOfLines={1}>{user.email}</Text>
-          ) : null}
         </View>
 
         {editingBio ? (
@@ -476,7 +480,7 @@ export default function ProfileScreen() {
             <Text style={[styles.statLbl, { color: colors.textSecondary }]}>Followers</Text>
           </View>
           <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-          <TouchableOpacity style={styles.statItem} activeOpacity={0.7} onPress={() => { haptics.light(); router.push('/(market)/following' as any); }}>
+          <TouchableOpacity style={styles.statItem} activeOpacity={0.7} onPress={() => { haptics.light(); router.push({ pathname: '/(market)/index', params: { mode: 'following' } } as any); }}>
             <Text style={[styles.statVal, { color: colors.text }]}>{profile?.followingCount ?? 0}</Text>
             <Text style={[styles.statLbl, { color: ACCENT }]}>Following ›</Text>
           </TouchableOpacity>
@@ -857,9 +861,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  emailText: {
-    fontSize: 12,
-  },
 
   // ── Bio ────────────────────────────────────────────────────────────────────
   bioDisplay: {
@@ -936,7 +937,7 @@ const styles = StyleSheet.create({
   },
   statDivider: {
     width: 1,
-    height: 30,  // was 38
+    height: 30,
     opacity: 0.6,
   },
 

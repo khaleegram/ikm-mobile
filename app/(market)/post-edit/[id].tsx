@@ -11,13 +11,11 @@ import {
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { deleteField, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
-
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
+import { marketPostsApi } from '@/lib/api/market-posts';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { firestore } from '@/lib/firebase/config';
 import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
@@ -51,6 +49,7 @@ export default function EditMarketPostScreen() {
   const { post, loading } = useMarketPost(postId ?? null);
 
   const [description, setDescription] = useState('');
+  const [title, setTitle] = useState('');
   const [price, setPrice] = useState('');
   const [city, setCity] = useState('');
   const [state, setState] = useState('');
@@ -62,6 +61,7 @@ export default function EditMarketPostScreen() {
   useEffect(() => {
     if (!post || isInitialized) return;
     setDescription(post.description || '');
+    setTitle(post.title || '');
     setPrice(post.price ? String(post.price) : '');
     setCity(post.location?.city || '');
     setState(post.location?.state || '');
@@ -71,17 +71,19 @@ export default function EditMarketPostScreen() {
   const hasChanges = useMemo(() => {
     if (!post) return false;
     const initialDescription = post.description || '';
+    const initialTitle = post.title || '';
     const initialPrice = post.price ? String(post.price) : '';
     const initialCity = post.location?.city || '';
     const initialState = post.location?.state || '';
 
     return (
+      title.trim() !== initialTitle.trim() ||
       description.trim() !== initialDescription.trim() ||
       price.trim() !== initialPrice.trim() ||
       city.trim() !== initialCity.trim() ||
       state.trim() !== initialState.trim()
     );
-  }, [city, description, post, price, state]);
+  }, [city, description, post, price, state, title]);
 
   const handleSave = async () => {
     if (!post || !post.id || !isOwner || saving) return;
@@ -96,28 +98,32 @@ export default function EditMarketPostScreen() {
       setSaving(true);
       haptics.medium();
 
+      const cleanedTitle = title.trim().slice(0, 80);
       const cleanedDescription = description.trim();
       const cleanedCity = city.trim();
       const cleanedState = state.trim();
       const hashtags = extractHashtags(cleanedDescription);
 
-      const payload: Record<string, any> = {
-        updatedAt: serverTimestamp(),
-        description: cleanedDescription || deleteField(),
-        hashtags: hashtags.length > 0 ? hashtags : deleteField(),
-        price: Number.isFinite(parsedPrice) ? parsedPrice : deleteField(),
-      };
-
-      if (cleanedCity || cleanedState) {
-        payload.location = {
-          city: cleanedCity || undefined,
-          state: cleanedState || undefined,
-        };
-      } else {
-        payload.location = deleteField();
+      if (!cleanedTitle) {
+        showToast('Add a product title.', 'error');
+        return;
       }
 
-      await updateDoc(doc(firestore, 'marketPosts', post.id), payload);
+      const payload: Record<string, unknown> = {
+        title: cleanedTitle,
+        description: cleanedDescription || null,
+        hashtags,
+        price: Number.isFinite(parsedPrice) ? parsedPrice : null,
+        location:
+          cleanedCity || cleanedState
+            ? {
+                city: cleanedCity || undefined,
+                state: cleanedState || undefined,
+              }
+            : null,
+      };
+
+      await marketPostsApi.update(post.id, payload);
       haptics.success();
       showToast('Post updated successfully.', 'success');
       router.back();
@@ -198,12 +204,29 @@ export default function EditMarketPostScreen() {
           <Text style={[styles.cardTitle, { color: colors.text }]}>Preview</Text>
           <Image source={{ uri: post.images[0] }} style={styles.previewImage} contentFit="cover" />
           <Text style={[styles.cardHint, { color: colors.textSecondary }]}>
-            Update caption, price, and location. Photo edits are not available here.
+            Update title, caption, price, and location. Photo edits are not available here.
           </Text>
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Text style={[styles.inputLabel, { color: colors.text }]}>Caption</Text>
+          <Text style={[styles.inputLabel, { color: colors.text }]}>Title</Text>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                color: colors.text,
+                borderColor: colors.border,
+                backgroundColor: colors.backgroundSecondary,
+              },
+            ]}
+            placeholder="Product name"
+            placeholderTextColor={colors.textSecondary}
+            value={title}
+            onChangeText={(value) => setTitle(value.slice(0, 80))}
+            maxLength={80}
+          />
+
+          <Text style={[styles.inputLabel, styles.spacingTop, { color: colors.text }]}>Caption</Text>
           <TextInput
             style={[
               styles.textArea,

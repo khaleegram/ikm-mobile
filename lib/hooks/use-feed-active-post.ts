@@ -63,10 +63,17 @@ export function useFeedMediaPrefetch(posts: MarketPost[]) {
       lastIndex = index;
 
       const neighbors = [posts[index + 1], posts[index + 2], posts[index - 1]];
-      const uris = neighbors
-        .filter(Boolean)
-        .map((post) => getMarketPostPrimaryImage(post))
-        .filter(Boolean);
+      const uris = Array.from(
+        new Set(
+          neighbors
+            .filter(Boolean)
+            .flatMap((post) => {
+              const poster = getMarketPostPrimaryImage(post);
+              const videoPoster = String(post.coverImageUrl || post.images?.[0] || '').trim();
+              return [poster, videoPoster].filter(Boolean);
+            })
+        )
+      );
 
       if (uris.length) {
         Image.prefetch(uris, { cachePolicy: 'memory-disk' }).catch(() => {});

@@ -1,8 +1,6 @@
-import React, { useRef, useCallback } from 'react';
+import React, { useCallback, useRef } from 'react';
 import {
   View,
-  useWindowDimensions,
-  RefreshControl,
   ActivityIndicator,
   Alert,
   Text,
@@ -12,85 +10,126 @@ import {
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { showToast } from '@/components/toast';
-import { usePersonalizedMarketFeed } from '@/lib/firebase/firestore/market-posts';
+import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
+import { marketFeedApi, type FeedPageParams } from '@/lib/api/market-feed';
 import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
-import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
-import { FeedCard } from '@/components/market/feed-card';
-import { FlashListCompat } from '@/components/layout/flash-list-compat';
+import {
+  getFeedActivePostId,
+  setFeedActivePostId,
+  useFeedMediaPrefetch,
+} from '@/lib/hooks/use-feed-active-post';
+import { useClipFeed } from '@/lib/hooks/use-clip-feed';
+import { FeedVideoItem } from '@/components/market/feed-video-item';
+import { FeedSegmentSwitch } from '@/components/market/feed-segment-switch';
+import { VerticalClipFeed } from '@/components/market/vertical-clip-feed';
 import { MarketPost } from '@/types';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { firestore } from '@/lib/firebase/config';
-import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { getDeviceCoordinates } from '@/lib/utils/device-location';
-import { buildMarketPostStableKey } from '@/lib/utils/market-media';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Platform } from 'react-native';
 
 const lightBrown = '#A67C52';
-const SNAP_TOLERANCE_PX = 2;
 const MARKET_LOCATION_PROMPT_KEY = '@ikm_market_location_prompted_v1';
+type FeedMode = 'foryou' | 'following';
 
 export default function MarketFeedScreen() {
-  const { colors } = useTheme();
-  const { height: windowHeight } = useWindowDimensions();
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { user: profile } = useUserProfile(user?.uid || null);
-  const { posts, loading, error, loadMore, hasMore, refresh } = usePersonalizedMarketFeed(user?.uid || null);
-  const { idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
-  const { idSet: savedIdSet } = useUserSavedPostIds(user?.uid || null);
-  const [refreshing, setRefreshing] = React.useState(false);
-  const viewportHeight = Math.max(1, Math.round(windowHeight));
-  const flatListRef = useRef<any>(null);
-  const isProgrammaticSnapRef = useRef(false);
-  const activeIndexRef = useRef(0);
+  const [feedMode, setFeedMode] = React.useState<FeedMode>(
+    mode === 'following' ? 'following' : 'foryou'
+  );
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const [focused, setFocused] = React.useState(true);
+  const [muted] = React.useState(false);
+  const listRef = useRef<any>(null);
   const hasShownLocationPromptRef = useRef(false);
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
-
   const navigation = useNavigation();
 
-  const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
-  const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
-    const firstVisible = viewableItems?.[0]?.item as MarketPost | undefined;
-    const firstIndex = Number(viewableItems?.[0]?.index || 0);
-    if (Number.isFinite(firstIndex)) activeIndexRef.current = Math.max(0, firstIndex);
-    setFeedActivePostId(firstVisible?.id || null, firstIndex);
-  }).current;
+  const { ids: followingIds, idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
+  const { idSet: savedIdSet } = useUserSavedPostIds(user?.uid || null);
+
+  React.useEffect(() => {
+    if (mode === 'following') setFeedMode('following');
+    if (mode === 'foryou') setFeedMode('foryou');
+  }, [mode]);
+
+  // Following without auth → bounce to For You
+  React.useEffect(() => {
+    if (feedMode === 'following' && !user) {
+      setFeedMode('foryou');
+    }
+  }, [feedMode, user]);
+
+  const fetchPage = React.useMemo(() => {
+    if (feedMode === 'following') {
+      if (!user) return null;
+      return (params: FeedPageParams) => marketFeedApi.getFollowingFeed(params);
+    }
+    if (!user) {
+      return (params: FeedPageParams) => marketFeedApi.getPublicFeed(params);
+    }
+    return (params: FeedPageParams) => marketFeedApi.getForYouFeed(params);
+  }, [feedMode, user]);
+
+  const {
+    items: posts,
+    loading,
+    refreshing,
+    loadingMore,
+    error,
+    hasMore,
+    loadMore,
+    refresh,
+    removeItem,
+    patchItem,
+    markSeen,
+  } = useClipFeed(fetchPage);
+
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const markSeenRef = useRef(markSeen);
+  markSeenRef.current = markSeen;
 
   useFocusEffect(
     useCallback(() => {
-      const listRef = flatListRef.current;
-      if (!listRef || typeof listRef.scrollToOffset !== 'function') return undefined;
-      const offset = Math.max(0, activeIndexRef.current) * viewportHeight;
-      requestAnimationFrame(() => {
-        listRef.scrollToOffset({ offset, animated: false });
-      });
-      return undefined;
-    }, [viewportHeight])
+      setFocused(true);
+      return () => setFocused(false);
+    }, [])
   );
 
-  // Refresh feed and scroll to top when tapping Home tab while already on it
+  useFocusEffect(
+    useCallback(() => {
+      const ref = listRef.current;
+      if (!ref || typeof ref.scrollToOffset !== 'function') return undefined;
+      // Soft restore only — VerticalClipFeed owns measured page height via getItemLayout.
+      return undefined;
+    }, [])
+  );
+
   React.useEffect(() => {
     const handler = (e: { preventDefault: () => void }) => {
       if (!navigation.isFocused()) return;
       e.preventDefault();
-      refreshRef.current();
-      const listRef = flatListRef.current;
-      if (listRef && typeof listRef.scrollToOffset === 'function') {
-        listRef.scrollToOffset({ offset: 0, animated: true });
+      void refreshRef.current();
+      const ref = listRef.current;
+      if (ref && typeof ref.scrollToOffset === 'function') {
+        ref.scrollToOffset({ offset: 0, animated: true });
       }
+      setActiveIndex(0);
     };
-    navigation.addListener('tabPress' as any, handler);
-    return () => { navigation.removeListener('tabPress' as any, handler); };
+    navigation.addListener('tabPress' as any, handler as any);
+    return () => {
+      navigation.removeListener('tabPress' as any, handler as any);
+    };
   }, [navigation]);
 
   React.useEffect(() => {
@@ -126,20 +165,15 @@ export default function MarketFeedScreen() {
                 void (async () => {
                   try {
                     const coords = await getDeviceCoordinates();
-                    await setDoc(
-                      doc(firestore, 'users', user.uid),
-                      {
-                        marketBuyerLocation: {
-                          state: String(rawLocation.state || '').trim(),
-                          city: String(rawLocation.city || '').trim(),
-                          address: String(rawLocation.address || '').trim(),
-                          latitude: coords.latitude,
-                          longitude: coords.longitude,
-                        },
-                        updatedAt: serverTimestamp(),
+                    await saveMarketBuyerProfile(user.uid, {
+                      marketBuyerLocation: {
+                        state: String(rawLocation.state || '').trim(),
+                        city: String(rawLocation.city || '').trim(),
+                        address: String(rawLocation.address || '').trim(),
+                        latitude: coords.latitude,
+                        longitude: coords.longitude,
                       },
-                      { merge: true }
-                    );
+                    });
                     showToast('Device location saved.', 'success');
                   } catch (locationError: any) {
                     showToast(locationError?.message || 'Unable to capture location.', 'error');
@@ -155,73 +189,39 @@ export default function MarketFeedScreen() {
     })();
   }, [profile, user?.uid]);
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    haptics.light();
-    refresh();
-    setTimeout(() => setRefreshing(false), 1000);
-  };
-
-  const handleEndReached = () => {
-    if (hasMore && !loading) {
-      loadMore();
+  const handleFeedModeChange = useCallback((next: string) => {
+    setFeedMode(next as FeedMode);
+    setActiveIndex(0);
+    const ref = listRef.current;
+    if (ref && typeof ref.scrollToOffset === 'function') {
+      ref.scrollToOffset({ offset: 0, animated: false });
     }
-  };
+  }, []);
 
-  const settleToNearestPost = useCallback(
-    (rawOffsetY: number, animated: boolean) => {
-      const listRef = flatListRef.current;
-      if (!listRef || posts.length === 0) return;
-      const pageHeight = Math.max(1, viewportHeight);
-      const clampedOffset = Math.max(0, Number(rawOffsetY || 0));
-      const nearestIndex = Math.max(0, Math.min(posts.length - 1, Math.round(clampedOffset / pageHeight)));
-      const targetOffset = nearestIndex * pageHeight;
+  const onRefresh = useCallback(() => {
+    haptics.light();
+    void refresh();
+  }, [refresh]);
 
-      if (Math.abs(targetOffset - clampedOffset) <= SNAP_TOLERANCE_PX) return;
-      if (typeof listRef.scrollToOffset !== 'function') return;
+  const handleEndReached = useCallback(() => {
+    if (hasMore && !loading && !loadingMore) {
+      void loadMore();
+    }
+  }, [hasMore, loading, loadingMore, loadMore]);
 
-      isProgrammaticSnapRef.current = true;
-      listRef.scrollToOffset({ offset: targetOffset, animated });
-      setTimeout(() => {
-        isProgrammaticSnapRef.current = false;
-      }, 140);
+  const handleActiveIndexChange = useCallback(
+    (index: number, item: MarketPost | null) => {
+      setActiveIndex(index);
+      setFeedActivePostId(item?.id || null, index);
     },
-    [posts.length, viewportHeight]
-  );
-
-  const handleMomentumScrollEnd = useCallback(
-    (event: any) => {
-      if (isProgrammaticSnapRef.current) return;
-      const offsetY = Number(event?.nativeEvent?.contentOffset?.y || 0);
-      settleToNearestPost(offsetY, true);
-    },
-    [settleToNearestPost]
-  );
-
-  const handleScrollEndDrag = useCallback(
-    (event: any) => {
-      if (isProgrammaticSnapRef.current) return;
-      const velocityY = Number(event?.nativeEvent?.velocity?.y || 0);
-      if (Math.abs(velocityY) > 0.05) return;
-      const offsetY = Number(event?.nativeEvent?.contentOffset?.y || 0);
-      settleToNearestPost(offsetY, true);
-    },
-    [settleToNearestPost]
-  );
-
-  useFeedMediaPrefetch(posts);
-
-  const renderItem = useCallback(
-    ({ item, index }: { item: MarketPost; index: number }) => (
-      <FeedCard post={item} itemHeight={viewportHeight} index={index} />
-    ),
-    [viewportHeight]
-  );
-
-  const keyExtractor = useCallback(
-    (item: MarketPost) => buildMarketPostStableKey(item),
     []
   );
+
+  const handleViewableIds = useCallback((ids: string[]) => {
+    if (ids.length) markSeenRef.current(ids);
+  }, []);
+
+  useFeedMediaPrefetch(posts);
 
   React.useEffect(() => {
     if (!posts.length) {
@@ -229,40 +229,54 @@ export default function MarketFeedScreen() {
       return;
     }
     if (!getFeedActivePostId()) {
-      setFeedActivePostId(posts[0]?.id || null);
+      setFeedActivePostId(posts[0]?.id || null, 0);
     }
   }, [posts]);
 
-  const getItemLayout = useCallback(
-    (_: any, index: number) => ({
-      length: viewportHeight,
-      offset: viewportHeight * index,
-      index,
-    }),
-    [viewportHeight]
+  const renderItem = useCallback(
+    ({ item, index, itemHeight }: { item: MarketPost; index: number; itemHeight: number }) => (
+      <FeedVideoItem
+        post={item}
+        itemHeight={itemHeight}
+        index={index}
+        isActive={index === activeIndex}
+        focused={focused}
+        muted={muted}
+        onPatchItem={patchItem}
+        onRemoveItem={removeItem}
+      />
+    ),
+    [activeIndex, focused, muted, patchItem, removeItem]
   );
 
-  // ─── Premium Header ───
   const renderHomeAppBar = () => (
-    <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 2 }]}>
+    <View
+      pointerEvents="box-none"
+      style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 2 }]}>
       {Platform.OS === 'ios' ? (
         <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFillObject} />
       ) : null}
-      <View style={styles.headerTopRow}>
-        <View style={styles.wordmarkWrap}>
-          <Text style={styles.wordmark}>Chatcart</Text>
-          <View style={styles.wordmarkDot} />
+      <View style={styles.headerRow}>
+        <View style={styles.headerSide} />
+        <FeedSegmentSwitch
+          options={[
+            { id: 'foryou', label: 'For You' },
+            { id: 'following', label: 'Following' },
+          ]}
+          value={feedMode}
+          onChange={handleFeedModeChange}
+        />
+        <View style={[styles.headerSide, styles.headerSideRight]}>
+          <TouchableOpacity
+            style={styles.searchPill}
+            onPress={() => {
+              haptics.light();
+              router.push('/(market)/search');
+            }}
+            activeOpacity={0.8}>
+            <IconSymbol name="magnifyingglass" size={14} color="rgba(255,255,255,0.85)" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={styles.searchPill}
-          onPress={() => {
-            haptics.light();
-            router.push('/(market)/search');
-          }}
-          activeOpacity={0.8}>
-          <IconSymbol name="magnifyingglass" size={14} color="rgba(255,255,255,0.85)" />
-          <Text style={styles.searchPillText}>Search</Text>
-        </TouchableOpacity>
       </View>
     </View>
   );
@@ -271,7 +285,8 @@ export default function MarketFeedScreen() {
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
-        <ActivityIndicator size="large" color={lightBrown} />
+        {renderHomeAppBar()}
+        <ActivityIndicator size="large" color={lightBrown} style={{ marginTop: 80 }} />
       </View>
     );
   }
@@ -280,6 +295,7 @@ export default function MarketFeedScreen() {
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
+        {renderHomeAppBar()}
         <IconSymbol name="exclamationmark.triangle.fill" size={48} color="#FF3B55" />
         <Text style={styles.errorText}>Error loading feed</Text>
         <Text style={styles.errorSubtext}>
@@ -287,7 +303,10 @@ export default function MarketFeedScreen() {
         </Text>
         <TouchableOpacity
           style={styles.retryButton}
-          onPress={() => { haptics.medium(); refresh(); }}>
+          onPress={() => {
+            haptics.medium();
+            void refresh();
+          }}>
           <IconSymbol name="arrow.clockwise" size={20} color="#FFFFFF" />
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
@@ -296,66 +315,57 @@ export default function MarketFeedScreen() {
   }
 
   if (posts.length === 0) {
+    const isFollowingMode = feedMode === 'following';
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
-        <Text style={[styles.emptyText, { color: 'rgba(255,255,255,0.5)' }]}>No posts yet</Text>
+        {renderHomeAppBar()}
+        {isFollowingMode ? (
+          <>
+            <IconSymbol name="person.2.fill" size={48} color={lightBrown} />
+            <Text style={[styles.emptyText, { color: 'rgba(255,255,255,0.7)', marginTop: 12 }]}>
+              {!user
+                ? 'Sign in to see posts from sellers you follow'
+                : followingIds.length === 0
+                  ? 'Follow sellers to see their posts here'
+                  : 'No posts from followed sellers yet'}
+            </Text>
+            {user && followingIds.length === 0 ? (
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => {
+                  haptics.light();
+                  router.push('/(market)/search');
+                }}>
+                <IconSymbol name="magnifyingglass" size={18} color="#FFFFFF" />
+                <Text style={styles.retryButtonText}>Find Sellers</Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
+        ) : (
+          <Text style={[styles.emptyText, { color: 'rgba(255,255,255,0.5)' }]}>No posts yet</Text>
+        )}
       </View>
     );
   }
 
   return (
     <FeedSocialProvider followingIdSet={followingIdSet} savedIdSet={savedIdSet}>
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" translucent />
-
-      <FlashListCompat
-        key={`market-feed-${viewportHeight}`}
-        ref={flatListRef}
-        data={posts}
-        renderItem={renderItem}
-        keyExtractor={keyExtractor}
-        estimatedItemSize={viewportHeight}
-        pagingEnabled={true}
-        snapToInterval={viewportHeight}
-        snapToAlignment="start"
-        disableIntervalMomentum
-        decelerationRate="fast"
-        bounces={false}
-        alwaysBounceVertical={false}
-        overScrollMode="never"
-        showsVerticalScrollIndicator={false}
-        onMomentumScrollEnd={handleMomentumScrollEnd}
-        onScrollEndDrag={handleScrollEndDrag}
-        onViewableItemsChanged={onViewableItemsChanged}
-        viewabilityConfig={viewabilityConfig}
-        onEndReached={handleEndReached}
-        onEndReachedThreshold={0.5}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#FFFFFF"
-            colors={['#A67C52']}
-          />
-        }
-        getItemLayout={getItemLayout}
-        removeClippedSubviews={Platform.OS === 'android'}
-        maxToRenderPerBatch={2}
-        windowSize={3}
-        initialNumToRender={2}
-        updateCellsBatchingPeriod={32}
-        ListFooterComponent={
-          loading && posts.length > 0 ? (
-            <View style={[styles.footerLoader, { height: viewportHeight }]}>
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            </View>
-          ) : null
-        }
-      />
-
-      {renderHomeAppBar()}
-    </View>
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" translucent />
+        <VerticalClipFeed
+          listRef={listRef}
+          items={posts}
+          renderItem={renderItem}
+          onActiveIndexChange={handleActiveIndexChange}
+          onEndReached={handleEndReached}
+          onRefresh={onRefresh}
+          refreshing={refreshing}
+          loadingMore={loadingMore}
+          onViewableIds={handleViewableIds}
+        />
+        {renderHomeAppBar()}
+      </View>
     </FeedSocialProvider>
   );
 }
@@ -375,50 +385,32 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     paddingBottom: 10,
   },
-  headerTopRow: {
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 8,
+    gap: 6,
   },
-  wordmarkWrap: {
+  headerSide: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    minWidth: 40,
   },
-  wordmark: {
-    color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  wordmarkDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: '#A67C52',
-    marginBottom: 10,
+  headerSideRight: {
+    justifyContent: 'flex-end',
   },
   searchPill: {
-    flexDirection: 'row',
+    width: 40,
+    height: 40,
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.18)',
     borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-  },
-  searchPillText: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.1,
   },
   center: {
     flex: 1,
@@ -456,9 +448,5 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
-  },
-  footerLoader: {
-    justifyContent: 'center',
-    alignItems: 'center',
   },
 });

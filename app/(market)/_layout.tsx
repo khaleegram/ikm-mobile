@@ -1,6 +1,6 @@
-import { Redirect, Tabs } from 'expo-router';
+import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { Tabs } from 'expo-router';
 import React, { useCallback, useMemo } from 'react';
-import { ActivityIndicator, View } from 'react-native';
 
 import { CustomTabBar } from '@/components/custom-tab-bar';
 import { UploadProgressBanner } from '@/components/market/upload-progress-banner';
@@ -90,14 +90,27 @@ export default function MarketTabLayout() {
       />
       <Tabs.Screen
         name="messages"
-        options={{
-          tabBarIcon: ({ focused }) => (
-            <IconSymbol
-              size={24}
-              name={focused ? 'message.fill' : 'message'}
-              color={focused ? colors.primary : colors.textSecondary}
-            />
-          ),
+        options={({ route }) => {
+          const nested = getFocusedRouteNameFromRoute(route) ?? 'index';
+          const hideTabBar = nested !== 'index';
+          return {
+            tabBarStyle: hideTabBar
+              ? { display: 'none' as const }
+              : {
+                  position: 'absolute' as const,
+                  backgroundColor: 'transparent',
+                  borderTopWidth: 0,
+                  elevation: 0,
+                  shadowOpacity: 0,
+                },
+            tabBarIcon: ({ focused }) => (
+              <IconSymbol
+                size={24}
+                name={focused ? 'message.fill' : 'message'}
+                color={focused ? colors.primary : colors.textSecondary}
+              />
+            ),
+          };
         }}
       />
       <Tabs.Screen
@@ -127,6 +140,7 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="sound/[soundId]" options={{ href: null }} />
       <Tabs.Screen name="saved-sounds" options={{ href: null }} />
       <Tabs.Screen name="following" options={{ href: null }} />
+      <Tabs.Screen name="liked" options={{ href: null }} />
       <Tabs.Screen name="seller/[sellerId]" options={{ href: null }} />
       <Tabs.Screen name="post-view/[id]" options={{ href: null }} />
       <Tabs.Screen name="status/index" options={{ href: null }} />

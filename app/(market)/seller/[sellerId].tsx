@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SellerBroadcastCard } from '@/components/market/seller-broadcast-card';
 import { SellerCardMediaViewer } from '@/components/market/seller-card-media-viewer';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { showToast } from '@/components/toast';
 import { buildDirectConversationId } from '@/lib/api/market-messages';
 import { marketSocialApi } from '@/lib/api/market-social';
@@ -228,9 +229,12 @@ export default function SellerProfileScreen() {
             </View>
           )}
           <View style={styles.headerTextBlock}>
-            <Text style={[styles.headerName, { color: colors.text }]} numberOfLines={1}>
-              {sellerName}
-            </Text>
+            <View style={styles.headerNameRow}>
+              <Text style={[styles.headerName, { color: colors.text }]} numberOfLines={1}>
+                {sellerName}
+              </Text>
+              <VerifiedBadge size={14} />
+            </View>
             <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
               {headerSubtitle}
             </Text>
@@ -341,7 +345,10 @@ export default function SellerProfileScreen() {
                   <Text style={[styles.avatarInitials, { color: lightBrown, fontSize: 28 }]}>{initials}</Text>
                 </View>
               )}
-              <Text style={[styles.infoName, { color: colors.text }]}>{sellerName}</Text>
+              <View style={styles.infoNameRow}>
+                <Text style={[styles.infoName, { color: colors.text }]}>{sellerName}</Text>
+                <VerifiedBadge size={18} />
+              </View>
               {seller?.storeName && seller.storeName !== sellerName ? (
                 <Text style={[styles.infoStoreName, { color: colors.textSecondary }]}>{seller.storeName}</Text>
               ) : null}
@@ -447,9 +454,15 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  headerNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   headerName: {
     fontSize: 15,
     fontWeight: '700',
+    flexShrink: 1,
   },
   headerSubtitle: {
     fontSize: 11,
@@ -513,6 +526,12 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 36,
     marginBottom: 10,
+  },
+  infoNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   infoName: {
     fontSize: 20,

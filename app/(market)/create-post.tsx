@@ -1,9 +1,6 @@
-import { useAudioPlayer } from "@/hooks/use-audio-player";
 import { Image } from "expo-image";
-import { router, useLocalSearchParams } from "expo-router";
-import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestore";
+import { router } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as DocumentPicker from "expo-document-picker";
 import {
     ActivityIndicator,
     Keyboard,
@@ -20,26 +17,16 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import KeyboardScreen from "@/components/layout/KeyboardScreen";
-import { MarketSoundRow } from "@/components/market/market-sound-row";
 import { MarketVideoSurface } from "@/components/market/market-video-surface";
 import { showToast } from "@/components/toast";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { firestore } from "@/lib/firebase/config";
 import { marketPostsApi } from "@/lib/api/market-posts";
 import { useUploadProgress } from "@/lib/context/upload-progress";
 import { scheduleNotification } from "@/lib/hooks/use-notifications";
-import { marketSoundsApi } from "@/lib/api/market-sounds";
 import {
     NIGERIA_LOCATION_OPTIONS,
-    type NigeriaLocationOption,
 } from "@/lib/constants/nigeria-locations";
 import { useUser } from "@/lib/firebase/auth/use-user";
-import {
-    useMarketSound,
-    useMarketSounds,
-    useSavedMarketSounds,
-    useUserSavedSoundIds,
-} from "@/lib/firebase/firestore/market-sounds";
 import { useTheme } from "@/lib/theme/theme-context";
 import { canPostToMarketStreet } from "@/lib/utils/auth-helpers";
 import { getLoginRoute } from "@/lib/utils/auth-routes";
@@ -49,11 +36,6 @@ import {
     pickMultipleImages,
     pickVideo,
 } from "@/lib/utils/image-upload";
-import {
-    buildOriginalSoundTitle,
-    buildUploadedSoundTitle,
-} from "@/lib/utils/market-media";
-import type { MarketSound } from "@/types";
 
 const LIGHT_BROWN = "#A67C52";
 const MAX_IMAGES = 20;
@@ -83,46 +65,6 @@ function extractHashtags(text: string): string[] {
   return found;
 }
 
-function Chip({
-  active,
-  colors,
-  label,
-  onPress,
-}: {
-  active?: boolean;
-  colors: {
-    border: string;
-    primary: string;
-    text: string;
-    textSecondary: string;
-  };
-  label: string;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      activeOpacity={0.88}
-      onPress={onPress}
-      style={[
-        styles.chip,
-        {
-          borderColor: active ? colors.primary : colors.border,
-          backgroundColor: active ? `${colors.primary}18` : "transparent",
-        },
-      ]}
-    >
-      <Text
-        style={[
-          styles.chipText,
-          { color: active ? colors.primary : colors.textSecondary },
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
 function normalizeCreatePostError(error: unknown): string {
   const raw = (error as any)?.message || "Unable to publish post.";
   const code = String((error as any)?.code || "").toLowerCase();
@@ -132,8 +74,6 @@ function normalizeCreatePostError(error: unknown): string {
   }
   if (lower.includes("photo")) return "Please add at least one photo.";
   if (lower.includes("video")) return "Please pick a video before publishing.";
-  if (lower.includes("document picker"))
-    return "Rebuild your dev build to use audio selection.";
   return String(raw);
 }
 
@@ -142,24 +82,13 @@ export default function CreatePostScreen() {
   const { colors } = useTheme();
   const { startUpload, setUploadProgress, finishUpload, failUpload } = useUploadProgress();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ soundId?: string }>();
-  const initialSoundId = Array.isArray(params.soundId)
-    ? params.soundId[0]
-    : params.soundId;
-  const { sound: preselectedSound } = useMarketSound(initialSoundId || null);
-  const { sounds: allSounds, loading: soundsLoading } = useMarketSounds(
-    null,
-    120,
-  );
-  const { sounds: savedSounds, loading: savedSoundsLoading } =
-    useSavedMarketSounds(user?.uid || null);
-  const { soundIds: savedSoundIds } = useUserSavedSoundIds(user?.uid || null);
 
   const [postMode, setPostMode] = useState<"photo" | "video">("photo");
   const [images, setImages] = useState<string[]>([]);
   const [videoUri, setVideoUri] = useState("");
   const [coverImageUri, setCoverImageUri] = useState("");
   const [description, setDescription] = useState("");
+  const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
   const [isNegotiable, setIsNegotiable] = useState(false);
   const [location, setLocation] = useState({ state: "", city: "" });
@@ -167,50 +96,30 @@ export default function CreatePostScreen() {
   const [locationPickerVisible, setLocationPickerVisible] = useState(false);
   const [publishing, setPublishing] = useState(false);
 
-  const [soundMode, setSoundMode] = useState<
-    "original" | "existing" | "uploaded"
-  >("existing");
-  const [selectedSound, setSelectedSound] = useState<MarketSound | null>(null);
-  const [uploadedSoundUri, setUploadedSoundUri] = useState("");
-  const [uploadedSoundTitle, setUploadedSoundTitle] = useState("");
-  const [soundPickerVisible, setSoundPickerVisible] = useState(false);
-  const [showSavedOnly, setShowSavedOnly] = useState(false);
-  const [previewingSoundId, setPreviewingSoundId] = useState<string | null>(
-    null,
-  );
-  const [busySoundIds, setBusySoundIds] = useState<string[]>([]);
-  const [keepOriginalAudio, setKeepOriginalAudio] = useState(true);
-  const [soundStartMs, setSoundStartMs] = useState(0);
-  const [soundVolume, setSoundVolume] = useState(0.9);
-  const [originalAudioVolume, setOriginalAudioVolume] = useState(1);
   const [captionFocused, setCaptionFocused] = useState(false);
   const [trendingSuggestions, setTrendingSuggestions] = useState<string[]>([]);
 
   const captionRef = useRef<TextInput>(null);
 
-  // Subscribe to top trending hashtags in real-time
   useEffect(() => {
-    const q = query(
-      collection(firestore, "trendingHashtags"),
-      orderBy("count", "desc"),
-      limit(30),
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const tags: string[] = [];
-        snap.forEach((d) => {
-          const tag = d.data()?.tag;
-          if (typeof tag === "string" && tag.trim()) tags.push(tag.trim().toLowerCase());
-        });
-        setTrendingSuggestions(tags.length > 0 ? tags : FALLBACK_TRENDING_HASHTAGS);
-      },
-      (error) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const tags = await marketPostsApi.listTrendingHashtags(30);
+        const next = tags
+          .map((item) => String(item.tag || "").trim().toLowerCase())
+          .filter(Boolean);
+        if (!cancelled) {
+          setTrendingSuggestions(next.length > 0 ? next : FALLBACK_TRENDING_HASHTAGS);
+        }
+      } catch (error) {
         console.warn("Trending hashtag suggestions unavailable:", error);
-        setTrendingSuggestions(FALLBACK_TRENDING_HASHTAGS);
-      },
-    );
-    return unsub;
+        if (!cancelled) setTrendingSuggestions(FALLBACK_TRENDING_HASHTAGS);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Update description; activeSuggestions derives partial-tag live from description
@@ -295,15 +204,6 @@ export default function CreatePostScreen() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!preselectedSound?.id) return;
-    setPostMode("video");
-    setSoundMode("existing");
-    setSelectedSound(preselectedSound);
-    setKeepOriginalAudio(false);
-    setOriginalAudioVolume(0);
-  }, [preselectedSound]);
-
   const locationLabel = useMemo(() => {
     if (!location.city && !location.state) return "";
     return [location.city, location.state].filter(Boolean).join(", ");
@@ -317,60 +217,12 @@ export default function CreatePostScreen() {
         );
     return pool.slice(0, 80);
   }, [locationSearch]);
-  const displayedSounds = useMemo(() => {
-    if (!showSavedOnly) return allSounds;
-    const ids = new Set(savedSoundIds);
-    return savedSounds.filter((sound) => sound.id && ids.has(sound.id));
-  }, [allSounds, savedSoundIds, savedSounds, showSavedOnly]);
-  const previewSound = useMemo(
-    () => displayedSounds.find((item) => item.id === previewingSoundId) || null,
-    [displayedSounds, previewingSoundId],
-  );
-  const previewPlayer = useAudioPlayer(previewSound?.sourceUri || null, {
-    updateIntervalMs: 500,
-  });
-
-  useEffect(() => {
-    previewPlayer.loop = true;
-    previewPlayer.volume = 0.95;
-    if (!previewSound?.sourceUri) {
-      previewPlayer.pause();
-      previewPlayer.currentTime = 0;
-      return;
-    }
-    previewPlayer.currentTime = 0;
-    previewPlayer.play();
-  }, [previewPlayer, previewSound?.sourceUri]);
 
   const canPublish = useMemo(() => {
     if (publishing) return false;
+    if (!title.trim()) return false;
     return postMode === "photo" ? images.length > 0 : Boolean(videoUri);
-  }, [images.length, postMode, publishing, videoUri]);
-  const videoPreviewSoundUri = useMemo(() => {
-    if (soundMode === "existing") return selectedSound?.sourceUri || undefined;
-    if (soundMode === "uploaded") return uploadedSoundUri || undefined;
-    return undefined;
-  }, [selectedSound?.sourceUri, soundMode, uploadedSoundUri]);
-  const soundTitle = useMemo(() => {
-    if (soundMode === "existing" && selectedSound) return selectedSound.title;
-    if (soundMode === "uploaded" && uploadedSoundUri) {
-      return (
-        uploadedSoundTitle ||
-        buildUploadedSoundTitle(
-          uploadedSoundUri,
-          user?.displayName || user?.email,
-        )
-      );
-    }
-    return buildOriginalSoundTitle(user?.displayName || user?.email);
-  }, [
-    selectedSound,
-    soundMode,
-    uploadedSoundTitle,
-    uploadedSoundUri,
-    user?.displayName,
-    user?.email,
-  ]);
+  }, [images.length, postMode, publishing, title, videoUri]);
 
   const pickImagesForPost = async () => {
     try {
@@ -389,10 +241,6 @@ export default function CreatePostScreen() {
       const picked = await pickVideo();
       if (!picked) return;
       setVideoUri(picked);
-      if (soundMode === "original") {
-        setKeepOriginalAudio(true);
-        setOriginalAudioVolume(1);
-      }
     } catch (error: any) {
       showToast(error?.message || "Unable to pick a video.", "error");
     }
@@ -407,80 +255,17 @@ export default function CreatePostScreen() {
     }
   };
 
-  const pickAudioForSound = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: "audio/*",
-        multiple: false,
-        copyToCacheDirectory: true,
-      });
-      if ((result as any)?.canceled) return;
-      const asset = (result as any)?.assets?.[0];
-      const pickedAudioUri = String(asset?.uri || "").trim();
-      if (!pickedAudioUri) return;
-      setSoundMode("uploaded");
-      setUploadedSoundUri(pickedAudioUri);
-      setUploadedSoundTitle(
-        buildUploadedSoundTitle(
-          pickedAudioUri,
-          user?.displayName || user?.email,
-        ),
-      );
-      setSelectedSound(null);
-      showToast("Sound selected.", "success");
-    } catch (error: any) {
-      showToast(
-        error?.message || "Unable to pick an audio file.",
-        "error",
-      );
-    }
-  };
-
-  const selectExistingSound = (sound: MarketSound) => {
-    setSoundMode("existing");
-    setSelectedSound(sound);
-    setUploadedSoundUri("");
-    setUploadedSoundTitle("");
-    setSoundPickerVisible(false);
-    setPreviewingSoundId(null);
-  };
-
-  const toggleSaveSound = async (sound: MarketSound) => {
-    if (!sound.id) return;
-    try {
-      setBusySoundIds((prev) => [...prev, sound.id!]);
-      await marketSoundsApi.toggleSaveSound(
-        sound.id,
-        savedSoundIds.includes(sound.id),
-      );
-    } catch (error: any) {
-      showToast(error?.message || "Unable to update saved sound.", "error");
-    } finally {
-      setBusySoundIds((prev) => prev.filter((id) => id !== sound.id));
-    }
-  };
-
   const resetForm = () => {
     setPostMode("photo");
     setImages([]);
     setVideoUri("");
     setCoverImageUri("");
+    setTitle("");
     setDescription("");
     setPrice("");
     setIsNegotiable(false);
     setLocation({ state: "", city: "" });
     setLocationSearch("");
-    setSoundMode("original");
-    setSelectedSound(null);
-    setUploadedSoundUri("");
-    setUploadedSoundTitle("");
-    setSoundPickerVisible(false);
-    setShowSavedOnly(false);
-    setPreviewingSoundId(null);
-    setKeepOriginalAudio(true);
-    setSoundStartMs(0);
-    setSoundVolume(0.9);
-    setOriginalAudioVolume(1);
   };
 
   const handlePublish = () => {
@@ -495,23 +280,13 @@ export default function CreatePostScreen() {
       coverImageUri: postMode === "video" ? coverImageUri || undefined : undefined,
       videoUri: postMode === "video" ? videoUri || undefined : undefined,
       hashtags,
+      title: title.trim().slice(0, 80) || undefined,
       description: description.trim() || undefined,
       price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
       isNegotiable: Number.isFinite(parsedPrice) ? isNegotiable : false,
       location: locationLabel ? location : undefined,
       contactMethod: "in-app" as const,
-      soundSelection: postMode === "video"
-        ? {
-            mode: soundMode,
-            existingSound: soundMode === "existing" ? selectedSound : undefined,
-            uploadedAudioUri: soundMode === "uploaded" ? uploadedSoundUri || undefined : undefined,
-            soundTitle: soundMode === "uploaded" ? uploadedSoundTitle || undefined : undefined,
-            startMs: soundStartMs,
-            soundVolume,
-            originalAudioVolume,
-            useOriginalVideoAudio: keepOriginalAudio,
-          }
-        : undefined,
+      soundSelection: postMode === "video" ? { mode: "original" as const } : undefined,
     };
     const label = postMode === "video" ? "Uploading video…" : "Uploading post…";
 
@@ -677,11 +452,6 @@ export default function CreatePostScreen() {
                 <MarketVideoSurface
                   active
                   videoUri={videoUri}
-                  externalSoundUri={videoPreviewSoundUri}
-                  externalSoundVolume={soundVolume}
-                  originalAudioVolume={originalAudioVolume}
-                  soundStartMs={soundStartMs}
-                  useOriginalVideoAudio={keepOriginalAudio}
                 />
                 {/* Overlay controls */}
                 <View style={styles.videoOverlay}>
@@ -711,8 +481,24 @@ export default function CreatePostScreen() {
         {/* ── Details card ─────────────────────────────────────────── */}
         <View style={[styles.formCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
 
+          <View style={styles.titleSection}>
+            <Text style={[styles.fieldLabel, { color: LIGHT_BROWN }]}>TITLE</Text>
+            <TextInput
+              value={title}
+              onChangeText={(value) => setTitle(value.slice(0, 80))}
+              placeholder="Product name"
+              placeholderTextColor={colors.textSecondary}
+              maxLength={80}
+              style={[styles.titleInput, { color: colors.text, borderBottomColor: colors.border }]}
+            />
+            <Text style={[styles.charCount, { color: colors.textSecondary, alignSelf: "flex-end", paddingHorizontal: 14, paddingBottom: 8 }]}>
+              {title.length}/80
+            </Text>
+          </View>
+
           {/* Caption section */}
           <View style={[styles.captionSection, { backgroundColor: isDark ? `${LIGHT_BROWN}07` : `${LIGHT_BROWN}05` }]}>
+            <Text style={[styles.fieldLabel, { color: LIGHT_BROWN, paddingHorizontal: 14, paddingTop: 10 }]}>CAPTION</Text>
             <TextInput
               ref={captionRef}
               value={description}
@@ -820,43 +606,6 @@ export default function CreatePostScreen() {
                 </TouchableOpacity>
               : <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />}
           </TouchableOpacity>
-
-          {/* Sound section — video only */}
-          {postMode === "video" && (
-            <>
-              <View style={[styles.sectionHeader, { borderTopColor: colors.border }]}>
-                <Text style={[styles.sectionLabel, { color: LIGHT_BROWN }]}>SOUND</Text>
-              </View>
-              <TouchableOpacity style={styles.formRow} onPress={() => setSoundPickerVisible(true)}>
-                <View style={[styles.rowIconWrap, { backgroundColor: `${LIGHT_BROWN}15` }]}>
-                  <IconSymbol name="music.note" size={14} color={LIGHT_BROWN} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.rowValue, { color: colors.text }]} numberOfLines={1}>{soundTitle}</Text>
-                  <Text style={[styles.rowSub, { color: colors.textSecondary }]}>
-                    {soundMode === "existing" ? "Library sound" : soundMode === "uploaded" ? "Your upload" : "Original audio"}
-                  </Text>
-                </View>
-                <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
-              </TouchableOpacity>
-              <View style={[styles.divider, { backgroundColor: colors.border }]} />
-              <TouchableOpacity style={styles.formRow} onPress={pickAudioForSound}>
-                <View style={[styles.rowIconWrap, { backgroundColor: `${LIGHT_BROWN}15` }]}>
-                  <IconSymbol name="arrow.up.circle.fill" size={14} color={LIGHT_BROWN} />
-                </View>
-                <Text style={[styles.rowValue, { color: colors.text }]}>Upload your own sound</Text>
-              </TouchableOpacity>
-              {soundMode === "uploaded" && uploadedSoundUri ? (
-                <TextInput
-                  value={uploadedSoundTitle}
-                  onChangeText={setUploadedSoundTitle}
-                  placeholder="Sound title"
-                  placeholderTextColor={colors.textSecondary}
-                  style={[styles.soundTitleInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.backgroundSecondary }]}
-                />
-              ) : null}
-            </>
-          )}
         </View>
       </KeyboardScreen>
 
@@ -889,51 +638,6 @@ export default function CreatePostScreen() {
                   <Text style={[styles.sheetRowSub, { color: colors.textSecondary }]}>{option.state}</Text>
                 </TouchableOpacity>
               ))}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ── Sound library modal ──────────────────────────────────── */}
-      <Modal
-        visible={soundPickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => { setSoundPickerVisible(false); setPreviewingSoundId(null); }}
-      >
-        <View style={styles.backdrop}>
-          <View style={[styles.sheet, { backgroundColor: colors.card, borderColor: colors.border, maxHeight: "85%" }]}>
-            <View style={styles.sheetHandle} />
-            <View style={styles.sheetHeader}>
-              <Text style={[styles.sheetTitle, { color: colors.text }]}>Sound Library</Text>
-              <TouchableOpacity onPress={() => { setSoundPickerVisible(false); setPreviewingSoundId(null); }}>
-                <IconSymbol name="xmark" size={18} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-            <View style={styles.chipsRow}>
-              <Chip active={!showSavedOnly} colors={colors} label="All" onPress={() => setShowSavedOnly(false)} />
-              <Chip active={showSavedOnly} colors={colors} label="Saved" onPress={() => setShowSavedOnly(true)} />
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 24 }}>
-              {soundsLoading || savedSoundsLoading
-                ? <ActivityIndicator size="small" color={LIGHT_BROWN} style={{ marginTop: 24 }} />
-                : displayedSounds.length === 0
-                  ? <Text style={[styles.sheetRowSub, { color: colors.textSecondary, textAlign: "center", marginTop: 24 }]}>No sounds yet.</Text>
-                  : displayedSounds.map((sound) => (
-                      <MarketSoundRow
-                        key={sound.id || sound.title}
-                        colors={colors}
-                        sound={sound}
-                        selected={selectedSound?.id === sound.id}
-                        isPreviewing={previewingSoundId === sound.id}
-                        isSaved={Boolean(sound.id && savedSoundIds.includes(sound.id))}
-                        togglingSave={Boolean(sound.id && busySoundIds.includes(sound.id))}
-                        onPreview={() => setPreviewingSoundId((c) => c === sound.id ? null : sound.id || null)}
-                        onOpen={() => selectExistingSound(sound)}
-                        onToggleSave={() => toggleSaveSound(sound)}
-                      />
-                    ))
-              }
             </ScrollView>
           </View>
         </View>
@@ -1030,6 +734,22 @@ const styles = StyleSheet.create({
   // ── Details form card ────────────────────────────────────────
   formCard: { borderRadius: 22, borderWidth: 1, overflow: "hidden" },
 
+  titleSection: { paddingTop: 12 },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    paddingHorizontal: 14,
+    marginBottom: 4,
+  },
+  titleInput: {
+    fontSize: 16,
+    fontWeight: "700",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+
   captionSection: { paddingBottom: 4 },
   captionInput: {
     minHeight: 110, paddingHorizontal: 16, paddingTop: 16,
@@ -1054,20 +774,13 @@ const styles = StyleSheet.create({
   sectionHeader: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4, borderTopWidth: StyleSheet.hairlineWidth },
   sectionLabel: { fontSize: 9, fontWeight: "800", letterSpacing: 1.2 },
 
-  divider: { height: StyleSheet.hairlineWidth },
   formRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 13 },
   rowIconWrap: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   rowPrefix: { fontSize: 15, fontWeight: "700" },
   rowInput: { flex: 1, fontSize: 14, minHeight: 28 },
   rowValue: { fontSize: 14, fontWeight: "600" },
-  rowSub: { fontSize: 12, marginTop: 1 },
   rowRight: { flexDirection: "row", alignItems: "center", gap: 6 },
   rowRightLabel: { fontSize: 11, fontWeight: "600" },
-  soundTitleInput: { marginHorizontal: 14, marginBottom: 10, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14 },
-
-  chipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
-  chip: { minHeight: 34, borderRadius: 17, borderWidth: 1, paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
-  chipText: { fontSize: 12, fontWeight: "700" },
 
   // Bottom sheets
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },

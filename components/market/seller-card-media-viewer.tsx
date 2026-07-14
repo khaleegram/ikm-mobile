@@ -115,15 +115,6 @@ export function SellerCardMediaViewer({
                     <MarketVideoSurface
                       active={visible && index === activeIndex}
                       videoUri={slide.uri}
-                      externalSoundUri={
-                        post.soundMeta?.sourceType === 'original'
-                          ? undefined
-                          : post.soundMeta?.sourceUri || undefined
-                      }
-                      externalSoundVolume={post.soundMeta?.soundVolume}
-                      originalAudioVolume={post.soundMeta?.originalAudioVolume}
-                      soundStartMs={post.soundMeta?.startMs}
-                      useOriginalVideoAudio={post.soundMeta?.useOriginalVideoAudio !== false}
                       style={StyleSheet.absoluteFillObject}
                     />
                   ) : (

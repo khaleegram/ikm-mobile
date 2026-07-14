@@ -136,7 +136,14 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   const focusedRoute = state.routes[state.index];
   const focusedOptions = descriptors[focusedRoute.key]?.options;
   const focusedTabBarStyle = StyleSheet.flatten(focusedOptions?.tabBarStyle as any);
-  const shouldHideTabBar = focusedTabBarStyle?.display === 'none';
+  const nestedState = (focusedRoute as { state?: { index?: number; routes?: { name: string }[] } }).state;
+  const nestedRouteName =
+    nestedState?.routes?.[nestedState.index ?? Math.max((nestedState.routes?.length || 1) - 1, 0)]?.name ||
+    null;
+  // Hide bottom nav inside chat threads + peer product hubs (keep it on inbox root only).
+  const hideOnNestedMessages =
+    focusedRoute.name === 'messages' && Boolean(nestedRouteName) && nestedRouteName !== 'index';
+  const shouldHideTabBar = focusedTabBarStyle?.display === 'none' || hideOnNestedMessages;
   if (shouldHideTabBar) {
     return null;
   }

@@ -1,92 +1,106 @@
-import { router } from 'expo-router';
-import React, { useMemo, useRef, useCallback } from 'react';
-import { ActivityIndicator, Platform, RefreshControl, StatusBar, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import React, { useMemo, useRef, useCallback, useEffect } from 'react';
+import {
+  ActivityIndicator,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 
-import { FeedCard } from '@/components/market/feed-card';
-import { FlashListCompat } from '@/components/layout/flash-list-compat';
+import { FeedVideoItem } from '@/components/market/feed-video-item';
+import { FeedSegmentSwitch } from '@/components/market/feed-segment-switch';
+import { VerticalClipFeed } from '@/components/market/vertical-clip-feed';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostsByIds } from '@/lib/firebase/firestore/market-posts';
+import { useMarketPostsByIds, useUserLikedPostIds } from '@/lib/firebase/firestore/market-posts';
 import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
 import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
-import { buildMarketPostStableKey } from '@/lib/utils/market-media';
+import type { MarketPost } from '@/types';
 
 const lightBrown = '#A67C52';
+type CollectionMode = 'saved' | 'liked';
 
 export default function SavedScreen() {
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
   const { colors } = useTheme();
-  const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const navigation = useNavigation();
-  const { ids: savedIds, idSet: savedIdSet, loading: savesLoading } = useUserSavedPostIds(user?.uid || null);
-  const { idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
-  const { posts, loading: postsLoading, error } = useMarketPostsByIds(savedIds, 50);
 
-  const refreshRef = useRef(() => {});
-  refreshRef.current = () => {};
-
-  const visiblePosts = useMemo(() => {
-    return posts.filter((post) => post !== undefined);
-  }, [posts]);
-
-  const viewportHeight = Math.max(1, Math.round(windowHeight));
+  const [collectionMode, setCollectionMode] = React.useState<CollectionMode>(
+    mode === 'liked' ? 'liked' : 'saved'
+  );
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const [focused, setFocused] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
-  const flatListRef = useRef<any>(null);
-  const activeIndexRef = useRef(0);
-  const viewabilityConfig = React.useRef({ itemVisiblePercentThreshold: 75 }).current;
-  const onViewableItemsChanged = React.useRef(({ viewableItems }: any) => {
-    const firstVisible = viewableItems?.[0]?.item;
-    const firstIndex = Number(viewableItems?.[0]?.index || 0);
-    if (Number.isFinite(firstIndex)) activeIndexRef.current = Math.max(0, firstIndex);
-    setFeedActivePostId(firstVisible?.id || null, firstIndex);
-  }).current;
+  const listRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (mode === 'liked') setCollectionMode('liked');
+    if (mode === 'saved') setCollectionMode('saved');
+  }, [mode]);
+
+  const { ids: savedIds, idSet: savedIdSet, loading: savesLoading } = useUserSavedPostIds(user?.uid || null);
+  const { likedPostIds, loading: likesLoading } = useUserLikedPostIds(user?.uid || null);
+  const { idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
+
+  const activeIds = collectionMode === 'liked' ? likedPostIds : savedIds;
+  const idsLoading = collectionMode === 'liked' ? likesLoading : savesLoading;
+  const { posts, loading: postsLoading, error } = useMarketPostsByIds(activeIds, 50);
+
+  const visiblePosts = useMemo(() => posts.filter((post) => post !== undefined), [posts]);
+
+  const scrollToTop = useCallback(() => {
+    const ref = listRef.current;
+    if (ref && typeof ref.scrollToOffset === 'function') {
+      ref.scrollToOffset({ offset: 0, animated: true });
+    }
+    setActiveIndex(0);
+  }, []);
+
+  const handleModeChange = useCallback(
+    (next: string) => {
+      setCollectionMode(next as CollectionMode);
+      scrollToTop();
+    },
+    [scrollToTop]
+  );
 
   useFocusEffect(
     useCallback(() => {
-      const listRef = flatListRef.current;
-      if (!listRef || typeof listRef.scrollToOffset !== 'function') return undefined;
-      const offset = Math.max(0, activeIndexRef.current) * viewportHeight;
-      requestAnimationFrame(() => {
-        listRef.scrollToOffset({ offset, animated: false });
-      });
-      return undefined;
-    }, [viewportHeight])
+      setFocused(true);
+      return () => setFocused(false);
+    }, [])
   );
 
-  // Tap Saved tab again to scroll to top
   React.useEffect(() => {
     const handler = (e: { preventDefault: () => void }) => {
       if (!navigation.isFocused()) return;
       e.preventDefault();
-      refreshRef.current();
-      const listRef = flatListRef.current;
-      if (listRef && typeof listRef.scrollToOffset === 'function') {
-        listRef.scrollToOffset({ offset: 0, animated: true });
-      }
+      scrollToTop();
     };
-    navigation.addListener('tabPress' as any, handler);
-    return () => { navigation.removeListener('tabPress' as any, handler); };
-  }, [navigation]);
+    navigation.addListener('tabPress' as any, handler as any);
+    return () => {
+      navigation.removeListener('tabPress' as any, handler as any);
+    };
+  }, [navigation, scrollToTop]);
 
-  const onRefresh = async () => {
+  const onRefresh = useCallback(() => {
     setRefreshing(true);
     haptics.light();
     setTimeout(() => setRefreshing(false), 800);
-  };
+  }, []);
 
   useFeedMediaPrefetch(visiblePosts);
-
-  const renderItem = useCallback(
-    ({ item, index }: any) => <FeedCard post={item} itemHeight={viewportHeight} index={index} />,
-    [viewportHeight]
-  );
 
   React.useEffect(() => {
     if (!visiblePosts.length) {
@@ -94,27 +108,90 @@ export default function SavedScreen() {
       return;
     }
     if (!getFeedActivePostId()) {
-      setFeedActivePostId(visiblePosts[0]?.id || null);
+      setFeedActivePostId(visiblePosts[0]?.id || null, 0);
     }
   }, [visiblePosts]);
 
-  const keyExtractor = useCallback((item: any) => buildMarketPostStableKey(item), []);
-  const getItemLayout = useCallback(
-    (_: any, index: number) => ({
-      length: viewportHeight,
-      offset: viewportHeight * index,
-      index,
-    }),
-    [viewportHeight]
+  const handleActiveIndexChange = useCallback((index: number, item: MarketPost | null) => {
+    setActiveIndex(index);
+    setFeedActivePostId(item?.id || null, index);
+  }, []);
+
+  const renderItem = useCallback(
+    ({ item, index, itemHeight }: { item: MarketPost; index: number; itemHeight: number }) => (
+      <FeedVideoItem
+        post={item}
+        itemHeight={itemHeight}
+        index={index}
+        isActive={index === activeIndex}
+        focused={focused}
+      />
+    ),
+    [activeIndex, focused]
   );
+
+  const renderHeader = () => (
+    <View
+      pointerEvents="box-none"
+      style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 2 }]}>
+      {Platform.OS === 'ios' ? (
+        <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFillObject} />
+      ) : null}
+      <View style={styles.headerRow}>
+        <View style={styles.headerSide} />
+        <FeedSegmentSwitch
+          options={[
+            { id: 'saved', label: 'Saved' },
+            { id: 'liked', label: 'Liked' },
+          ]}
+          value={collectionMode}
+          onChange={handleModeChange}
+        />
+        <View style={[styles.headerSide, styles.headerSideRight]} />
+      </View>
+    </View>
+  );
+
+  const renderEmpty = () => {
+    const isLiked = collectionMode === 'liked';
+    return (
+      <View style={[styles.center, { backgroundColor: '#000' }]}>
+        <StatusBar barStyle="light-content" />
+        {renderHeader()}
+        <IconSymbol
+          name={isLiked ? 'heart.fill' : 'bookmark.fill'}
+          size={56}
+          color={isLiked ? '#FF3B55' : lightBrown}
+        />
+        <Text style={styles.emptyTitle}>
+          {isLiked ? 'No liked posts yet' : 'No saved posts yet'}
+        </Text>
+        <Text style={styles.emptyHint}>
+          {isLiked
+            ? 'Tap the heart on any post to save it here.'
+            : 'Tap the bookmark on any post to save it here.'}
+        </Text>
+        <TouchableOpacity
+          style={[styles.btn, { backgroundColor: lightBrown }]}
+          onPress={() => {
+            haptics.light();
+            router.push('/(market)/index' as any);
+          }}>
+          <IconSymbol name="house" size={18} color="#FFFFFF" />
+          <Text style={styles.btnText}>Browse Market</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   if (!user) {
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
+        {renderHeader()}
         <IconSymbol name="bookmark.slash.fill" size={52} color={lightBrown} />
-        <Text style={styles.emptyTitle}>Sign in to view saved items</Text>
-        <Text style={styles.emptyHint}>Your wishlist appears here once you save posts.</Text>
+        <Text style={styles.emptyTitle}>Sign in to view collections</Text>
+        <Text style={styles.emptyHint}>Your saved and liked posts appear here.</Text>
         <TouchableOpacity
           style={[styles.btn, { backgroundColor: lightBrown }]}
           onPress={() => {
@@ -127,11 +204,15 @@ export default function SavedScreen() {
     );
   }
 
-  if (savesLoading || postsLoading) {
+  if (idsLoading || postsLoading) {
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
-        <ActivityIndicator size="large" color={lightBrown} />
+        {renderHeader()}
+        <ActivityIndicator
+          size="large"
+          color={collectionMode === 'liked' ? '#FF3B55' : lightBrown}
+        />
       </View>
     );
   }
@@ -140,96 +221,42 @@ export default function SavedScreen() {
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
+        {renderHeader()}
         <IconSymbol name="exclamationmark.triangle.fill" size={44} color={colors.error} />
-        <Text style={styles.emptyTitle}>Could not load saved feed</Text>
+        <Text style={styles.emptyTitle}>Could not load feed</Text>
         <Text style={styles.emptyHint}>{error.message}</Text>
-        <TouchableOpacity
-          style={[styles.btn, { backgroundColor: lightBrown }]}
-          onPress={() => {
-            haptics.light();
-            router.push('/(market)/index' as any);
-          }}>
-          <IconSymbol name="house" size={18} color="#FFFFFF" />
-          <Text style={styles.btnText}>Go to Home</Text>
-        </TouchableOpacity>
       </View>
     );
   }
 
-  if (savedIds.length === 0 || visiblePosts.length === 0) {
-    return (
-      <View style={[styles.center, { backgroundColor: '#000' }]}>
-        <StatusBar barStyle="light-content" />
-        <IconSymbol name="bookmark.fill" size={56} color={lightBrown} />
-        <Text style={styles.emptyTitle}>No saved posts yet</Text>
-        <Text style={styles.emptyHint}>Tap the bookmark icon on any post to save it here.</Text>
-        <TouchableOpacity
-          style={[styles.btn, { backgroundColor: lightBrown }]}
-          onPress={() => {
-            haptics.light();
-            router.push('/(market)/index' as any);
-          }}>
-          <IconSymbol name="house" size={18} color="#FFFFFF" />
-          <Text style={styles.btnText}>Browse Market</Text>
-        </TouchableOpacity>
-      </View>
-    );
+  if (activeIds.length === 0 || visiblePosts.length === 0) {
+    return renderEmpty();
   }
 
   return (
     <FeedSocialProvider followingIdSet={followingIdSet} savedIdSet={savedIdSet}>
-      <View style={{ flex: 1, backgroundColor: '#000' }}>
+      <View style={styles.container}>
         <StatusBar barStyle="light-content" translucent />
-        <View pointerEvents="box-none" style={[styles.floatingHeaderContainer, { paddingTop: insets.top + 6 }]}>
-          {Platform.OS === 'ios' ? (
-            <BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFillObject} />
-          ) : null}
-          <View style={styles.headerRow}>
-            <View style={styles.headerLeft}>
-              <IconSymbol name="bookmark.fill" size={18} color={lightBrown} />
-              <Text style={styles.headerTitle}>Wishlist</Text>
-            </View>
-            <Text style={styles.headerCount}>{visiblePosts.length} saved</Text>
-          </View>
-        </View>
-        <FlashListCompat
-          key={`saved-feed-${viewportHeight}`}
-          ref={flatListRef}
-          data={visiblePosts}
+        <VerticalClipFeed
+          key={collectionMode}
+          listRef={listRef}
+          items={visiblePosts}
           renderItem={renderItem}
-          keyExtractor={keyExtractor}
-          estimatedItemSize={viewportHeight}
-          pagingEnabled={true}
-          snapToInterval={viewportHeight}
-          snapToAlignment="start"
-          disableIntervalMomentum
-          decelerationRate="fast"
-          bounces={false}
-          alwaysBounceVertical={false}
-          overScrollMode="never"
-          showsVerticalScrollIndicator={false}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
-          getItemLayout={getItemLayout}
-          removeClippedSubviews={Platform.OS === 'android'}
-          maxToRenderPerBatch={2}
-          windowSize={3}
-          initialNumToRender={2}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#FFFFFF"
-              colors={['#A67C52']}
-            />
-          }
+          onActiveIndexChange={handleActiveIndexChange}
+          onRefresh={onRefresh}
+          refreshing={refreshing}
         />
+        {renderHeader()}
       </View>
     </FeedSocialProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
   floatingHeaderContainer: {
     position: 'absolute',
     top: 0,
@@ -238,31 +265,22 @@ const styles = StyleSheet.create({
     zIndex: 9999,
     elevation: 50,
     overflow: 'hidden',
-    paddingHorizontal: 16,
     paddingBottom: 10,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  headerSide: {
+    flex: 1,
+    minWidth: 40,
   },
-  headerTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
-    textShadowColor: 'rgba(0,0,0,0.6)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  headerCount: {
-    color: 'rgba(255,255,255,0.45)',
-    fontSize: 12,
-    fontWeight: '600',
+  headerSideRight: {
+    alignItems: 'flex-end',
   },
   center: {
     flex: 1,

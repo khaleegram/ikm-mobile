@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,16 +14,17 @@ import {
   View,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
 import { CommentItem } from '@/components/market/comment-item';
-import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { marketCommentsApi } from '@/lib/api/market-comments';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPostComments } from '@/lib/firebase/firestore/market-comments';
+import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import type { MarketComment } from '@/types';
@@ -40,28 +41,50 @@ interface CommentsSheetProps {
 export function CommentsSheet({ postId, visible, onClose, totalComments }: CommentsSheetProps) {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { comments, loading } = useMarketPostComments(visible ? postId : null);
+  const { user: profile } = useUserProfile(user?.uid ?? null);
+  const { comments, loading } = useMarketPostComments(postId);
   const [commentText, setCommentText] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [pendingComments, setPendingComments] = useState<MarketComment[]>([]);
   const listRef = useRef<FlashList<MarketComment>>(null);
   const translateY = useRef(new Animated.Value(700)).current;
   const keyboardLift = useRef(new Animated.Value(0)).current;
   const marketLoginRoute = getLoginRouteForVariant('market');
 
-  const orderedComments = useMemo(() => [...comments].reverse(), [comments]);
+  const avatarUri = useMemo(
+    () => String(profile?.storeLogoUrl || '').trim() || null,
+    [profile?.storeLogoUrl]
+  );
 
-  // Slide sheet in/out
+  const orderedComments = useMemo(() => {
+    const serverIds = new Set(comments.map((c) => c.id).filter(Boolean));
+    const stillPending = pendingComments.filter((p) => !serverIds.has(p.id));
+    return [...comments, ...stillPending].reverse();
+  }, [comments, pendingComments]);
+
   useEffect(() => {
-    Animated.spring(translateY, {
+    if (!comments.length) return;
+    setPendingComments((prev) =>
+      prev.filter((pending) => {
+        const match = comments.find(
+          (c) =>
+            c.userId === pending.userId &&
+            c.comment === pending.comment &&
+            Math.abs(c.createdAt.getTime() - pending.createdAt.getTime()) < 15000
+        );
+        return !match;
+      })
+    );
+  }, [comments]);
+
+  useEffect(() => {
+    Animated.timing(translateY, {
       toValue: visible ? 0 : 700,
+      duration: visible ? 220 : 180,
       useNativeDriver: true,
-      tension: 68,
-      friction: 12,
     }).start();
     if (!visible) setCommentText('');
   }, [visible, translateY]);
 
-  // Keyboard listener — works reliably in Modals on both platforms
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
@@ -69,7 +92,7 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
     const showSub = Keyboard.addListener(showEvent, (e) => {
       Animated.timing(keyboardLift, {
         toValue: -e.endCoordinates.height,
-        duration: Platform.OS === 'ios' ? e.duration || 250 : 180,
+        duration: Platform.OS === 'ios' ? e.duration || 220 : 160,
         useNativeDriver: true,
       }).start();
     });
@@ -77,7 +100,7 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
     const hideSub = Keyboard.addListener(hideEvent, (e) => {
       Animated.timing(keyboardLift, {
         toValue: 0,
-        duration: Platform.OS === 'ios' ? e.duration || 200 : 160,
+        duration: Platform.OS === 'ios' ? e.duration || 180 : 140,
         useNativeDriver: true,
       }).start();
     });
@@ -88,14 +111,13 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
     };
   }, [keyboardLift]);
 
-  // Scroll to latest on new comment
   useEffect(() => {
     if (visible && orderedComments.length > 0) {
-      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
     }
   }, [visible, orderedComments.length]);
 
-  const handleSend = async () => {
+  const handleSend = useCallback(async () => {
     if (!postId) return;
     if (!user) {
       Alert.alert('Login Required', 'Please log in to comment', [
@@ -104,23 +126,36 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
       ]);
       return;
     }
-    if (!commentText.trim()) return;
-    setSubmitting(true);
-    haptics.medium();
+    const text = commentText.trim();
+    if (!text) return;
+
+    const optimistic: MarketComment = {
+      id: `temp-${Date.now()}`,
+      postId,
+      userId: user.uid,
+      comment: text,
+      createdAt: new Date(),
+    };
+
+    setCommentText('');
+    setPendingComments((prev) => [...prev, optimistic]);
+    haptics.light();
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+
     try {
-      await marketCommentsApi.create(postId, commentText.trim());
-      setCommentText('');
+      const result = await marketCommentsApi.create(postId, text);
+      setPendingComments((prev) =>
+        prev.map((p) => (p.id === optimistic.id ? { ...p, id: result.id || p.id } : p))
+      );
       haptics.success();
-      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
     } catch (e: any) {
+      setPendingComments((prev) => prev.filter((p) => p.id !== optimistic.id));
       haptics.error();
       showToast(e?.message || 'Failed to add comment', 'error');
-    } finally {
-      setSubmitting(false);
     }
-  };
+  }, [postId, user, commentText, onClose, marketLoginRoute]);
 
-  if (!visible) return null;
+  if (!postId) return null;
 
   return (
     <Modal
@@ -130,76 +165,80 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
       onRequestClose={onClose}
       statusBarTranslucent>
 
-      {/* Full-screen backdrop — sits below the sheet */}
       <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); onClose(); }}>
         <View style={styles.backdrop} />
       </TouchableWithoutFeedback>
 
-      {/* Sheet lifts with keyboard via transform, which is native-driver safe. */}
       <Animated.View
         style={[
           styles.sheetWrapper,
           { transform: [{ translateY: Animated.add(translateY, keyboardLift) }] },
         ]}>
-        <View
-          style={[
-            styles.sheet,
-            { paddingBottom: Math.max(insets.bottom, 8) + 4 },
-          ]}>
-          {/* Handle bar */}
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 8) + 4 }]}>
           <View style={styles.handle} />
 
-          {/* Header */}
           <View style={styles.header}>
             <Text style={styles.headerTitle}>
-              {(totalComments ?? 0) > 0 ? `${totalComments} Comments` : 'Comments'}
+              {(totalComments ?? orderedComments.length) > 0
+                ? `${Math.max(totalComments ?? 0, orderedComments.length)} Comments`
+                : 'Comments'}
             </Text>
             <TouchableOpacity
               onPress={() => { Keyboard.dismiss(); onClose(); }}
               style={styles.closeBtn}
               hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}>
-              <IconSymbol name="xmark" size={18} color="rgba(255,255,255,0.6)" />
+              <IconSymbol name="xmark" size={16} color="rgba(255,255,255,0.55)" />
             </TouchableOpacity>
           </View>
 
-          {/* Comment list */}
           <View style={styles.list}>
             {loading && orderedComments.length === 0 ? (
               <View style={styles.center}>
-                <ActivityIndicator color={lightBrown} />
+                <ActivityIndicator color={lightBrown} size="small" />
               </View>
             ) : (
               <FlashList
                 ref={listRef}
                 data={orderedComments}
-                keyExtractor={(item) => item.id ?? Math.random().toString()}
-                renderItem={({ item }) => <CommentItem comment={item} darkMode />}
-                estimatedItemSize={80}
+                keyExtractor={(item) => item.id ?? `${item.userId}-${item.createdAt.getTime()}`}
+                renderItem={({ item }) => (
+                  <CommentItem
+                    comment={item}
+                    darkMode
+                    pending={String(item.id || '').startsWith('temp-')}
+                  />
+                )}
+                estimatedItemSize={56}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="none"
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 8 }}
+                contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 6 }}
                 ListEmptyComponent={
                   <View style={styles.empty}>
-                    <Text style={styles.emptyEmoji}>💬</Text>
                     <Text style={styles.emptyTitle}>No comments yet</Text>
-                    <Text style={styles.emptyHint}>Be the first to comment!</Text>
+                    <Text style={styles.emptyHint}>Start the conversation</Text>
                   </View>
                 }
               />
             )}
           </View>
 
-          {/* Input row */}
           <View style={styles.inputRow}>
+            <View style={styles.inputAvatar}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.inputAvatarImg} contentFit="cover" />
+              ) : (
+                <IconSymbol name="person.fill" size={12} color="rgba(255,255,255,0.5)" />
+              )}
+            </View>
             <View style={styles.inputWrap}>
               <TextInput
                 style={styles.input}
                 placeholder={user ? 'Add a comment...' : 'Log in to comment'}
-                placeholderTextColor="rgba(255,255,255,0.38)"
+                placeholderTextColor="rgba(255,255,255,0.35)"
                 value={commentText}
                 onChangeText={setCommentText}
-                editable={!!user && !submitting}
+                editable={!!user}
                 multiline
                 maxLength={500}
                 returnKeyType="send"
@@ -207,17 +246,13 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
                 onSubmitEditing={handleSend}
               />
             </View>
-            <AnimatedPressable
+            <TouchableOpacity
               style={[styles.sendBtn, { opacity: commentText.trim() && user ? 1 : 0.35 }]}
               onPress={handleSend}
-              disabled={!commentText.trim() || !user || submitting}
-              scaleValue={0.88}>
-              {submitting ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <IconSymbol name="paperplane.fill" size={20} color="#FFF" />
-              )}
-            </AnimatedPressable>
+              disabled={!commentText.trim() || !user}
+              activeOpacity={0.7}>
+              <IconSymbol name="paperplane.fill" size={16} color="#FFF" />
+            </TouchableOpacity>
           </View>
         </View>
       </Animated.View>
@@ -238,65 +273,78 @@ const styles = StyleSheet.create({
   },
   sheet: {
     backgroundColor: '#181818',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    maxHeight: 580,
-    minHeight: 320,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: 560,
+    minHeight: 300,
   },
   handle: {
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(255,255,255,0.22)',
     alignSelf: 'center',
-    marginTop: 10,
+    marginTop: 8,
     marginBottom: 2,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.1)',
+    borderBottomColor: 'rgba(255,255,255,0.08)',
   },
   headerTitle: {
     flex: 1,
     textAlign: 'center',
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
   },
-  closeBtn: { position: 'absolute', right: 16, top: 14, padding: 4 },
+  closeBtn: { position: 'absolute', right: 14, top: 10, padding: 4 },
   list: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
-  empty: { alignItems: 'center', paddingVertical: 48, gap: 8 },
-  emptyEmoji: { fontSize: 42 },
-  emptyTitle: { color: '#FFF', fontSize: 16, fontWeight: '700' },
-  emptyHint: { color: 'rgba(255,255,255,0.45)', fontSize: 13 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
+  empty: { alignItems: 'center', paddingVertical: 40, gap: 4 },
+  emptyTitle: { color: '#FFF', fontSize: 13, fontWeight: '700' },
+  emptyHint: { color: 'rgba(255,255,255,0.4)', fontSize: 11 },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingTop: 10,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 8,
     paddingBottom: 4,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.1)',
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  inputAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  inputAvatarImg: {
+    width: '100%',
+    height: '100%',
   },
   inputWrap: {
     flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: Platform.OS === 'ios' ? 10 : 7,
-    maxHeight: 100,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 6,
+    maxHeight: 88,
   },
-  input: { color: '#FFF', fontSize: 15 },
+  input: { color: '#FFF', fontSize: 13, lineHeight: 18 },
   sendBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: lightBrown,
     alignItems: 'center',
     justifyContent: 'center',

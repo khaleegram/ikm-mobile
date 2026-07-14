@@ -1,30 +1,37 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { Image } from 'expo-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { useTheme } from '@/lib/theme/theme-context';
 import { MarketComment } from '@/types';
 import { usePublicUserProfileOnce } from '@/lib/firebase/firestore/users';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { marketCommentsApi } from '@/lib/api/market-comments';
 import { formatRelativeTime } from '@/lib/utils/date-format';
-import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
 
 interface CommentItemProps {
   comment: MarketComment;
   onDeleted?: () => void;
   darkMode?: boolean;
+  pending?: boolean;
 }
 
-export function CommentItem({ comment, onDeleted, darkMode }: CommentItemProps) {
+export const CommentItem = React.memo(function CommentItem({
+  comment,
+  onDeleted,
+  darkMode,
+  pending,
+}: CommentItemProps) {
   const { colors: themeColors } = useTheme();
   const colors = darkMode
     ? {
         ...themeColors,
         text: '#FFFFFF',
-        textSecondary: 'rgba(255,255,255,0.55)',
+        textSecondary: 'rgba(255,255,255,0.5)',
         backgroundSecondary: 'rgba(255,255,255,0.12)',
-        border: 'rgba(255,255,255,0.08)',
+        border: 'rgba(255,255,255,0.06)',
       }
     : themeColors;
   const { user } = useUser();
@@ -32,7 +39,8 @@ export function CommentItem({ comment, onDeleted, darkMode }: CommentItemProps) 
   const isOwner = user?.uid === comment.userId;
 
   const handleDelete = () => {
-    Alert.alert('Delete Comment', 'Are you sure you want to delete this comment?', [
+    if (pending || !comment.id || comment.id.startsWith('temp-')) return;
+    Alert.alert('Delete Comment', 'Remove this comment?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -46,7 +54,7 @@ export function CommentItem({ comment, onDeleted, darkMode }: CommentItemProps) 
           } catch (error: any) {
             console.error('Error deleting comment:', error);
             haptics.error();
-            Alert.alert('Error', 'Failed to delete comment. Please try again.');
+            Alert.alert('Error', 'Failed to delete comment.');
           }
         },
       },
@@ -54,91 +62,113 @@ export function CommentItem({ comment, onDeleted, darkMode }: CommentItemProps) 
   };
 
   const displayName = commenter?.displayName || commenter?.storeName || 'User';
+  const showVerified = Boolean(commenter?.storeName);
+  const avatarUri = useMemo(
+    () => String(commenter?.storeLogoUrl || (commenter as any)?.photoURL || '').trim() || null,
+    [commenter]
+  );
   const initials = displayName
     .split(' ')
+    .filter(Boolean)
     .map((n) => n[0])
     .join('')
     .toUpperCase()
     .slice(0, 2);
 
   return (
-    <View style={[styles.container, { borderBottomColor: colors.border }]}>
-      <View style={styles.header}>
-        {/* Avatar */}
+    <View style={[styles.container, { borderBottomColor: colors.border }, pending && styles.pending]}>
+      <View style={styles.row}>
         <View style={[styles.avatar, { backgroundColor: colors.backgroundSecondary }]}>
-          {commenter?.storeLogoUrl ? (
-            <Text style={[styles.avatarText, { color: colors.text }]}>{initials}</Text>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.avatarImg} contentFit="cover" cachePolicy="memory-disk" />
           ) : (
-            <Text style={[styles.avatarText, { color: colors.text }]}>{initials}</Text>
+            <Text style={[styles.avatarInitials, { color: colors.text }]}>{initials || '?'}</Text>
           )}
         </View>
 
-        {/* Comment Content */}
-        <View style={styles.content}>
-          <View style={styles.commentHeader}>
-            <Text style={[styles.userName, { color: colors.text }]}>{displayName}</Text>
+        <View style={styles.body}>
+          <View style={styles.metaRow}>
+            <View style={styles.nameRow}>
+              <Text style={[styles.userName, { color: colors.text }]} numberOfLines={1}>{displayName}</Text>
+              {showVerified ? <VerifiedBadge size={12} /> : null}
+            </View>
             <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
-              {formatRelativeTime(comment.createdAt)}
+              {pending ? 'now' : formatRelativeTime(comment.createdAt)}
             </Text>
           </View>
           <Text style={[styles.commentText, { color: colors.text }]}>{comment.comment}</Text>
         </View>
 
-        {/* Delete Button */}
-        {isOwner && (
-          <AnimatedPressable
-            style={styles.deleteButton}
-            onPress={handleDelete}
-            scaleValue={0.9}>
-            <IconSymbol name="trash" size={18} color={colors.textSecondary} />
-          </AnimatedPressable>
+        {isOwner && !pending && (
+          <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <IconSymbol name="trash" size={14} color={colors.textSecondary} />
+          </TouchableOpacity>
         )}
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  header: {
+  pending: {
+    opacity: 0.72,
+  },
+  row: {
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'flex-start',
+    gap: 8,
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  avatarText: {
-    fontSize: 14,
+  avatarImg: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarInitials: {
+    fontSize: 11,
     fontWeight: '700',
   },
-  content: {
+  body: {
     flex: 1,
+    minWidth: 0,
   },
-  commentHeader: {
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
+    gap: 6,
+    marginBottom: 2,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    flexShrink: 1,
+    minWidth: 0,
   },
   userName: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '700',
+    flexShrink: 1,
   },
   timestamp: {
-    fontSize: 12,
+    fontSize: 10,
+    fontWeight: '500',
   },
   commentText: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 12,
+    lineHeight: 17,
   },
-  deleteButton: {
-    padding: 4,
+  deleteBtn: {
+    paddingTop: 2,
   },
 });

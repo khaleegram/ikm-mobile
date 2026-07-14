@@ -11,8 +11,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
-import { firestore } from '@/lib/firebase/config';
+import { marketPostsApi } from '@/lib/api/market-posts';
 
 const MAX_HASHTAGS = 10;
 
@@ -32,33 +31,25 @@ export function HashtagInput({
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // Fetch trending hashtags
   useEffect(() => {
-    const q = query(
-      collection(firestore, 'trendingHashtags'),
-      orderBy('count', 'desc'),
-      limit(20)
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const trending: string[] = [];
-        snapshot.forEach((doc) => {
-          const data = doc.data();
-          if (data.tag && typeof data.tag === 'string') {
-            trending.push(data.tag);
-          }
-        });
-        setSuggestions(trending);
-      },
-      (error) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const trending = await marketPostsApi.listTrendingHashtags(20);
+        if (!cancelled) {
+          setSuggestions(
+            trending
+              .map((item) => String(item.tag || '').trim())
+              .filter(Boolean)
+          );
+        }
+      } catch (error) {
         console.error('Error fetching trending hashtags:', error);
-        // Continue without suggestions
       }
-    );
-
-    return () => unsubscribe();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const parseHashtags = (text: string): string[] => {

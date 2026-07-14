@@ -1,4 +1,3 @@
-import { useAudioPlayer } from "@/hooks/use-audio-player";
 import { useVideoPlayer, VideoView } from "expo-video";
 import React, { useEffect, useRef } from "react";
 import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
@@ -10,70 +9,55 @@ export interface VideoPlaybackSnapshot {
 
 interface MarketVideoSurfaceProps {
   active: boolean;
-  externalSoundUri?: string | null;
-  externalSoundVolume?: number;
-  originalAudioVolume?: number;
+  muted?: boolean;
   showControls?: boolean;
-  soundStartMs?: number;
-  useOriginalVideoAudio?: boolean;
   videoUri: string;
   style?: StyleProp<ViewStyle>;
+  contentFit?: 'cover' | 'contain';
   onPlaybackSnapshot?: (snapshot: VideoPlaybackSnapshot) => void;
-}
-
-function clampUnitVolume(value: number | undefined, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(0, Math.min(1, Number(value)));
+  onFirstFrame?: () => void;
+  /** @deprecated Ignored — videos play their own audio only. */
+  externalSoundUri?: string | null;
+  /** @deprecated Ignored */
+  externalSoundVolume?: number;
+  /** @deprecated Ignored */
+  originalAudioVolume?: number;
+  /** @deprecated Ignored */
+  soundStartMs?: number;
+  /** @deprecated Ignored */
+  useOriginalVideoAudio?: boolean;
 }
 
 export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   active,
-  externalSoundUri,
-  externalSoundVolume,
-  originalAudioVolume,
+  muted = false,
   showControls = false,
-  soundStartMs = 0,
-  useOriginalVideoAudio = true,
   videoUri,
   style,
+  contentFit = 'cover',
   onPlaybackSnapshot,
+  onFirstFrame,
 }: MarketVideoSurfaceProps) {
   const mountedRef = useRef(true);
+  const firstFrameSentRef = useRef(false);
   const onPlaybackSnapshotRef = useRef(onPlaybackSnapshot);
   onPlaybackSnapshotRef.current = onPlaybackSnapshot;
+  const onFirstFrameRef = useRef(onFirstFrame);
+  onFirstFrameRef.current = onFirstFrame;
+
   const videoPlayer = useVideoPlayer({ uri: videoUri }, (player) => {
     if (!mountedRef.current) return;
     player.loop = true;
-    player.muted = !useOriginalVideoAudio;
-    player.volume = clampUnitVolume(
-      originalAudioVolume,
-      useOriginalVideoAudio ? 1 : 0,
-    );
-  });
-  const audioPlayer = useAudioPlayer(externalSoundUri || null, {
-    updateIntervalMs: 500,
+    player.muted = muted;
+    player.volume = muted ? 0 : 1;
   });
 
   useEffect(() => {
     if (!mountedRef.current) return;
     videoPlayer.loop = true;
-    videoPlayer.muted =
-      !useOriginalVideoAudio || clampUnitVolume(originalAudioVolume, 0) <= 0;
-    videoPlayer.volume = clampUnitVolume(
-      originalAudioVolume,
-      useOriginalVideoAudio ? 1 : 0,
-    );
-  }, [originalAudioVolume, useOriginalVideoAudio, videoPlayer]);
-
-  useEffect(() => {
-    if (!mountedRef.current) return;
-    audioPlayer.loop = true;
-    audioPlayer.muted = !externalSoundUri;
-    audioPlayer.volume = clampUnitVolume(
-      externalSoundVolume,
-      externalSoundUri ? 0.9 : 0,
-    );
-  }, [audioPlayer, externalSoundUri, externalSoundVolume]);
+    videoPlayer.muted = muted;
+    videoPlayer.volume = muted ? 0 : 1;
+  }, [muted, videoPlayer]);
 
   useEffect(() => {
     if (!mountedRef.current) return;
@@ -82,10 +66,7 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
         videoPlayer.pause();
         videoPlayer.currentTime = 0;
       } catch {}
-      try {
-        audioPlayer.pause();
-        audioPlayer.currentTime = Math.max(0, soundStartMs) / 1000;
-      } catch {}
+      firstFrameSentRef.current = false;
       return;
     }
 
@@ -93,31 +74,23 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
       videoPlayer.currentTime = 0;
       videoPlayer.play();
     } catch {}
-
-    if (externalSoundUri) {
-      try {
-        audioPlayer.currentTime = Math.max(0, soundStartMs) / 1000;
-        audioPlayer.play();
-      } catch {}
-    } else {
-      try {
-        audioPlayer.pause();
-        audioPlayer.currentTime = 0;
-      } catch {}
-    }
-  }, [active, audioPlayer, externalSoundUri, soundStartMs, videoPlayer]);
+  }, [active, videoPlayer]);
 
   useEffect(() => {
-    if (!onPlaybackSnapshotRef.current) return undefined;
+    if (!onPlaybackSnapshotRef.current && !onFirstFrameRef.current) return undefined;
     const interval = setInterval(() => {
       try {
         const currentTimeSec = Math.max(0, Number(videoPlayer.currentTime || 0));
         const durationSec = Math.max(0, Number(videoPlayer.duration || 0));
         onPlaybackSnapshotRef.current?.({ currentTimeSec, durationSec });
+        if (!firstFrameSentRef.current && (currentTimeSec > 0.05 || durationSec > 0)) {
+          firstFrameSentRef.current = true;
+          onFirstFrameRef.current?.();
+        }
       } catch {
         // ignore player read errors during teardown
       }
-    }, 500);
+    }, 250);
     return () => clearInterval(interval);
   }, [videoPlayer]);
 
@@ -125,8 +98,9 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      try { videoPlayer.pause(); } catch {}
-      try { audioPlayer.pause(); } catch {}
+      try {
+        videoPlayer.pause();
+      } catch {}
     };
   }, []);
 
@@ -135,7 +109,7 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
       <VideoView
         player={videoPlayer}
         style={StyleSheet.absoluteFill}
-        contentFit="cover"
+        contentFit={contentFit}
         nativeControls={showControls}
         fullscreenOptions={{ presentation: showControls ? 'fullScreen' : 'contained' }}
       />

@@ -147,13 +147,7 @@ function buildPostsCacheUpdater(
 const MARKET_FEED_PAGE_SIZE = 15;
 const PERSONALIZED_FEED_PAGE_SIZE = 25;
 
-function filterOutExcludedPosts(posts: MarketPost[], excludeIds: Set<string>): MarketPost[] {
-  if (!excludeIds.size) return posts;
-  return posts.filter((post) => !post.id || !excludeIds.has(post.id));
-}
-
 export function usePersonalizedMarketFeed(userId: string | null) {
-  const { likedPostIds } = useUserLikedPostIds(userId);
   const [posts, setPosts] = useState<MarketPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -161,13 +155,8 @@ export function usePersonalizedMarketFeed(userId: string | null) {
   const [refreshKey, setRefreshKey] = useState(0);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const likedIdsRef = useRef<string[]>(likedPostIds);
-  likedIdsRef.current = likedPostIds;
-
   const buildExcludeIds = useCallback(() => {
-    const exclude = new Set<string>(likedIdsRef.current);
-    seenIdsRef.current.forEach((id) => exclude.add(id));
-    return Array.from(exclude);
+    return Array.from(seenIdsRef.current);
   }, []);
 
   useEffect(() => {
@@ -223,38 +212,22 @@ export function usePersonalizedMarketFeed(userId: string | null) {
       };
     }
 
-    const cacheKey = `market_personalized_feed_${userId}`;
     setLoading(true);
     setError(null);
-    seenIdsRef.current = new Set();
     lastDocRef.current = null;
 
     (async () => {
-      const cached = await getCachedData<MarketPost[]>(cacheKey);
-      if (!cancelled && cached && cached.length > 0) {
-        setPosts(normalizeCachedPosts(cached));
-        cached.forEach((post) => {
-          if (post.id) seenIdsRef.current.add(post.id);
-        });
-        setLoading(false);
-      }
-
       try {
         const result = await marketFeedApi.getPersonalizedFeed(buildExcludeIds());
         if (cancelled) return;
-        const excludeIds = new Set(likedIdsRef.current);
-        const nextPosts = filterOutExcludedPosts(
-          result.posts.map((post) =>
-            normalizeMarketPostRecord(String(post.id || ''), post as DocumentData)
-          ),
-          excludeIds
+        const nextPosts = result.posts.map((post) =>
+          normalizeMarketPostRecord(String(post.id || ''), post as DocumentData)
         );
-        seenIdsRef.current = new Set(
-          nextPosts.map((post) => post.id).filter((id): id is string => Boolean(id))
-        );
+        nextPosts.forEach((post) => {
+          if (post.id) seenIdsRef.current.add(post.id);
+        });
         setPosts(nextPosts);
         setHasMore(nextPosts.length >= PERSONALIZED_FEED_PAGE_SIZE);
-        cacheData(cacheKey, nextPosts, MARKET_POSTS_CACHE_TTL_MS).catch(() => {});
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -308,13 +281,9 @@ export function usePersonalizedMarketFeed(userId: string | null) {
     setLoading(true);
     try {
       const result = await marketFeedApi.getPersonalizedFeed(buildExcludeIds());
-      const excludeIds = new Set([...likedIdsRef.current, ...seenIdsRef.current]);
-      const nextPosts = filterOutExcludedPosts(
-        result.posts
-          .map((post) => normalizeMarketPostRecord(String(post.id || ''), post as DocumentData))
-          .filter((post) => post.id && !seenIdsRef.current.has(post.id)),
-        excludeIds
-      );
+      const nextPosts = result.posts
+        .map((post) => normalizeMarketPostRecord(String(post.id || ''), post as DocumentData))
+        .filter((post) => post.id && !seenIdsRef.current.has(post.id));
 
       nextPosts.forEach((post) => {
         if (post.id) seenIdsRef.current.add(post.id);
@@ -333,15 +302,17 @@ export function usePersonalizedMarketFeed(userId: string | null) {
     }
   };
 
-  const refresh = () => {
-    seenIdsRef.current = new Set();
-    lastDocRef.current = null;
-    setHasMore(true);
-    setError(null);
-    setRefreshKey((previous) => previous + 1);
-  };
+  const refresh = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+  }, []);
 
-  return { posts, loading, error, loadMore, hasMore, refresh };
+  const markSeen = useCallback((postIds: string[], dwellSec?: number) => {
+    if (!postIds.length || !userId) return;
+    postIds.forEach((id) => seenIdsRef.current.add(id));
+    marketFeedApi.markSeen(postIds, dwellSec).catch(() => {});
+  }, [userId]);
+
+  return { posts, loading, error, loadMore, hasMore, refresh, markSeen };
 }
 
 export function useMarketPosts() {
@@ -456,35 +427,37 @@ export function useUserMarketPosts(userId: string | null) {
       return;
     }
 
-    let isMounted = true;
-    const cacheKey = `market_posts_user_${userId}`;
-
+    let cancelled = false;
+    setLoading(true);
     (async () => {
-      const cached = await getCachedData<MarketPost[]>(cacheKey);
-      if (!isMounted || !cached || cached.length === 0) return;
-      setPosts(normalizeCachedPosts(cached));
-      setLoading(false);
+      try {
+        const { apiUrl } = await import('@/lib/api/api-base');
+        const { coreCloudClient } = await import('@/lib/api/core-cloud-client');
+        const response = await coreCloudClient.request<{ posts?: MarketPost[] }>(
+          apiUrl(`/posts?posterId=${encodeURIComponent(userId)}&limit=60`),
+          { method: 'GET', requiresAuth: true }
+        );
+        if (cancelled) return;
+        const next = Array.isArray(response.posts)
+          ? response.posts.map((p) => ({
+              ...p,
+              createdAt: asDate(p.createdAt),
+              updatedAt: asDate(p.updatedAt),
+            }))
+          : [];
+        setPosts(next);
+        setError(null);
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err : new Error(String(err?.message || 'Failed to load posts')));
+        setPosts([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
 
-    const baseQuery = query(
-      collection(firestore, 'marketPosts'),
-      where('posterId', '==', userId),
-      orderBy('createdAt', 'desc')
-    );
-
-    const unsubscribe: Unsubscribe = onSnapshot(
-      baseQuery,
-      buildPostsCacheUpdater(setPosts, setLoading, setError, cacheKey),
-      (err) => {
-        console.error('Error fetching user market posts:', err);
-        setError(err);
-        setLoading(false);
-      }
-    );
-
     return () => {
-      isMounted = false;
-      unsubscribe();
+      cancelled = true;
     };
   }, [userId]);
 
@@ -502,26 +475,27 @@ export function useUserLikedPostIds(userId: string | null) {
       return;
     }
 
-    const likesQuery = query(
-      collection(firestore, 'marketPosts'),
-      where('likedBy', 'array-contains', userId),
-      orderBy('createdAt', 'desc'),
-      limit(300)
-    );
-
-    const unsubscribe = onSnapshot(
-      likesQuery,
-      (snapshot) => {
-        setLikedPostIds(snapshot.docs.map((docSnap) => docSnap.id).filter(Boolean));
-        setLoading(false);
-      },
-      (err) => {
-        console.error('Error fetching liked post ids:', err);
-        setLoading(false);
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const { apiUrl } = await import('@/lib/api/api-base');
+        const { coreCloudClient } = await import('@/lib/api/core-cloud-client');
+        const response = await coreCloudClient.request<{ ids?: string[] }>(apiUrl('/social/liked'), {
+          method: 'GET',
+          requiresAuth: true,
+        });
+        if (!cancelled) setLikedPostIds(Array.isArray(response.ids) ? response.ids : []);
+      } catch {
+        if (!cancelled) setLikedPostIds([]);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    );
+    })();
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
   return { likedPostIds, idSet: new Set(likedPostIds), loading };
@@ -573,44 +547,26 @@ export function useMarketPost(postId: string | null) {
       return;
     }
 
-    let isMounted = true;
-    const cacheKey = `market_post_${postId}`;
-
+    let cancelled = false;
+    setLoading(true);
     (async () => {
-      const cached = await getCachedData<MarketPost>(cacheKey);
-      if (!isMounted || !cached) return;
-      setPost({
-        ...cached,
-        createdAt: asDate(cached.createdAt),
-        updatedAt: asDate(cached.updatedAt),
-        expiresAt: cached.expiresAt ? asDate(cached.expiresAt) : undefined,
-      });
-      setLoading(false);
+      try {
+        const { marketPostsApi } = await import('@/lib/api/market-posts');
+        const next = await marketPostsApi.getById(postId);
+        if (cancelled) return;
+        setPost(next);
+        setError(null);
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err : new Error(String(err?.message || 'Failed to load post')));
+        setPost(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
 
-    const unsubscribe: Unsubscribe = onSnapshot(
-      doc(firestore, 'marketPosts', postId),
-      (snapshot) => {
-        if (snapshot.exists()) {
-          const marketPost = normalizeMarketPostRecord(snapshot.id, snapshot.data());
-          setPost(marketPost);
-          cacheData(cacheKey, marketPost, MARKET_POST_CACHE_TTL_MS).catch(() => {});
-        } else {
-          setPost(null);
-        }
-        setLoading(false);
-        setError(null);
-      },
-      (err) => {
-        console.error('Error fetching market post:', err);
-        setError(err);
-        setLoading(false);
-      }
-    );
-
     return () => {
-      isMounted = false;
-      unsubscribe();
+      cancelled = true;
     };
   }, [postId]);
 
@@ -672,80 +628,32 @@ export function useMarketPostsSearch(searchQuery: string | null) {
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     setError(null);
 
-    const queryLower = searchQuery.trim().toLowerCase();
-    const isHashtag = queryLower.startsWith('#');
-    const hashtag = isHashtag ? queryLower.slice(1) : queryLower;
-
-    if (isHashtag && hashtag) {
-      const hashtagQuery = query(
-        collection(firestore, 'marketPosts'),
-        where('hashtags', 'array-contains', hashtag),
-        orderBy('createdAt', 'desc'),
-        limit(50)
-      );
-
-      const unsubscribe: Unsubscribe = onSnapshot(
-        hashtagQuery,
-        (snapshot) => {
-          setPosts(snapshot.docs.map((documentSnapshot) => normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data())));
-          setLoading(false);
+    (async () => {
+      try {
+        const { marketPostsApi } = await import('@/lib/api/market-posts');
+        const next = await marketPostsApi.search(searchQuery.trim(), 50);
+        if (!cancelled) {
+          setPosts(next);
           setError(null);
-        },
-        (err) => {
-          console.error('Error searching market posts by hashtag:', err);
-          setError(err);
-          setLoading(false);
         }
-      );
-
-      return () => unsubscribe();
-    }
-
-    const textSearchQuery = query(
-      collection(firestore, 'marketPosts'),
-      orderBy('createdAt', 'desc'),
-      limit(100)
-    );
-
-    const unsubscribe: Unsubscribe = onSnapshot(
-      textSearchQuery,
-      (snapshot) => {
-        const searchTerms = queryLower.split(' ').filter((term) => term.length > 0);
-        const nextPosts = snapshot.docs
-          .map((documentSnapshot) => normalizeMarketPostRecord(documentSnapshot.id, documentSnapshot.data()))
-          .filter((post) => {
-            const description = String(post.description || '').toLowerCase();
-            const locationState = String(post.location?.state || '').toLowerCase();
-            const locationCity = String(post.location?.city || '').toLowerCase();
-            const hashtags = (post.hashtags || []).map((tag) => tag.toLowerCase());
-            const soundTitle = String(post.soundMeta?.title || '').toLowerCase();
-
-            return searchTerms.some((term) => {
-              return (
-                description.includes(term) ||
-                locationState.includes(term) ||
-                locationCity.includes(term) ||
-                soundTitle.includes(term) ||
-                hashtags.some((tag) => tag.includes(term))
-              );
-            });
-          });
-
-        setPosts(nextPosts);
-        setLoading(false);
-        setError(null);
-      },
-      (err) => {
+      } catch (err: any) {
         console.error('Error searching market posts:', err);
-        setError(err);
-        setLoading(false);
+        if (!cancelled) {
+          setPosts([]);
+          setError(err instanceof Error ? err : new Error(String(err?.message || err)));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    );
+    })();
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+    };
   }, [searchQuery]);
 
   return { posts, loading, error };
@@ -892,72 +800,39 @@ export function useMarketPostsByIds(postIds: string[], maxItems: number = 20) {
   const [posts, setPosts] = useState<MarketPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const idsKey = postIds.filter(Boolean).join('|');
 
   useEffect(() => {
-    const validIds = Array.from(new Set(postIds.filter(Boolean)));
-    
+    const validIds = Array.from(new Set(postIds.filter(Boolean))).slice(0, Math.max(1, maxItems));
     if (validIds.length === 0) {
       setPosts([]);
       setLoading(false);
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     setError(null);
-
-    // Split into chunks of 10 (Firestore `in` clause limit)
-    const chunks: string[][] = [];
-    for (let i = 0; i < validIds.length; i += 10) {
-      chunks.push(validIds.slice(i, i + 10));
-    }
-
-    const chunkResults = new Map<number, MarketPost[]>();
-    const unsubs: Unsubscribe[] = [];
-
-    chunks.forEach((chunk, chunkIndex) => {
-      const q = query(
-        collection(firestore, 'marketPosts'),
-        where('__name__', 'in', chunk),
-        limit(chunk.length)
-      );
-
-      const unsub = onSnapshot(
-        q,
-        (snapshot) => {
-          const results: MarketPost[] = [];
-          snapshot.forEach((docSnap) => {
-            results.push(normalizeMarketPostRecord(docSnap.id, docSnap.data()));
-          });
-          chunkResults.set(chunkIndex, results);
-
-          // Merge all chunks, deduplicate, preserve original order
-          const combined = Array.from(chunkResults.values()).flat();
-          const dedup = new Map<string, MarketPost>();
-          combined.forEach((post) => {
-            if (post.id) dedup.set(post.id, post);
-          });
-          const ordered = validIds
-            .map((id) => dedup.get(id))
-            .filter((p): p is MarketPost => p !== undefined)
-            .slice(0, Math.max(1, maxItems));
-
-          setPosts(ordered);
-          setLoading(false);
-        },
-        (err) => {
-          console.error('Error fetching market posts by IDs:', err);
-          chunkResults.set(chunkIndex, []);
-          setError(err as Error);
-          setLoading(false);
-        }
-      );
-      unsubs.push(unsub);
-    });
+    (async () => {
+      try {
+        const { marketPostsApi } = await import('@/lib/api/market-posts');
+        const next = await marketPostsApi.getBatch(validIds);
+        if (cancelled) return;
+        const byId = new Map(next.map((p) => [String(p.id), p]));
+        setPosts(validIds.map((id) => byId.get(id)).filter(Boolean) as MarketPost[]);
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err : new Error(String(err?.message || 'Failed to load posts')));
+        setPosts([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
 
     return () => {
-      unsubs.forEach((fn) => fn());
+      cancelled = true;
     };
-  }, [postIds, maxItems]);
+  }, [idsKey, maxItems]);
 
   return { posts, loading, error };
 }
