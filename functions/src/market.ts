@@ -221,11 +221,17 @@ async function deleteCollectionInBatches(
 // ============================================================================
 
 /**
- * Storage trigger: when a Market Street video is uploaded, extract audio to an m4a file
+ * @deprecated Media now uploads to Cloudflare R2. Sound extraction runs via
+ * POST /v1/media/process-video on chatcart-api after post creation.
+ * Kept temporarily so legacy Firebase Storage uploads still get audio extracted.
  */
 export const extractMarketSoundFromMarketVideo = onObjectFinalized(
   { cpu: 2, memory: '1GiB', timeoutSeconds: 300 },
   async (event) => {
+    // Retired: new uploads go to R2 and chatcart-api /media/process-video.
+    // Keep function exported so deploy doesn't break, but no-op all Storage events.
+    return;
+
     const objectName = String(event.data.name || '').trim();
     const contentType = String(event.data.contentType || '').trim().toLowerCase();
     if (!objectName) return;
@@ -950,13 +956,13 @@ export const sendMarketMessage = onRequest(async (request, response) => {
       let uploadedImageUrl: string | undefined;
       if (cleanImage) {
         if (cleanImage.startsWith('data:image/')) {
-          uploadedImageUrl = await uploadMarketImage(
-            cleanImage,
-            `marketMessages/${chatRef.id}/${messageRef.id}_image`,
+          return sendError(
+            response,
+            'Base64 chat images are no longer supported. Upload to media CDN first.',
+            400,
           );
-        } else {
-          uploadedImageUrl = cleanImage;
         }
+        uploadedImageUrl = cleanImage;
       }
 
       const messagePayload: Record<string, unknown> = {

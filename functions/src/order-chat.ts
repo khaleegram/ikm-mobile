@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { defineString } from 'firebase-functions/params';
 import { onRequest } from 'firebase-functions/v2/https';
 import cors = require('cors');
 import {
@@ -10,6 +11,13 @@ import {
 import { notifyNewMessage } from './notifications';
 
 const corsHandler = cors({ origin: true });
+
+const chatApiBaseUrl = defineString('CHAT_API_BASE_URL', {
+  default: 'https://chatcart-api-723822682554.us-central1.run.app/v1',
+});
+const chatInternalSecret = defineString('CHAT_INTERNAL_SECRET', {
+  default: '',
+});
 
 const SYSTEM_MESSAGES: Record<string, string> = {
   order_paid: 'Order confirmed. Payment received.',
@@ -25,10 +33,93 @@ const SYSTEM_MESSAGES: Record<string, string> = {
   refund_processed: 'Refund processed.',
 };
 
+function chatInternalHeaders(): Record<string, string> | null {
+  const secret = chatInternalSecret.value().trim();
+  if (!secret) return null;
+  return {
+    'Content-Type': 'application/json',
+    'x-chat-internal-secret': secret,
+  };
+}
+
+function chatApiUrl(path: string): string {
+  const baseUrl = chatApiBaseUrl.value().replace(/\/$/, '');
+  return `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+async function notifyPostgresDealThread(input: {
+  threadId?: string | null;
+  orderId: string;
+  event: string;
+  text: string;
+  photoUrl?: string | null;
+}): Promise<void> {
+  const headers = chatInternalHeaders();
+  const threadId = String(input.threadId || '').trim();
+  if (!headers || !threadId) return;
+
+  try {
+    const response = await fetch(chatApiUrl('/chat/internal/system-event'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        threadId,
+        orderId: input.orderId,
+        event: input.event,
+        text: input.text,
+        photoUrl: input.photoUrl || undefined,
+      }),
+    });
+    if (!response.ok) {
+      console.warn('Postgres deal-thread system event failed', await response.text());
+    }
+  } catch (error) {
+    console.warn('Postgres deal-thread system event error', error);
+  }
+}
+
+/** Resolve or create a Postgres deal thread for marketplace escrow orders. */
+export async function ensureDealThreadForOrder(input: {
+  buyerId: string;
+  postId: string;
+  sellerId?: string | null;
+  threadId?: string | null;
+}): Promise<string | null> {
+  const headers = chatInternalHeaders();
+  if (!headers) {
+    console.warn('CHAT_INTERNAL_SECRET missing; cannot ensure deal thread');
+    return String(input.threadId || '').trim() || null;
+  }
+
+  try {
+    const response = await fetch(chatApiUrl('/chat/internal/ensure-deal-thread'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        buyerId: input.buyerId,
+        postId: input.postId,
+        sellerId: input.sellerId || undefined,
+        threadId: input.threadId || undefined,
+      }),
+    });
+    const payload: any = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.warn('ensure-deal-thread failed', payload?.error || response.status);
+      return String(input.threadId || '').trim() || null;
+    }
+    return String(payload?.threadId || payload?.thread?.id || input.threadId || '').trim() || null;
+  } catch (error) {
+    console.warn('ensure-deal-thread error', error);
+    return String(input.threadId || '').trim() || null;
+  }
+}
+
 export async function createSystemMessage(input: {
   orderId: string;
   event: string;
   customText?: string;
+  dealThreadId?: string | null;
+  photoUrl?: string | null;
 }): Promise<void> {
   const firestore = admin.firestore();
   const text = input.customText || SYSTEM_MESSAGES[input.event] || `Order status: ${input.event}`;
@@ -46,6 +137,7 @@ export async function createSystemMessage(input: {
     type: 'system',
     text,
     systemEvent: input.event,
+    ...(input.photoUrl ? { mediaUrl: input.photoUrl } : {}),
     read: false,
     createdAt: FieldValue.serverTimestamp(),
   });
@@ -57,6 +149,21 @@ export async function createSystemMessage(input: {
       createdAt: FieldValue.serverTimestamp(),
     },
     updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  const orderSnap = await firestore.collection('orders').doc(input.orderId).get();
+  const dealThreadId =
+    input.dealThreadId ||
+    orderSnap.data()?.dealThreadId ||
+    orderSnap.data()?.chatThreadId ||
+    null;
+
+  await notifyPostgresDealThread({
+    threadId: dealThreadId,
+    orderId: input.orderId,
+    event: input.event,
+    text,
+    photoUrl: input.photoUrl || null,
   });
 }
 

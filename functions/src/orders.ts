@@ -136,7 +136,11 @@ export const updateOrderStatus = onRequest(async (request, response) => {
 
       const event = eventMap[status];
       if (event) {
-        createSystemMessage({ orderId, event }).catch((e) =>
+        createSystemMessage({
+          orderId,
+          event,
+          dealThreadId: order.dealThreadId || order.chatThreadId || null,
+        }).catch((e) =>
           console.error('Failed to create system message:', e)
         );
 
@@ -250,7 +254,11 @@ export const sellerAcceptOrder = onRequest(async (request, response) => {
       const event = 'seller_accepted';
       const summary = buildOrderSummary(order);
 
-      createSystemMessage({ orderId, event }).catch((e) =>
+      createSystemMessage({
+        orderId,
+        event,
+        dealThreadId: order.dealThreadId || order.chatThreadId || null,
+      }).catch((e) =>
         console.error('Failed to create system message:', e)
       );
 
@@ -308,6 +316,7 @@ export const markOrderAsSent = onRequest(async (request, response) => {
         updatedAt: now,
       };
 
+      if (photoUrl) updateData.sentPhotoUrl = photoUrl;
       if (waybillParkId) updateData.waybillParkId = waybillParkId;
       if (waybillParkName) updateData.waybillParkName = waybillParkName;
 
@@ -319,7 +328,9 @@ export const markOrderAsSent = onRequest(async (request, response) => {
       createSystemMessage({
         orderId,
         event,
+        dealThreadId: order.dealThreadId || order.chatThreadId || null,
         customText: 'Seller marked order as shipped.',
+        photoUrl: photoUrl || null,
       }).catch((e) => console.error('Failed to create system message:', e));
 
       if (photoUrl) {
@@ -401,7 +412,11 @@ export const markOrderAsReceived = onRequest(async (request, response) => {
       const event = 'buyer_confirmed';
       const summary = buildOrderSummary(order);
 
-      createSystemMessage({ orderId, event }).catch((e) =>
+      createSystemMessage({
+        orderId,
+        event,
+        dealThreadId: order.dealThreadId || order.chatThreadId || null,
+      }).catch((e) =>
         console.error('Failed to create system message:', e)
       );
 
@@ -601,6 +616,7 @@ export const autoAcceptExpiredOrders = onRequest(async (request, response) => {
         createSystemMessage({
           orderId: doc.id,
           event: 'order_cancelled',
+          dealThreadId: order.dealThreadId || order.chatThreadId || null,
           customText: 'Order auto-cancelled: Seller did not accept within 24 hours.',
         }).catch(() => {});
 

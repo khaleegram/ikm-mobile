@@ -341,107 +341,12 @@ async function hydratePosts(postIds: string[]): Promise<Record<string, FirebaseF
 }
 
 /**
- * Build a personalized 25-post feed from taste, trending, and cold-start buckets.
+ * @deprecated Market feed is served by chatcart-api POST /v1/feed.
  */
-export const getPersonalizedMarketFeed = onRequest(async (request, response) => {
-  return corsHandler(request, response, async () => {
-    try {
-      if (request.method !== 'POST') {
-        return sendError(response, 'Method not allowed', 405);
-      }
-
-      const auth = await requireAuth(request.headers.authorization || null);
-      const excludeIds = new Set<string>(
-        Array.isArray(request.body?.excludePostIds)
-          ? request.body.excludePostIds.map((id: unknown) => String(id || '').trim()).filter(Boolean)
-          : []
-      );
-
-      const [tasteTags, likedPostIds] = await Promise.all([
-        getUserTasteHashtags(auth.uid),
-        getUserLikedPostIds(auth.uid),
-      ]);
-      likedPostIds.forEach((postId) => excludeIds.add(postId));
-
-      const [bucketAIds, bucketBIds, bucketCIds] = await Promise.all([
-        tasteTags.length
-          ? fetchScorePostIds(
-              [(q) => q.where('hashtags', 'array-contains-any', tasteTags)],
-              BUCKET_A_SIZE,
-              excludeIds
-            )
-          : Promise.resolve([] as string[]),
-        fetchScorePostIds([], BUCKET_B_SIZE, excludeIds),
-        fetchColdStartPostIds(BUCKET_C_SIZE, excludeIds),
-      ]);
-
-      const used = new Set<string>(excludeIds);
-      const takeUnique = (ids: string[], target: number) => {
-        const picked: string[] = [];
-        ids.forEach((id) => {
-          if (picked.length >= target) return;
-          if (used.has(id)) return;
-          used.add(id);
-          picked.push(id);
-        });
-        return picked;
-      };
-
-      let taste = takeUnique(shuffleInPlace([...bucketAIds]), BUCKET_A_SIZE);
-      let trending = takeUnique(shuffleInPlace([...bucketBIds]), BUCKET_B_SIZE);
-      let coldStart = takeUnique(shuffleInPlace([...bucketCIds]), BUCKET_C_SIZE);
-
-      const shortfall = FEED_TOTAL - (taste.length + trending.length + coldStart.length);
-      if (shortfall > 0) {
-        const backfill = await fetchScorePostIds([], shortfall, used);
-        trending = [...trending, ...takeUnique(backfill, shortfall)];
-      }
-
-      let orderedIds = interleaveBuckets([
-        shuffleInPlace(taste),
-        shuffleInPlace(trending),
-        shuffleInPlace(coldStart),
-      ]).slice(0, FEED_TOTAL);
-
-      if (orderedIds.length < FEED_TOTAL) {
-        const firestore = admin.firestore();
-        const fallbackSnap = await firestore
-          .collection('marketPosts')
-          .where('status', '==', 'active')
-          .orderBy('createdAt', 'desc')
-          .limit(FEED_TOTAL * 2)
-          .get();
-
-        fallbackSnap.docs.forEach((docSnap) => {
-          if (orderedIds.length >= FEED_TOTAL) return;
-          if (used.has(docSnap.id)) return;
-          used.add(docSnap.id);
-          orderedIds.push(docSnap.id);
-        });
-      }
-
-      const postsById = await hydratePosts(orderedIds);
-      const posts = orderedIds
-        .map((id) => postsById[id])
-        .filter((post) => post && post.status === 'active');
-
-      return sendResponse(response, {
-        success: true,
-        posts,
-        meta: {
-          total: posts.length,
-          buckets: {
-            taste: taste.length,
-            trending: trending.length,
-            coldStart: coldStart.length,
-          },
-          tasteTags,
-        },
-      });
-    } catch (error: any) {
-      console.error('Error in getPersonalizedMarketFeed:', error);
-      return sendError(response, error.message || 'Internal server error', 500);
-    }
+export const getPersonalizedMarketFeed = onRequest(async (_request, response) => {
+  response.status(410).json({
+    success: false,
+    error: 'Deprecated. Use chatcart-api POST /v1/feed',
   });
 });
 

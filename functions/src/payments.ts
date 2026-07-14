@@ -1073,6 +1073,8 @@ const finalizeMarketEscrowPaymentSchema = z.object({
   quantity: z.number().int().positive(),
   deliveryAddress: z.string().min(5),
   buyerPhone: z.string().min(10),
+  dealThreadId: z.string().min(1).optional().nullable(),
+  chatId: z.string().min(1).optional().nullable(),
 });
 
 /**
@@ -1095,6 +1097,9 @@ export const finalizeMarketEscrowPayment = onRequest(
         }
 
         const { reference, postId, quantity, deliveryAddress, buyerPhone } = validation.data;
+        const requestedDealThreadId = String(
+          validation.data.dealThreadId || validation.data.chatId || ''
+        ).trim() || null;
         const firestore = admin.firestore();
 
         // 1. Check if order already exists for this payment to ensure idempotency
@@ -1105,9 +1110,12 @@ export const finalizeMarketEscrowPayment = onRequest(
           .get();
 
         if (!existingOrderQuery.empty) {
+          const existing = existingOrderQuery.docs[0];
+          const existingData = existing.data() || {};
           return sendResponse(response, {
             success: true,
-            orderId: existingOrderQuery.docs[0].id,
+            orderId: existing.id,
+            dealThreadId: existingData.dealThreadId || existingData.chatThreadId || null,
             alreadyExists: true,
             message: 'Order already finalized for this payment',
           });
@@ -1194,6 +1202,9 @@ export const finalizeMarketEscrowPayment = onRequest(
         const buyerName = String(userData?.displayName || auth.email || 'Market Buyer').trim();
 
         const commissionRate = await getPlatformCommissionRate();
+        let resolvedSellerId = '';
+        let orderTotal = 0;
+        let itemName = 'Marketplace Item';
 
         await firestore.runTransaction(async (transaction) => {
           const postRef = firestore.collection('marketPosts').doc(postId);
@@ -1204,12 +1215,17 @@ export const finalizeMarketEscrowPayment = onRequest(
           }
 
           const postData = postSnap.data()!;
-          if (postData.status === 'sold') {
-            throw new Error('This item has already been purchased');
+          const postStatus = String(postData.status || 'active').toLowerCase();
+          // Market posts stay listable after a sale (active/hidden/deleted only).
+          // 'sold' was a legacy lock that blocked legitimate rebuys / retries.
+          if (postStatus === 'hidden' || postStatus === 'deleted') {
+            throw new Error('This item is no longer available');
           }
 
           const postPrice = Number(postData.price || 0);
           const calculatedTotal = postPrice * quantity;
+          orderTotal = calculatedTotal;
+          itemName = String(postData.description || 'Marketplace Item').slice(0, 70);
 
           // Double check amount matches paid amount
           if (Math.abs(calculatedTotal - paidAmount) > 0.01) {
@@ -1223,11 +1239,13 @@ export const finalizeMarketEscrowPayment = onRequest(
           if (sellerId === auth.uid) {
             throw new Error('You cannot purchase your own item');
           }
+          resolvedSellerId = String(sellerId);
 
-          // Lock post status to 'sold'
+          // Keep listing active; record latest buyer for reference only.
           transaction.update(postRef, {
-            status: 'sold',
-            buyerId: auth.uid,
+            status: postStatus === 'sold' ? 'active' : postData.status || 'active',
+            lastBuyerId: auth.uid,
+            purchaseCount: FieldValue.increment(1),
             updatedAt: FieldValue.serverTimestamp(),
           });
 
@@ -1252,14 +1270,15 @@ export const finalizeMarketEscrowPayment = onRequest(
             updatedAt: FieldValue.serverTimestamp(),
           });
 
-          // Create order document
+          // Create order document (dealThreadId attached after ensure below)
           transaction.set(orderRef, {
             customerId: auth.uid,
             sellerId,
+            postId,
             items: [
               {
                 productId: `market_post_${postId}`,
-                name: String(postData.description || 'Marketplace Item').slice(0, 70),
+                name: itemName,
                 price: postPrice,
                 quantity,
               },
@@ -1279,15 +1298,79 @@ export const finalizeMarketEscrowPayment = onRequest(
             paystackReference: reference,
             escrowStatus: 'held',
             commissionRate,
+            marketMeta: {
+              fromChatId: requestedDealThreadId,
+              postId,
+            },
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
             paymentVerifiedAt: FieldValue.serverTimestamp(),
+            sellerUnreadCount: 0,
+            buyerUnreadCount: 0,
           });
         });
+
+        // Attach / create Postgres Deal Room and emit order_paid into it.
+        let dealThreadId: string | null = requestedDealThreadId;
+        try {
+          const orderChat = await import('./order-chat.js');
+          dealThreadId = await orderChat.ensureDealThreadForOrder({
+            buyerId: auth.uid,
+            postId,
+            sellerId: resolvedSellerId,
+            threadId: requestedDealThreadId,
+          });
+
+          if (dealThreadId) {
+            await orderRef.update({
+              dealThreadId,
+              chatThreadId: dealThreadId,
+              'marketMeta.fromChatId': dealThreadId,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+          }
+
+          await orderChat.createSystemMessage({
+            orderId: orderRef.id,
+            event: 'order_paid',
+            dealThreadId,
+            customText: `Order confirmed. Payment of NGN ${Number(orderTotal).toLocaleString()} received.`,
+          });
+
+          await orderChat.createOrderTimelineEvent({
+            orderId: orderRef.id,
+            event: 'order_paid',
+            status: 'Processing',
+            text: 'Payment verified',
+            actorId: auth.uid,
+            actorRole: 'buyer',
+          });
+        } catch (linkError: any) {
+          console.error('Failed to link market order to deal thread:', linkError);
+        }
+
+        import('./notifications.js').then((mod) => {
+          mod.notifyBuyer({
+            buyerId: auth.uid,
+            event: 'payment_success',
+            orderId: orderRef.id,
+            orderSummary: `${itemName} — NGN ${Number(orderTotal).toLocaleString()}`,
+          }).catch((e: any) => console.error('Failed to notify buyer:', e));
+
+          if (resolvedSellerId) {
+            mod.notifySeller({
+              sellerId: resolvedSellerId,
+              event: 'new_order',
+              orderId: orderRef.id,
+              orderSummary: `${itemName} — NGN ${Number(orderTotal).toLocaleString()}`,
+            }).catch((e: any) => console.error('Failed to notify seller:', e));
+          }
+        }).catch(() => {});
 
         return sendResponse(response, {
           success: true,
           orderId: orderRef.id,
+          dealThreadId,
           message: 'Order created successfully',
         });
       } catch (error: any) {
@@ -1296,7 +1379,7 @@ export const finalizeMarketEscrowPayment = onRequest(
         const statusCode =
           message === 'Post not found'
             ? 404
-            : message === 'This item has already been purchased'
+            : message === 'This item is no longer available'
               ? 409
               : message.startsWith('Amount mismatch')
                 ? 400
