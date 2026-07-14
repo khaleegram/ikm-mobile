@@ -1,30 +1,29 @@
-// Media upload utility for Firebase Storage (images, video, audio)
+// Media upload utility — Cloudflare R2 via chatcart-api presigned URLs
 import * as ImagePicker from 'expo-image-picker';
-import { getDownloadURL, ref, uploadBytes, uploadBytesResumable } from 'firebase/storage';
-import { storage } from '../firebase/config';
-import Constants from 'expo-constants';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
+import { mediaApi } from '@/lib/api/media-api';
+import { inferFileExtension } from './market-media';
+import {
+  prepareAudioForUpload,
+  prepareImageForUpload,
+  prepareVideoForUpload,
+} from './media-compress';
 
-// Lazy load DocumentPicker
-// Note: After installing expo-document-picker, you need to rebuild your development build
 const loadDocumentPicker = async () => {
   try {
-    // Direct import - should work in development builds
     const DocumentPicker = await import('expo-document-picker');
-    
-    // Check if the module has the required method
     if (!DocumentPicker || typeof DocumentPicker.getDocumentAsync !== 'function') {
       throw new Error('Document picker module is not properly initialized. Please rebuild your development build.');
     }
-    
     return DocumentPicker;
   } catch (error: any) {
-    // Handle native module errors - usually means the dev build needs to be rebuilt
     if (
       error?.message?.includes('native module') ||
       error?.message?.includes('ExpoDocumentPicker') ||
       error?.message?.includes('Cannot find native module')
     ) {
-      throw new Error('Document picker native module not found. Please rebuild your development build with: npx expo prebuild --clean && npx expo run:android (or run:ios)');
+      throw new Error('Document picker native module not found. Please rebuild your development build.');
     }
     throw error;
   }
@@ -41,17 +40,11 @@ export interface MediaUploadResult {
   type: 'image' | 'video' | 'audio';
 }
 
-/**
- * Request image picker permissions
- */
 export async function requestImagePermissions(): Promise<boolean> {
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
   return status === 'granted';
 }
 
-/**
- * Pick an image from the device
- */
 export async function pickImage(): Promise<string | null> {
   const hasPermission = await requestImagePermissions();
   if (!hasPermission) {
@@ -72,9 +65,6 @@ export async function pickImage(): Promise<string | null> {
   return result.assets[0].uri;
 }
 
-/**
- * Pick multiple images from the device
- */
 export async function pickMultipleImages(maxImages: number = 5): Promise<string[]> {
   const hasPermission = await requestImagePermissions();
   if (!hasPermission) {
@@ -97,38 +87,119 @@ export async function pickMultipleImages(maxImages: number = 5): Promise<string[
   return result.assets.map((asset) => asset.uri);
 }
 
-/**
- * Upload image to Firebase Storage
- */
+async function ensureUploadableFileUri(uri: string, fallbackExtension: string): Promise<string> {
+  if (uri.startsWith('file://')) {
+    return uri;
+  }
+
+  const extension = inferFileExtension(uri, fallbackExtension);
+  const cacheDir = FileSystem.cacheDirectory;
+  if (!cacheDir) {
+    return uri;
+  }
+
+  const destination = `${cacheDir}upload_${Date.now()}.${extension}`;
+  await FileSystem.copyAsync({ from: uri, to: destination });
+  return destination;
+}
+
+async function cleanupTemporaryUploadUri(originalUri: string, uploadUri: string): Promise<void> {
+  if (uploadUri === originalUri) return;
+  await FileSystem.deleteAsync(uploadUri, { idempotent: true }).catch(() => undefined);
+}
+
+async function getLocalFileByteLength(uri: string): Promise<number | undefined> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (info.exists && typeof info.size === 'number' && info.size > 0) {
+      return info.size;
+    }
+  } catch {
+    // Ignore and let the upload proceed without Content-Length.
+  }
+  return undefined;
+}
+
+async function uploadPreparedFile(
+  preparedUri: string,
+  storagePath: string,
+  contentType: string,
+  fallbackExtension: string,
+  onProgress?: (progress: number) => void,
+): Promise<{ url: string; path: string }> {
+  const uploadUri = await ensureUploadableFileUri(preparedUri, fallbackExtension);
+  const contentLength = await getLocalFileByteLength(uploadUri);
+
+  try {
+    const presign = await mediaApi.presignUpload({
+      path: storagePath,
+      contentType,
+      contentLength,
+    });
+
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
+      const uploadTask = FileSystem.createUploadTask(
+        presign.uploadUrl,
+        uploadUri,
+        {
+          uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+          httpMethod: 'PUT',
+          headers: {
+            'Content-Type': contentType,
+          },
+        },
+        (progress) => {
+          if (progress.totalBytesExpectedToSend > 0) {
+            onProgress?.(progress.totalBytesSent / progress.totalBytesExpectedToSend);
+          }
+        },
+      );
+
+      const result = await uploadTask.uploadAsync();
+      if (!result || result.status < 200 || result.status >= 300) {
+        throw new Error(`Upload failed with status ${result?.status ?? 'unknown'}`);
+      }
+    } else {
+      const response = await fetch(preparedUri);
+      const blob = await response.blob();
+      const putResponse = await fetch(presign.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: blob,
+      });
+      if (!putResponse.ok) {
+        throw new Error(`Upload failed with status ${putResponse.status}`);
+      }
+      onProgress?.(1);
+    }
+
+    return {
+      url: presign.publicUrl,
+      path: presign.path,
+    };
+  } finally {
+    await cleanupTemporaryUploadUri(preparedUri, uploadUri);
+  }
+}
+
 export async function uploadImage(
   uri: string,
   path: string
 ): Promise<ImageUploadResult> {
+  const prepared = await prepareImageForUpload(uri);
   try {
-    // Fetch the image
-    const response = await fetch(uri);
-    const blob = await response.blob();
-
-    // Upload to Firebase Storage
-    const storageRef = ref(storage, path);
-    await uploadBytes(storageRef, blob);
-
-    // Get download URL
-    const downloadURL = await getDownloadURL(storageRef);
-
-    return {
-      url: downloadURL,
+    const result = await uploadPreparedFile(
+      prepared.uri,
       path,
-    };
-  } catch (error) {
-    console.error('Error uploading image:', error);
-    throw new Error('Failed to upload image');
+      prepared.contentType,
+      inferFileExtension(path, 'jpg'),
+    );
+    return result;
+  } finally {
+    await prepared.cleanup();
   }
 }
 
-/**
- * Upload multiple images to Firebase Storage
- */
 export async function uploadImages(
   uris: string[],
   basePath: string,
@@ -144,9 +215,6 @@ export async function uploadImages(
   return Promise.all(uploadPromises);
 }
 
-/**
- * Pick a video from the device
- */
 export async function pickVideo(): Promise<string | null> {
   const hasPermission = await requestImagePermissions();
   if (!hasPermission) {
@@ -157,7 +225,7 @@ export async function pickVideo(): Promise<string | null> {
     mediaTypes: ImagePicker.MediaTypeOptions.Videos,
     allowsEditing: true,
     quality: 0.8,
-    videoMaxDuration: 300, // 5 minutes max
+    videoMaxDuration: 300,
   });
 
   if (result.canceled) {
@@ -167,37 +235,25 @@ export async function pickVideo(): Promise<string | null> {
   return result.assets[0].uri;
 }
 
-/**
- * Pick an audio file from the device
- * Note: Requires the development build to be rebuilt after installing expo-document-picker
- */
 export async function pickAudio(): Promise<string | null> {
   try {
     const picker = await loadDocumentPicker();
-    
-    // Double-check that getDocumentAsync exists
     if (!picker || typeof picker.getDocumentAsync !== 'function') {
       throw new Error('Document picker is not available. Please rebuild your development build.');
     }
-    
+
     const result = await picker.getDocumentAsync({
       type: ['audio/*'],
       copyToCacheDirectory: true,
     });
 
-    if (result.canceled) {
-      return null;
-    }
-
-    if (!result.assets || result.assets.length === 0) {
+    if (result.canceled || !result.assets || result.assets.length === 0) {
       return null;
     }
 
     return result.assets[0].uri;
   } catch (error: any) {
     const errorMessage = error?.message || 'Failed to pick audio file';
-    
-    // Check for native module errors - means dev build needs to be rebuilt
     if (
       errorMessage.includes('native module') ||
       errorMessage.includes('ExpoDocumentPicker') ||
@@ -206,109 +262,52 @@ export async function pickAudio(): Promise<string | null> {
     ) {
       throw new Error('Document picker native module not found. Please rebuild your development build.');
     }
-    
     throw new Error(errorMessage);
   }
 }
 
-/**
- * Upload video to Firebase Storage with real-time progress reporting.
- * Uses uploadBytesResumable so large files stream instead of buffering.
- */
 export async function uploadVideo(
   uri: string,
   path: string,
   onProgress?: (progress: number) => void,
 ): Promise<MediaUploadResult> {
+  const prepared = await prepareVideoForUpload(uri);
   try {
-    const response = await fetch(uri);
-    const blob = await response.blob();
-
-    // Derive content-type from blob; fall back to video/mp4 so the
-    // Storage rules never reject on application/octet-stream.
-    const contentType = blob.type && blob.type !== 'application/octet-stream'
-      ? blob.type
-      : 'video/mp4';
-
-    const storageRef = ref(storage, path);
-    const task = uploadBytesResumable(storageRef, blob, { contentType });
-
-    await new Promise<void>((resolve, reject) => {
-      task.on(
-        'state_changed',
-        (snapshot) => {
-          if (snapshot.totalBytes > 0) {
-            onProgress?.(snapshot.bytesTransferred / snapshot.totalBytes);
-          }
-        },
-        reject,
-        resolve,
-      );
-    });
-
-    const downloadURL = await getDownloadURL(task.snapshot.ref);
-    return { url: downloadURL, path, type: 'video' };
-  } catch (error) {
-    console.error('Error uploading video:', error);
-    throw new Error('Failed to upload video');
+    const result = await uploadPreparedFile(
+      prepared.uri,
+      path,
+      prepared.contentType,
+      'mp4',
+      onProgress,
+    );
+    return { ...result, type: 'video' };
+  } finally {
+    await prepared.cleanup();
   }
 }
 
-/**
- * Upload audio to Firebase Storage
- */
 export async function uploadAudio(
   uri: string,
   path: string
 ): Promise<MediaUploadResult> {
+  const prepared = await prepareAudioForUpload(uri);
   try {
-    // Fetch the audio file
-    const response = await fetch(uri);
-    const blob = await response.blob();
-
-    // Upload to Firebase Storage
-    const storageRef = ref(storage, path);
-    await uploadBytes(storageRef, blob);
-
-    // Get download URL
-    const downloadURL = await getDownloadURL(storageRef);
-
-    return {
-      url: downloadURL,
+    const result = await uploadPreparedFile(
+      prepared.uri,
       path,
-      type: 'audio',
-    };
-  } catch (error) {
-    console.error('Error uploading audio:', error);
-    throw new Error('Failed to upload audio');
+      prepared.contentType,
+      'm4a',
+    );
+    return { ...result, type: 'audio' };
+  } finally {
+    await prepared.cleanup();
   }
 }
 
-/**
- * Delete image from Firebase Storage
- */
 export async function deleteImage(path: string): Promise<void> {
-  try {
-    const { deleteObject } = await import('firebase/storage');
-    const storageRef = ref(storage, path);
-    await deleteObject(storageRef);
-  } catch (error) {
-    console.error('Error deleting image:', error);
-    throw new Error('Failed to delete image');
-  }
+  await mediaApi.deletePaths([path]);
 }
 
-/**
- * Delete media file from Firebase Storage
- */
 export async function deleteMedia(path: string): Promise<void> {
-  try {
-    const { deleteObject } = await import('firebase/storage');
-    const storageRef = ref(storage, path);
-    await deleteObject(storageRef);
-  } catch (error) {
-    console.error('Error deleting media:', error);
-    throw new Error('Failed to delete media file');
-  }
+  await mediaApi.deletePaths([path]);
 }
-

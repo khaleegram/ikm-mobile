@@ -3,7 +3,6 @@ import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, Auth, initializeAuth, type Persistence } from 'firebase/auth';
 import * as FirebaseAuthRuntime from '@firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
-import { getStorage, FirebaseStorage } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
@@ -54,8 +53,6 @@ export function hasValidFirebaseWebOptions(): boolean {
 let app: FirebaseApp;
 let auth: Auth;
 let firestore: Firestore;
-let storage: FirebaseStorage;
-
 if (getApps().length === 0) {
   app = initializeApp(firebaseConfig);
 
@@ -80,14 +77,12 @@ if (getApps().length === 0) {
   }
   
   firestore = getFirestore(app);
-  storage = getStorage(app);
 } else {
   app = getApps()[0];
   // Existing app should already have Auth initialized (with persistence on native).
   auth = getAuth(app);
   firestore = getFirestore(app);
-  storage = getStorage(app);
 }
 
-export { app, auth, firestore, storage };
+export { app, auth, firestore };
 

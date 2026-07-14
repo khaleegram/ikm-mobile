@@ -647,7 +647,8 @@ export interface MarketPost {
   hashtags?: string[];           // Optional hashtags
   price?: number;                // Optional price (NGN)
   isNegotiable?: boolean;        // Show DM action when priced posts are negotiable
-  description?: string;          // Optional description
+  title?: string;                // Short product name for deal rooms / listings
+  description?: string;          // Optional caption (feed)
   location?: {
     state?: string;
     city?: string;
@@ -726,14 +727,26 @@ export interface MarketMessage {
   text?: string;                 // Canonical message text
   message?: string;              // Legacy alias (kept for backward compatibility)
   clientMessageId?: string;      // Client-generated ID for deduplication
-  type?: 'text' | 'media' | 'quote' | 'offer';
+  type?: 'text' | 'media' | 'quote' | 'offer' | 'system';
   imageUrl?: string;             // Optional image in message
+  voiceUrl?: string;             // Voice note playback URL
+  voiceDurationSec?: number;     // Voice note duration
   paymentLink?: string;          // Optional payment link
   quoteCard?: {
     postId: string;
     previewText: string;
     previewImage?: string;
   };
+  chatOffer?: {
+    id: string;
+    amount: number;
+    currency: string;
+    status: string;
+    lowball?: boolean;
+  };
+  /** System / order milestone metadata */
+  systemEvent?: string;
+  milestonePhotoUrl?: string;
   read: boolean;                 // Read status
   
   // Timestamps
