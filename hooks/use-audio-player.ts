@@ -12,6 +12,7 @@ type AudioPlayer = {
   muted: boolean;
   volume: number;
   currentTime: number;
+  rate: number;
   play: () => Promise<void>;
   pause: () => Promise<void>;
 };
@@ -27,6 +28,7 @@ export function useAudioPlayer(sourceUri: string | null, options?: UseAudioPlaye
     muted: false,
     volume: 1,
     currentTime: 0,
+    rate: 1,
   });
   const optionsRef = useRef<UseAudioPlayerOptions>({});
   optionsRef.current = options || {};
@@ -113,6 +115,7 @@ export function useAudioPlayer(sourceUri: string | null, options?: UseAudioPlaye
         muted: false,
         volume: 1,
         currentTime: 0,
+        rate: 1,
         play: async () => {},
         pause: async () => {},
       };
@@ -167,6 +170,18 @@ export function useAudioPlayer(sourceUri: string | null, options?: UseAudioPlaye
       }
     };
 
+    const setRate = async (value: number) => {
+      const rate = Math.max(0.5, Math.min(2, value));
+      stateRef.current.rate = rate;
+      if (soundRef.current) {
+        try {
+          await soundRef.current.setRateAsync(rate, true);
+        } catch {
+          // ignore
+        }
+      }
+    };
+
     return {
       get loop() {
         return stateRef.current.loop;
@@ -192,9 +207,25 @@ export function useAudioPlayer(sourceUri: string | null, options?: UseAudioPlaye
       set currentTime(value: number) {
         void setCurrentTime(Number(value));
       },
+      get rate() {
+        return stateRef.current.rate;
+      },
+      set rate(value: number) {
+        void setRate(Number(value));
+      },
       play: async () => {
         if (!soundRef.current) return;
         try {
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: false,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false,
+          });
+          if (stateRef.current.rate !== 1) {
+            await soundRef.current.setRateAsync(stateRef.current.rate, true);
+          }
           await soundRef.current.playAsync();
         } catch {
           // ignore

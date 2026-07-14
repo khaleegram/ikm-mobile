@@ -2,7 +2,9 @@ import React from 'react';
 import { ActivityIndicator, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { AnimatedPressable } from '@/components/animated-pressable';
+import { ChatVoiceRecorder } from '@/components/chat/chat-voice-recorder';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import type { VoiceRecordingResult } from '@/lib/hooks/use-voice-recorder';
 
 import { styles } from './styles';
 import { lightBrown } from './utils';
@@ -16,7 +18,12 @@ type ChatComposerProps = {
   onSend: () => void;
   sending: boolean;
   showInlineOfferCta: boolean;
+  showOfferAction?: boolean;
   insetBottom: number;
+  enableVoice?: boolean;
+  voiceBusy?: boolean;
+  voiceDisabled?: boolean;
+  onVoiceRecorded?: (result: VoiceRecordingResult) => void;
 };
 
 export function ChatComposer({
@@ -29,8 +36,15 @@ export function ChatComposer({
   onSend,
   sending,
   showInlineOfferCta,
+  showOfferAction = false,
+  enableVoice = false,
+  voiceBusy = false,
+  voiceDisabled = false,
+  onVoiceRecorded,
 }: ChatComposerProps) {
   const hasMessage = Boolean(messageText.trim());
+  const [isRecordingVoice, setIsRecordingVoice] = React.useState(false);
+  const showMic = enableVoice && !hasMessage;
 
   return (
     <View
@@ -50,7 +64,7 @@ export function ChatComposer({
             borderColor: colors.border,
           },
         ]}>
-        {showInlineOfferCta ? (
+        {showInlineOfferCta && !isRecordingVoice ? (
           <TouchableOpacity
             style={[styles.inlineOfferButton, { backgroundColor: lightBrown }]}
             onPress={onOpenOffer}
@@ -61,49 +75,93 @@ export function ChatComposer({
         ) : null}
 
         <View style={styles.composerRow}>
-          <AnimatedPressable
-            style={[styles.circleAction, { backgroundColor: colors.backgroundSecondary }]}
-            onPress={onPickImage}
-            scaleValue={0.92}>
-            <IconSymbol name="photo" size={22} color={colors.text} />
-          </AnimatedPressable>
-
+          {/* Keep idle controls mounted while recording so Android doesn't cancel the hold gesture. */}
           <View
             style={[
-              styles.inputIsland,
-              {
-                backgroundColor: colors.backgroundSecondary,
-                borderColor: hasMessage ? `${lightBrown}66` : colors.border,
-              },
-            ]}>
-            <TextInput
-              style={[styles.composerInput, { color: colors.text }]}
-              placeholder="Message…"
-              placeholderTextColor={colors.textSecondary}
-              value={messageText}
-              onChangeText={onChangeMessageText}
-              multiline
-              maxLength={1000}
-            />
+              styles.composerIdleCluster,
+              isRecordingVoice ? styles.composerIdleClusterHidden : null,
+            ]}
+            pointerEvents={isRecordingVoice ? 'none' : 'auto'}>
+            <AnimatedPressable
+              style={[styles.circleAction, { backgroundColor: colors.backgroundSecondary }]}
+              onPress={onPickImage}
+              scaleValue={0.92}
+              accessibilityLabel="Attach photo">
+              <IconSymbol name="photo" size={22} color={colors.text} />
+            </AnimatedPressable>
+
+            <View
+              style={[
+                styles.inputIsland,
+                {
+                  backgroundColor: colors.backgroundSecondary,
+                  borderColor: hasMessage ? `${lightBrown}66` : colors.border,
+                },
+              ]}>
+              <TextInput
+                style={[styles.composerInput, { color: colors.text }]}
+                placeholder="Message…"
+                placeholderTextColor={colors.textSecondary}
+                value={messageText}
+                onChangeText={onChangeMessageText}
+                multiline
+                maxLength={1000}
+                editable={!isRecordingVoice}
+              />
+            </View>
+
+            {showOfferAction ? (
+              <AnimatedPressable
+                style={[styles.circleAction, { backgroundColor: `${lightBrown}22` }]}
+                onPress={onOpenOffer}
+                scaleValue={0.92}
+                accessibilityRole="button"
+                accessibilityLabel="Make offer">
+                <IconSymbol name="dollarsign.circle.fill" size={22} color={lightBrown} />
+              </AnimatedPressable>
+            ) : null}
           </View>
 
-          <AnimatedPressable
-            style={[
-              styles.circleAction,
-              styles.sendCircle,
-              {
-                backgroundColor: hasMessage ? lightBrown : colors.backgroundSecondary,
-              },
-            ]}
-            onPress={onSend}
-            disabled={!hasMessage}
-            scaleValue={0.92}>
-            {sending ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <IconSymbol name="paperplane.fill" size={20} color={hasMessage ? '#FFFFFF' : colors.textSecondary} />
-            )}
-          </AnimatedPressable>
+          {showMic ? (
+            <View
+              style={[
+                styles.voiceSlot,
+                isRecordingVoice ? styles.voiceSlotRecording : null,
+              ]}>
+              <ChatVoiceRecorder
+                busy={voiceBusy}
+                disabled={voiceDisabled}
+                mutedTextColor={colors.textSecondary}
+                onRecordingChange={setIsRecordingVoice}
+                onRecorded={(result) => {
+                  setIsRecordingVoice(false);
+                  onVoiceRecorded?.(result);
+                }}
+              />
+            </View>
+          ) : (
+            <AnimatedPressable
+              style={[
+                styles.circleAction,
+                styles.sendCircle,
+                {
+                  backgroundColor: hasMessage ? lightBrown : colors.backgroundSecondary,
+                },
+              ]}
+              onPress={onSend}
+              disabled={!hasMessage || sending}
+              scaleValue={0.92}>
+              {sending ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <IconSymbol
+                  name="paperplane.fill"
+                  size={20}
+                  color={hasMessage ? '#FFFFFF' : colors.textSecondary}
+                />
+              )}
+            </AnimatedPressable>
+          )}
         </View>
       </View>
     </View>

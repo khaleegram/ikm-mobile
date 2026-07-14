@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { BackHandler, Platform } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import type { NavigationProp } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 
 import {
   buildDirectConversationId,
   resolveDirectConversationPeerId,
 } from '@/lib/api/market-messages';
+import { isPostgresChatBackend } from '@/lib/config/chat-backend';
+
+const THREAD_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type ChatRouteParams = {
   chatId: string;
@@ -22,13 +25,12 @@ type UseChatRouteResult = {
   legacyChatId: string | null;
   resolvedPeerId: string | null;
   setActiveChatId: Dispatch<SetStateAction<string | null>>;
-  goBackToInbox: () => void;
+  goBack: () => void;
   syncRouteChatId: (chatId: string) => void;
 };
 
 export function useChatRoute(userId: string | null): UseChatRouteResult {
   const params = useLocalSearchParams<ChatRouteParams>();
-  const navigation = useNavigation<NavigationProp<any>>();
 
   const routeChatId = useMemo(() => {
     const value = Array.isArray(params.chatId) ? params.chatId[0] : params.chatId;
@@ -69,6 +71,10 @@ export function useChatRoute(userId: string | null): UseChatRouteResult {
   }, [legacyChatIdParam, routeChatId]);
 
   const preferredChatId = useMemo(() => {
+    if (isPostgresChatBackend()) {
+      if (!routeChatId || !THREAD_UUID_RE.test(routeChatId)) return null;
+      return routeChatId;
+    }
     if (directConversationId) return directConversationId;
     return routeChatId || null;
   }, [directConversationId, routeChatId]);
@@ -79,30 +85,23 @@ export function useChatRoute(userId: string | null): UseChatRouteResult {
     setActiveChatId(preferredChatId);
   }, [preferredChatId]);
 
-  const goBackToInbox = useCallback(() => {
-    const navState = navigation.getState();
-    const routes = navState?.routes || [];
-    const index = typeof navState?.index === 'number' ? navState.index : 0;
-    const previousRoute = index > 0 ? routes[index - 1] : undefined;
-    const previousName = String(previousRoute?.name || '').toLowerCase();
-
-    if (previousName.includes('messages')) {
-      navigation.goBack();
+  const goBack = useCallback(() => {
+    if (typeof router.canGoBack === 'function' && router.canGoBack()) {
+      router.back();
       return;
     }
-
     router.replace('/(market)/messages' as any);
-  }, [navigation]);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
       if (Platform.OS !== 'android') return undefined;
       const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-        goBackToInbox();
+        goBack();
         return true;
       });
       return () => subscription.remove();
-    }, [goBackToInbox])
+    }, [goBack])
   );
 
   const syncRouteChatId = useCallback(
@@ -122,7 +121,7 @@ export function useChatRoute(userId: string | null): UseChatRouteResult {
     legacyChatId,
     resolvedPeerId,
     setActiveChatId,
-    goBackToInbox,
+    goBack,
     syncRouteChatId,
   };
 }

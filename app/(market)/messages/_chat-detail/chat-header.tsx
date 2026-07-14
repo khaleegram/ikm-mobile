@@ -3,6 +3,7 @@ import { Text, TouchableOpacity, View } from 'react-native';
 
 import { SafeImage } from '@/components/safe-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { VerifiedBadge } from '@/components/ui/verified-badge';
 
 import { lightBrown } from './utils';
 import { styles } from './styles';
@@ -12,9 +13,12 @@ type ChatHeaderProps = {
   colors: any;
   headerAvatarUri?: string;
   headerName: string;
+  headerSubtitle?: string;
   insetTop: number;
   onBack: () => void;
   onOpenOffer: () => void;
+  /** Opens peer product-rooms hub when tapping the peer name/avatar. */
+  onOpenPeerHub?: () => void;
 };
 
 export function ChatHeader({
@@ -22,9 +26,11 @@ export function ChatHeader({
   colors,
   headerAvatarUri,
   headerName,
+  headerSubtitle = 'Direct message',
   insetTop,
   onBack,
   onOpenOffer,
+  onOpenPeerHub,
 }: ChatHeaderProps) {
   return (
     <View
@@ -36,11 +42,17 @@ export function ChatHeader({
           borderBottomColor: colors.border,
         },
       ]}>
-      <TouchableOpacity onPress={onBack} style={styles.headerBackBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back to inbox">
+      <TouchableOpacity onPress={onBack} style={styles.headerBackBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
         <IconSymbol name="chevron.left" size={22} color={colors.text} />
       </TouchableOpacity>
 
-      <View style={styles.headerCenter}>
+      <TouchableOpacity
+        style={styles.headerCenter}
+        activeOpacity={onOpenPeerHub ? 0.75 : 1}
+        disabled={!onOpenPeerHub}
+        onPress={onOpenPeerHub}
+        accessibilityRole={onOpenPeerHub ? 'button' : undefined}
+        accessibilityLabel={onOpenPeerHub ? `All products with ${headerName}` : undefined}>
         <View style={[styles.headerAvatarRing, { borderColor: `${lightBrown}40` }]}>
           {headerAvatarUri ? (
             <SafeImage uri={headerAvatarUri} style={styles.headerAvatarLg} />
@@ -51,14 +63,17 @@ export function ChatHeader({
           )}
         </View>
         <View style={styles.headerTitleBlock}>
-          <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
-            {headerName}
-          </Text>
+          <View style={styles.headerTitleRow}>
+            <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
+              {headerName}
+            </Text>
+            <VerifiedBadge size={14} />
+          </View>
           <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
-            Direct message
+            {headerSubtitle}
           </Text>
         </View>
-      </View>
+      </TouchableOpacity>
 
       {canSendOffer ? (
         <TouchableOpacity

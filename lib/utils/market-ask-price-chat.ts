@@ -4,6 +4,8 @@ import { router } from 'expo-router';
 import { showToast } from '@/components/toast';
 import { auth } from '@/lib/firebase/config';
 import { buildDirectConversationId, marketMessagesApi } from '@/lib/api/market-messages';
+import { chatApi } from '@/lib/api/chat';
+import { isPostgresChatBackend } from '@/lib/config/chat-backend';
 import { useMarketChatStore } from '@/lib/stores/marketChatStore';
 import { haptics } from '@/lib/utils/haptics';
 import { getMarketPostPrimaryImage, getMarketPostVideoCover } from '@/lib/utils/market-media';
@@ -18,6 +20,7 @@ type StartPostQuoteChatParams = {
   mode: 'ask-price' | 'dm';
   marketLoginRoute: string;
   onBeforeNavigate?: () => void;
+  onOpenChat?: (params: { threadId: string; peerId: string }) => void;
 };
 
 function buildClientMessageId(): string {
@@ -47,6 +50,7 @@ export async function startPostQuoteChat({
   mode,
   marketLoginRoute,
   onBeforeNavigate,
+  onOpenChat,
 }: StartPostQuoteChatParams): Promise<boolean> {
   const authUserId = String(auth.currentUser?.uid || buyerId || '').trim();
   if (!authUserId) {
@@ -72,24 +76,56 @@ export async function startPostQuoteChat({
   const inFlightKey = `${authUserId}:${postId}:${mode}`;
   const alreadyInFlight = inFlightKeys.has(inFlightKey);
 
-  const chatId = buildDirectConversationId(authUserId, posterId);
   const quotePreview = buildQuotePreview(post);
   const autoText = buildAutoText(mode, sellerName.trim() || 'Seller');
   const previewImage =
     getMarketPostVideoCover(post) || getMarketPostPrimaryImage(post) || undefined;
   const clientMessageId = buildClientMessageId();
 
-  const navigateToChat = () => {
+  const navigateToChat = (chatId: string, peerId: string) => {
     haptics.medium();
     onBeforeNavigate?.();
     router.push({
       pathname: '/(market)/messages/[chatId]',
       params: {
         chatId,
-        peerId: posterId,
+        peerId,
       },
     } as any);
   };
+
+  if (isPostgresChatBackend()) {
+    try {
+      const { thread, isNew } = await chatApi.getOrCreateThread(postId, posterId);
+      if (!alreadyInFlight && isNew) {
+        inFlightKeys.add(inFlightKey);
+        void chatApi
+          .sendMessage(thread.id, {
+            type: 'quote',
+            body: autoText,
+            clientMsgId: clientMessageId,
+            quote: { postId, previewText: quotePreview, previewImage },
+          })
+          .catch((error: any) => {
+            showToast(error?.message || 'Failed to send your message', 'error');
+          })
+          .finally(() => inFlightKeys.delete(inFlightKey));
+      }
+      if (onOpenChat) {
+        haptics.medium();
+        onBeforeNavigate?.();
+        onOpenChat({ threadId: thread.id, peerId: posterId });
+      } else {
+        navigateToChat(thread.id, posterId);
+      }
+      return true;
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to start chat', 'error');
+      return false;
+    }
+  }
+
+  const chatId = buildDirectConversationId(authUserId, posterId);
 
   if (!alreadyInFlight) {
     inFlightKeys.add(inFlightKey);
@@ -130,7 +166,7 @@ export async function startPostQuoteChat({
     })();
   }
 
-  navigateToChat();
+  navigateToChat(chatId, posterId);
   return true;
 }
 

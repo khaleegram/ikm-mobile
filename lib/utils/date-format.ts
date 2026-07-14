@@ -1,12 +1,24 @@
 // Date formatting utilities
 
+function coerceDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
 /**
  * Format timestamp to relative time (e.g., "2 hours ago", "3 days ago")
  */
 export function formatRelativeTime(timestamp: Date | any): string {
-  if (!timestamp) return '';
-
-  const date = timestamp instanceof Date ? timestamp : timestamp.toDate();
+  const date = coerceDate(timestamp);
+  if (!date) return '';
   const now = new Date();
   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
 
@@ -47,9 +59,8 @@ export function formatRelativeTime(timestamp: Date | any): string {
  * Format timestamp to short date (e.g., "Jan 15, 2024")
  */
 export function formatShortDate(timestamp: Date | any): string {
-  if (!timestamp) return '';
-
-  const date = timestamp instanceof Date ? timestamp : timestamp.toDate();
+  const date = coerceDate(timestamp);
+  if (!date) return '';
   return date.toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',

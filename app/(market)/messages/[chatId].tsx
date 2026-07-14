@@ -22,7 +22,7 @@ import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
-import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
+import { uploadImage } from '@/lib/utils/image-upload';
 import { buildMarketOfferLink } from '@/lib/utils/market-offer-link';
 import { MarketMessage } from '@/types';
 
@@ -37,8 +37,14 @@ import { useChatRoute } from './_chat-detail/use-chat-route';
 import { useOfferLogic } from './_chat-detail/use-offer-logic';
 import { buildClientMessageId, lightBrown } from './_chat-detail/utils';
 import { useMarketChatStore } from '@/lib/stores/marketChatStore';
+import { isPostgresChatBackend } from '@/lib/config/chat-backend';
+import { PostgresChatDetail } from './_chat-detail/postgres-chat-detail';
 
 export default function ChatDetailScreen() {
+  if (isPostgresChatBackend()) {
+    return <PostgresChatDetail />;
+  }
+
   const { user } = useUser();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -53,7 +59,7 @@ export default function ChatDetailScreen() {
     legacyChatId,
     resolvedPeerId,
     setActiveChatId,
-    goBackToInbox,
+    goBack,
     syncRouteChatId,
   } = useChatRoute(userId);
 
@@ -324,9 +330,12 @@ export default function ChatDetailScreen() {
 
       setSending(true);
       haptics.medium();
-      const base64 = await convertImageToBase64(result.assets[0].uri);
+      const uploaded = await uploadImage(
+        result.assets[0].uri,
+        `marketMessages/${activeChatId || 'pending'}/${Date.now()}_image.jpg`,
+      );
       const mediaClientMessageId = buildClientMessageId();
-      const sendResult = await attemptSend('', base64, undefined, {
+      const sendResult = await attemptSend('', uploaded.url, undefined, {
         clientMessageId: mediaClientMessageId,
       });
       applyResolvedChatId(sendResult.chatId);
@@ -384,7 +393,7 @@ export default function ChatDetailScreen() {
           headerAvatarUri={headerAvatarUri}
           headerName={headerName}
           insetTop={insets.top}
-          onBack={goBackToInbox}
+          onBack={goBack}
           onOpenOffer={() => {
             haptics.light();
             setOfferVisible(true);

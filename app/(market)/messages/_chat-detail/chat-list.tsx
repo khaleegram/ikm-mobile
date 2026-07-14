@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Keyboard, Platform, Text, View, ViewToken } from 'react-native';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 
@@ -15,6 +15,7 @@ type ChatListProps = {
   insetsBottom: number;
   messages: MarketMessage[];
   onOpenOffer: (offer: { postId: string; sellerId: string; price: number; chatId?: string }) => void;
+  onRetryVoice?: (messageId: string) => void;
   peerAvatarUri?: string;
   onLatestVisibleIncomingMessage?: (messageId: string) => void;
   unreadCount: number;
@@ -30,6 +31,7 @@ export function ChatList({
   insetsBottom,
   messages,
   onOpenOffer,
+  onRetryVoice,
   peerAvatarUri,
   onLatestVisibleIncomingMessage,
   unreadCount,
@@ -82,8 +84,9 @@ export function ChatList({
       const shouldShowUnreadDivider =
         Boolean(unreadDividerMessageId) && String(item.id || '').trim() === unreadDividerMessageId;
 
+      // FlashList requires a single host view — Fragments drop/zero-height items.
       return (
-        <>
+        <View>
           {shouldShowUnreadDivider ? (
             <View style={styles.unreadDividerWrap}>
               <View style={[styles.unreadDividerLine, { backgroundColor: colors.border }]} />
@@ -101,18 +104,22 @@ export function ChatList({
             currentUserId={currentUserId}
             peerAvatarUri={peerAvatarUri}
             onOpenOffer={onOpenOffer}
+            onRetryVoice={onRetryVoice}
           />
-        </>
+        </View>
       );
     },
-    [colors.border, currentUserId, onOpenOffer, peerAvatarUri, unreadCount, unreadDividerMessageId]
+    [colors.border, currentUserId, onOpenOffer, onRetryVoice, peerAvatarUri, unreadCount, unreadDividerMessageId]
   );
 
+  // Newest-first for inverted list so latest activity sits at the bottom of the deal room.
+  const listData = useMemo(() => [...messages].reverse(), [messages]);
+
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, minHeight: 0 }}>
       <FlashList
         ref={flatListRef}
-        data={messages}
+        data={listData}
         inverted
         drawDistance={450}
         keyExtractor={(item) => getStableMessageKey(item, String(activeChatId || 'chat'))}

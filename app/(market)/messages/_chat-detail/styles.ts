@@ -46,6 +46,11 @@ export const styles = StyleSheet.create({
     minWidth: 0,
     gap: 2,
   },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   headerSubtitle: {
     fontSize: 12,
     fontWeight: '600',
@@ -70,6 +75,7 @@ export const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '800',
     letterSpacing: -0.2,
+    flexShrink: 1,
   },
   loadingContainer: {
     flex: 1,
@@ -150,6 +156,31 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 10,
+    position: 'relative',
+    minHeight: 44,
+  },
+  composerIdleCluster: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  composerIdleClusterHidden: {
+    opacity: 0,
+  },
+  voiceSlot: {
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+  },
+  voiceSlotRecording: {
+    ...StyleSheet.absoluteFillObject,
+    left: 0,
+    right: 0,
+    alignItems: 'stretch',
+    justifyContent: 'center',
+    zIndex: 2,
   },
   circleAction: {
     width: 44,
@@ -265,5 +296,23 @@ export const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+  },
+  recordingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  recordingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  recordingText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

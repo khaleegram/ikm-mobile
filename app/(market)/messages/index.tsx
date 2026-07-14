@@ -1,105 +1,161 @@
-import React, { memo, useCallback, useMemo, useState } from 'react';
+import { FlashList } from '@shopify/flash-list';
+import { router, useFocusEffect } from 'expo-router';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
   Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import { FlashList } from '@shopify/flash-list';
 
-import { useUser } from '@/lib/firebase/auth/use-user';
-import { useTheme } from '@/lib/theme/theme-context';
-import { useMarketChats } from '@/lib/firebase/firestore/market-messages';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { formatRelativeTime } from '@/lib/utils/date-format';
-import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
-import { buildDirectConversationId, resolveDirectConversationPeerId } from '@/lib/api/market-messages';
-import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
+import { InboxStatusBadge } from '@/components/chat/inbox-status-badge';
 import { SafeImage } from '@/components/safe-image';
-import { useInboxPeerSummaries, type InboxPeerSummary } from '@/lib/hooks/use-inbox-peer-summaries';
+import { IconSymbol } from '@/components/ui/icon-symbol';
+import { VerifiedBadge } from '@/components/ui/verified-badge';
+import {
+  filterPeerGroupsBySegment,
+  groupInboxByPeer,
+  type PeerDealGroup,
+} from '@/lib/chat/group-inbox-by-peer';
+import { isPostgresChatBackend } from '@/lib/config/chat-backend';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
+import { useChatInbox } from '@/lib/hooks/use-chat-inbox';
+import {
+  useInboxPeerSummaries,
+  type InboxPeerSummary,
+} from '@/lib/hooks/use-inbox-peer-summaries';
+import { useMarketChatMessageNotifications } from '@/lib/hooks/use-market-chat-notifications';
+import { useTheme } from '@/lib/theme/theme-context';
+import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
+import { formatRelativeTime } from '@/lib/utils/date-format';
 import { haptics } from '@/lib/utils/haptics';
+import type { ChatInboxItem } from '@/types/chat';
 
 const lightBrown = '#A67C52';
 
-function getInboxPeerId(item: any, userId: string): string | null {
-  const participants = Array.isArray(item?.participants) ? item.participants : [];
-  const otherFromParticipants = participants.find((p: string) => p && p !== userId) || null;
-  return (
-    otherFromParticipants ||
-    resolveDirectConversationPeerId(String(item.id || item.chatId || ''), userId) ||
-    (item.posterId && item.posterId !== userId ? String(item.posterId) : null) ||
-    (item.buyerId && item.buyerId !== userId ? String(item.buyerId) : null) ||
-    (item.receiverId && item.receiverId !== userId ? String(item.receiverId) : null) ||
-    null
-  );
+function isPostgresInboxItem(item: any): item is ChatInboxItem {
+  return Boolean(item?.threadId && item?.peerId);
 }
 
-function initialsFromName(name: string): string {
-  const parts = String(name || '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
-  return `${parts[0].slice(0, 1)}${parts[1].slice(0, 1)}`.toUpperCase();
-}
-
-function getChatRowKey(item: any): string {
-  const explicitKey = String(item?.id || item?.chatId || '').trim();
-  if (explicitKey) return explicitKey;
-
-  const participants = Array.isArray(item?.participants)
-    ? item.participants.map((value: unknown) => String(value || '').trim()).filter(Boolean)
-    : [];
-  if (participants.length > 0) {
-    return `participants:${participants.sort((a: string, b: string) => a.localeCompare(b)).join('|')}`;
-  }
-
-  const fallbackUpdatedAt = String(item?.updatedAt || '').trim();
-  if (fallbackUpdatedAt) return `updated:${fallbackUpdatedAt}`;
-
-  return 'conversation:unknown';
-}
-
-function displayNameForChat(
-  item: any,
+function displayNameForPeer(
   peerId: string | null,
-  peerMap: Record<string, InboxPeerSummary>
+  peerSummaries: Record<string, InboxPeerSummary>,
+  fallbackName?: string
 ): string {
-  const fromProfile = peerId ? peerMap[peerId]?.displayName : undefined;
-  if (fromProfile) return fromProfile;
+  if (!peerId) return fallbackName || 'User';
+  return peerSummaries[peerId]?.displayName || fallbackName || 'User';
+}
+
+function PeerRow({
+  group,
+  colors,
+  peerSummary,
+}: {
+  group: PeerDealGroup;
+  colors: ReturnType<typeof useTheme>['colors'];
+  peerSummary?: InboxPeerSummary;
+}) {
+  const name = peerSummary?.displayName || group.peerName || 'User';
+  const avatarUri = peerSummary?.avatarUri || group.peerAvatar || undefined;
+  const roomCount = group.rooms.length;
+  const roomLabel =
+    roomCount === 1
+      ? group.topProductTitle || '1 product'
+      : `${roomCount} products`;
+  const latestStatus = group.rooms[0]?.statusBadge || group.rooms[0]?.status;
+
   return (
-    item.posterName ||
-    item.otherParticipantName ||
-    'Conversation'
+    <TouchableOpacity
+      style={[
+        styles.dealCard,
+        {
+          backgroundColor: colors.card,
+          borderColor: group.unreadTotal > 0 ? `${lightBrown}55` : colors.border,
+        },
+      ]}
+      activeOpacity={0.85}
+      onPress={() => {
+        haptics.light();
+        router.push(`/(market)/messages/peer/${group.peerId}` as any);
+      }}>
+      <View style={styles.peerLeading}>
+        {avatarUri ? (
+          <SafeImage uri={avatarUri} style={styles.avatarImage} />
+        ) : (
+          <View style={[styles.avatar, { backgroundColor: colors.backgroundSecondary }]}>
+            <Text style={[styles.avatarFallback, { color: colors.textSecondary }]}>
+              {name.slice(0, 1).toUpperCase()}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.chatContent}>
+        <View style={styles.chatHeader}>
+          <View style={styles.chatNameRow}>
+            <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>
+              {name}
+            </Text>
+            <VerifiedBadge size={13} />
+          </View>
+          <Text style={[styles.chatTime, { color: colors.textSecondary }]}>
+            {formatRelativeTime(group.lastAt)}
+          </Text>
+        </View>
+
+        <Text style={[styles.roomCountLabel, { color: lightBrown }]} numberOfLines={1}>
+          {roomLabel}
+        </Text>
+
+        <View style={styles.chatPreviewRow}>
+          <Text
+            style={[
+              styles.chatPreview,
+              {
+                color: group.unreadTotal > 0 ? colors.text : colors.textSecondary,
+                fontWeight: group.unreadTotal > 0 ? '700' : '500',
+              },
+            ]}
+            numberOfLines={2}>
+            {group.lastPreview || 'No messages yet'}
+          </Text>
+          {group.unreadTotal > 0 ? (
+            <View style={[styles.badge, { backgroundColor: lightBrown }]}>
+              <Text style={styles.badgeText}>
+                {group.unreadTotal > 99 ? '99+' : group.unreadTotal}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.dealFooter}>
+          {latestStatus ? <InboxStatusBadge badge={latestStatus} /> : <View />}
+          <Text style={[styles.openRoomHint, { color: lightBrown }]}>View rooms →</Text>
+        </View>
+      </View>
+    </TouchableOpacity>
   );
 }
 
-function InboxSkeleton({ count = 8, colors }: { count?: number; colors: any }) {
-  const tone = colors.border;
+function InboxSkeleton({ count, colors }: { count: number; colors: ReturnType<typeof useTheme>['colors'] }) {
   return (
-    <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8, gap: 10 }}>
+    <View style={[styles.listContent, { gap: 12, paddingTop: 8 }]}>
       {Array.from({ length: count }).map((_, i) => (
         <View
           key={i}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            padding: 14,
-            borderRadius: 18,
-            gap: 14,
-            backgroundColor: colors.card,
-            borderWidth: StyleSheet.hairlineWidth,
-            borderColor: colors.border,
-          }}>
-          <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: tone, opacity: 0.35 }} />
-          <View style={{ flex: 1, gap: 10 }}>
-            <View style={{ width: '55%', height: 14, backgroundColor: tone, opacity: 0.4, borderRadius: 6 }} />
-            <View style={{ width: '88%', height: 12, backgroundColor: tone, opacity: 0.25, borderRadius: 6 }} />
+          style={[
+            styles.dealCard,
+            { backgroundColor: colors.card, borderColor: colors.border, opacity: 0.55 },
+          ]}>
+          <View style={[styles.avatar, { backgroundColor: colors.backgroundSecondary }]} />
+          <View style={{ flex: 1, gap: 8 }}>
+            <View style={{ height: 14, width: '55%', borderRadius: 6, backgroundColor: colors.backgroundSecondary }} />
+            <View style={{ height: 12, width: '35%', borderRadius: 6, backgroundColor: colors.backgroundSecondary }} />
+            <View style={{ height: 12, width: '80%', borderRadius: 6, backgroundColor: colors.backgroundSecondary }} />
           </View>
         </View>
       ))}
@@ -107,167 +163,104 @@ function InboxSkeleton({ count = 8, colors }: { count?: number; colors: any }) {
   );
 }
 
-type ChatRowProps = {
-  item: any;
-  userId: string;
-  colors: any;
-  peerSummary?: InboxPeerSummary;
-};
-
-const ChatRow = memo(function ChatRow({ item, userId, colors, peerSummary }: ChatRowProps) {
-  const unreadCount = item.unreadCount || 0;
-  const lastMessage = item.lastMessage || '';
-  const peerId = getInboxPeerId(item, userId);
-
-  const targetConversationId = peerId
-    ? buildDirectConversationId(userId, String(peerId))
-    : String(item.id || item.chatId || '');
-  const chatIds = Array.isArray((item as any).chatIds)
-    ? (item as any).chatIds.map((value: unknown) => String(value || '').trim()).filter(Boolean)
-    : [];
-  const legacyChatId =
-    chatIds.find((value: string) => value && !value.startsWith('direct_')) ||
-    (String(item.id || item.chatId || '').startsWith('direct_') ? '' : String(item.id || item.chatId || ''));
-
-  const chatName =
-    peerSummary?.displayName ||
-    item.posterName ||
-    item.otherParticipantName ||
-    'Conversation';
-  const avatarUri = peerSummary?.avatarUri;
-
-  return (
-    <TouchableOpacity
-      style={[
-        styles.chatCard,
-        {
-          backgroundColor: colors.card,
-          borderColor: unreadCount > 0 ? `${lightBrown}55` : colors.border,
-        },
-      ]}
-      activeOpacity={0.72}
-      onPress={() =>
-        router.push(
-          `/(market)/messages/${targetConversationId}${
-            peerId || legacyChatId
-              ? `?${
-                  [
-                    peerId ? `peerId=${encodeURIComponent(String(peerId))}` : null,
-                    legacyChatId ? `legacyChatId=${encodeURIComponent(legacyChatId)}` : null,
-                  ]
-                    .filter(Boolean)
-                    .join('&')
-                }`
-              : ''
-          }` as any,
-        )
-      }>
-      <View style={[styles.avatar, { backgroundColor: colors.backgroundSecondary }]}>
-        {avatarUri ? (
-          <SafeImage uri={avatarUri} style={styles.avatarImage} />
-        ) : (
-          <Text style={[styles.avatarFallback, { color: colors.textSecondary }]}>
-            {initialsFromName(chatName)}
-          </Text>
-        )}
-      </View>
-      <View style={styles.chatContent}>
-        <View style={styles.chatHeader}>
-          <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>
-            {chatName}
-          </Text>
-          <Text style={[styles.chatTime, { color: colors.textSecondary }]}>
-            {formatRelativeTime(item.updatedAt || new Date())}
-          </Text>
-        </View>
-        <View style={styles.chatPreviewRow}>
-          <Text
-            style={[
-              styles.chatPreview,
-              { color: unreadCount > 0 ? colors.text : colors.textSecondary, fontWeight: unreadCount > 0 ? '700' : '500' },
-            ]}
-            numberOfLines={2}>
-            {lastMessage || 'Tap to open chat'}
-          </Text>
-        </View>
-      </View>
-      {unreadCount > 0 ? (
-        <View style={[styles.badge, { backgroundColor: lightBrown }]}>
-          <Text style={styles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
-        </View>
-      ) : (
-        <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} style={{ opacity: 0.6 }} />
-      )}
-    </TouchableOpacity>
-  );
-});
-
 export default function MessagesScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { chats, loading, error } = useMarketChats(user?.uid || null);
   const { idSet: blockedIds } = useBlockedUserIds(user?.uid || null);
-  const [activeFilter, setActiveFilter] = useState<'chats' | 'unread'>('chats');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSearchVisible, setIsSearchVisible] = useState(false);
-  const [activeInboxTab, setActiveInboxTab] = useState<'general' | 'orders'>('general');
   const marketLoginRoute = getLoginRouteForVariant('market');
+  const [activeFilter, setActiveFilter] = useState<'deals' | 'completed' | 'unread'>('deals');
+  const [isSearchVisible, setIsSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const unreadTotal = useMemo(
-    () =>
-      chats.reduce((total, chat) => {
-        const value = Number((chat as any)?.unreadCount || 0);
-        return total + (Number.isFinite(value) ? value : 0);
-      }, 0),
-    [chats],
+  const postgresInbox = useChatInbox(user?.uid || null);
+  const chats = postgresInbox.items as any[];
+  const loading = postgresInbox.loading;
+  const error = postgresInbox.error;
+
+  useMarketChatMessageNotifications(user?.uid || null);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (isPostgresChatBackend()) {
+        void postgresInbox.refresh();
+      }
+    }, [postgresInbox])
   );
 
-  const visibleChats = useMemo(() => {
-    if (!user?.uid) return chats;
-    return chats.filter((chat) => {
-      const peer =
-        (Array.isArray((chat as any)?.participants)
-          ? (chat as any).participants.find((p: string) => p && p !== user.uid)
-          : null) || resolveDirectConversationPeerId(String((chat as any)?.id || (chat as any)?.chatId || ''), user.uid);
-      if (!peer) return true;
-      return !blockedIds.has(String(peer));
+  const visibleItems = useMemo(() => {
+    if (!user?.uid) return [] as ChatInboxItem[];
+    return (chats as ChatInboxItem[]).filter((chat) => {
+      if (!isPostgresInboxItem(chat)) return false;
+      return !blockedIds.has(String(chat.peerId));
     });
   }, [blockedIds, chats, user?.uid]);
 
-  const filteredChats = useMemo(() => {
-    if (activeFilter === 'unread') {
-      return visibleChats.filter((chat) => Number((chat as any)?.unreadCount || 0) > 0);
-    }
-    return visibleChats;
-  }, [activeFilter, visibleChats]);
+  const peerGroups = useMemo(() => groupInboxByPeer(visibleItems), [visibleItems]);
 
-  const inboxPeerIds = useMemo(
-    () => filteredChats.map((c) => getInboxPeerId(c, user?.uid || '')).filter(Boolean) as string[],
-    [filteredChats, user?.uid],
+  const segmentedGroups = useMemo(
+    () => filterPeerGroupsBySegment(peerGroups, activeFilter),
+    [activeFilter, peerGroups]
   );
 
+  const inboxPeerIds = useMemo(() => segmentedGroups.map((g) => g.peerId), [segmentedGroups]);
   const peerSummaries = useInboxPeerSummaries(inboxPeerIds);
 
   const searchFiltered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return filteredChats;
-    return filteredChats.filter((chat) => {
-      const peerId = getInboxPeerId(chat, user?.uid || '');
-      const name = displayNameForChat(chat, peerId, peerSummaries).toLowerCase();
-      const preview = String(chat.lastMessage || '').toLowerCase();
-      return name.includes(q) || preview.includes(q);
+    if (!q) return segmentedGroups;
+    return segmentedGroups.filter((group) => {
+      const name = displayNameForPeer(group.peerId, peerSummaries, group.peerName).toLowerCase();
+      const preview = String(group.lastPreview || '').toLowerCase();
+      const productHit = group.rooms.some((room) =>
+        String(room.postSnapshot?.title || '').toLowerCase().includes(q)
+      );
+      return name.includes(q) || preview.includes(q) || productHit;
     });
-  }, [filteredChats, peerSummaries, searchQuery, user?.uid]);
+  }, [peerSummaries, searchQuery, segmentedGroups]);
 
-  const renderChatRow = useCallback(
-    ({ item }: { item: any }) => {
-      const peerId = getInboxPeerId(item, user?.uid || '');
-      const summary = peerId ? peerSummaries[peerId] : undefined;
-      return <ChatRow item={item} userId={user?.uid || ''} colors={colors} peerSummary={summary} />;
-    },
-    [colors, peerSummaries, user?.uid],
+  const renderPeerRow = useCallback(
+    ({ item }: { item: PeerDealGroup }) => (
+      <PeerRow group={item} colors={colors} peerSummary={peerSummaries[item.peerId]} />
+    ),
+    [colors, peerSummaries]
   );
+
+  const renderInboxTabs = () => {
+    const tabs: { key: 'deals' | 'completed' | 'unread'; label: string }[] = [
+      { key: 'deals', label: 'Active deals' },
+      { key: 'completed', label: 'Completed' },
+      { key: 'unread', label: 'Unread' },
+    ];
+
+    return (
+      <View style={styles.filterRow}>
+        {tabs.map((tab) => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[
+              styles.filterChip,
+              {
+                backgroundColor: activeFilter === tab.key ? `${lightBrown}22` : colors.backgroundSecondary,
+                borderColor: activeFilter === tab.key ? lightBrown : colors.border,
+              },
+            ]}
+            onPress={() => {
+              haptics.light();
+              setActiveFilter(tab.key);
+            }}>
+            <Text
+              style={[
+                styles.filterChipText,
+                { color: activeFilter === tab.key ? lightBrown : colors.textSecondary },
+              ]}>
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
 
   const renderHeader = () => (
     <View
@@ -279,35 +272,31 @@ export default function MessagesScreen() {
         },
       ]}>
       <View style={styles.heroRow}>
-        <Text style={[styles.screenTitle, { color: colors.text }]}>Updates</Text>
+        <Text style={[styles.screenTitle, { color: colors.text }]}>Deals</Text>
         <View style={styles.headerIcons}>
-          <TouchableOpacity activeOpacity={0.7} style={styles.iconBtn}>
-            <IconSymbol name="camera" size={24} color={colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity 
-            activeOpacity={0.7} 
+          <TouchableOpacity
+            activeOpacity={0.7}
             style={styles.iconBtn}
             onPress={() => {
-              setActiveFilter(activeFilter === 'chats' ? 'unread' : 'chats');
+              setActiveFilter((prev) =>
+                prev === 'deals' ? 'completed' : prev === 'completed' ? 'unread' : 'deals'
+              );
               haptics.light();
             }}>
-            <IconSymbol 
-              name="line.3.horizontal.decrease.circle" 
-              size={24} 
-              color={activeFilter === 'unread' ? lightBrown : colors.text} 
+            <IconSymbol
+              name="line.3.horizontal.decrease.circle"
+              size={24}
+              color={activeFilter !== 'deals' ? lightBrown : colors.text}
             />
           </TouchableOpacity>
-          <TouchableOpacity 
-            activeOpacity={0.7} 
+          <TouchableOpacity
+            activeOpacity={0.7}
             style={styles.iconBtn}
             onPress={() => {
               setIsSearchVisible(!isSearchVisible);
               if (isSearchVisible) setSearchQuery('');
             }}>
             <IconSymbol name="magnifyingglass" size={24} color={colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.7} style={styles.iconBtn}>
-            <IconSymbol name="ellipsis" size={24} color={colors.text} />
           </TouchableOpacity>
         </View>
       </View>
@@ -318,7 +307,7 @@ export default function MessagesScreen() {
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="Search by name or message"
+            placeholder="Search people or products"
             placeholderTextColor={colors.textSecondary}
             style={[styles.searchInput, { color: colors.text }]}
             autoCorrect={false}
@@ -333,32 +322,6 @@ export default function MessagesScreen() {
     </View>
   );
 
-  const renderInboxTabs = () => {
-    const tabs: { key: 'general' | 'orders'; label: string }[] = [
-      { key: 'general', label: 'General' },
-      { key: 'orders', label: 'Orders' },
-    ];
-
-    return (
-      <View style={[styles.tabBar, { borderBottomColor: colors.border }]}>
-        {tabs.map((tab) => (
-          <TouchableOpacity
-            key={tab.key}
-            style={[styles.tab, activeInboxTab === tab.key && styles.tabActive]}
-            onPress={() => {
-              haptics.light();
-              setActiveInboxTab(tab.key);
-            }}>
-            <Text style={[styles.tabText, { color: activeInboxTab === tab.key ? colors.text : colors.textSecondary }]}>
-              {tab.label}
-            </Text>
-            {activeInboxTab === tab.key && <View style={[styles.tabIndicator, { backgroundColor: lightBrown }]} />}
-          </TouchableOpacity>
-        ))}
-      </View>
-    );
-  };
-
   if (!user) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -367,9 +330,9 @@ export default function MessagesScreen() {
           <View style={[styles.emptyIconWrap, { backgroundColor: `${lightBrown}18` }]}>
             <IconSymbol name="message.fill" size={40} color={lightBrown} />
           </View>
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>Log in to message</Text>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>Log in to view deals</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            Chat with sellers and keep your offers in one place.
+            Negotiate offers and manage paid orders with sellers in one place.
           </Text>
           <TouchableOpacity style={[styles.ctaBtn, { backgroundColor: lightBrown }]} onPress={() => router.push(marketLoginRoute as any)}>
             <Text style={styles.ctaBtnText}>Log in</Text>
@@ -388,7 +351,7 @@ export default function MessagesScreen() {
     );
   }
 
-  if (visibleChats.length === 0) {
+  if (peerGroups.length === 0) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {renderHeader()}
@@ -396,9 +359,9 @@ export default function MessagesScreen() {
           <View style={[styles.emptyIconWrap, { backgroundColor: `${lightBrown}18` }]}>
             <IconSymbol name="tray.fill" size={40} color={lightBrown} />
           </View>
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>No messages yet</Text>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No deals yet</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            Use Ask for Price on a post to start a conversation.
+            Tap Ask for Price or DM on a post to open a product room with the seller.
           </Text>
           {error ? (
             <Text style={[styles.errorHint, { color: colors.error }]}>
@@ -418,8 +381,28 @@ export default function MessagesScreen() {
           <View style={[styles.emptyIconWrap, { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border }]}>
             <IconSymbol name="checkmark.circle.fill" size={40} color={lightBrown} />
           </View>
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>No unread messages</Text>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No unread deals</Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>You’re all caught up.</Text>
+        </View>
+      ) : searchFiltered.length === 0 && activeFilter === 'completed' ? (
+        <View style={styles.emptyContainer}>
+          <View style={[styles.emptyIconWrap, { backgroundColor: `${lightBrown}18` }]}>
+            <IconSymbol name="checkmark.seal.fill" size={40} color={lightBrown} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No completed deals</Text>
+          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+            Finished purchases will show up here.
+          </Text>
+        </View>
+      ) : searchFiltered.length === 0 && !searchQuery.trim() ? (
+        <View style={styles.emptyContainer}>
+          <View style={[styles.emptyIconWrap, { backgroundColor: `${lightBrown}18` }]}>
+            <IconSymbol name="bag.fill" size={40} color={lightBrown} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>No active deals</Text>
+          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+            Start a negotiation from a post to see it here.
+          </Text>
         </View>
       ) : searchFiltered.length === 0 ? (
         <View style={styles.emptyContainer}>
@@ -430,8 +413,8 @@ export default function MessagesScreen() {
       ) : (
         <FlashList
           data={searchFiltered}
-          keyExtractor={getChatRowKey}
-          renderItem={renderChatRow}
+          keyExtractor={(item) => item.peerId}
+          renderItem={renderPeerRow}
           extraData={{ peerSummaries, colors }}
           drawDistance={380}
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 96 }]}
@@ -470,11 +453,6 @@ const styles = StyleSheet.create({
   iconBtn: {
     padding: 4,
   },
-  screenSubtitle: {
-    marginTop: 4,
-    fontSize: 14,
-    fontWeight: '600',
-  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -490,26 +468,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     paddingVertical: Platform.OS === 'ios' ? 10 : 8,
-  },
-  segmentWrap: {
-    flexDirection: 'row',
-    padding: 4,
-    borderRadius: 14,
-    backgroundColor: 'rgba(128,128,128,0.12)',
-    gap: 4,
-  },
-  segmentBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    borderRadius: 11,
-  },
-  segmentLabel: {
-    fontSize: 13,
-    fontWeight: '800',
   },
   emptyContainer: {
     flex: 1,
@@ -552,13 +510,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 4,
   },
-  chatCard: {
+  dealCard: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 18,
-    marginBottom: 10,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    marginBottom: 12,
     borderWidth: StyleSheet.hairlineWidth,
     gap: 12,
     ...Platform.select({
@@ -570,6 +528,9 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 2 },
     }),
+  },
+  peerLeading: {
+    justifyContent: 'center',
   },
   avatar: {
     width: 54,
@@ -598,10 +559,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  chatNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flex: 1,
+    minWidth: 0,
+  },
   chatName: {
     fontSize: 16,
     fontWeight: '800',
-    flex: 1,
+    flexShrink: 1,
+  },
+  roomCountLabel: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   chatTime: {
     fontSize: 12,
@@ -615,6 +587,7 @@ const styles = StyleSheet.create({
   chatPreviewRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    gap: 8,
   },
   errorHint: {
     marginTop: 4,
@@ -636,28 +609,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  tabBar: {
+  filterRow: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    paddingHorizontal: 18,
+    flexWrap: 'wrap',
+    gap: 8,
     marginTop: 4,
   },
-  tab: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 10,
-    position: 'relative',
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  tabActive: {},
-  tabText: {
-    fontSize: 14,
+  filterChipText: {
+    fontSize: 13,
     fontWeight: '700',
   },
-  tabIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    height: 2,
-    width: 28,
-    borderRadius: 1,
+  dealFooter: {
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  openRoomHint: {
+    fontSize: 12,
+    fontWeight: '800',
   },
 });

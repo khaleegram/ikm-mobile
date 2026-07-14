@@ -6,6 +6,7 @@ import { router } from 'expo-router';
 import { collection, limit, onSnapshot, query, where } from 'firebase/firestore';
 
 import { resolveDirectConversationPeerId } from '@/lib/api/market-messages';
+import { isPostgresChatBackend } from '@/lib/config/chat-backend';
 import { firestore } from '@/lib/firebase/config';
 import { createNotification } from '@/lib/firebase/firestore/notifications';
 import type { NotificationData } from '@/lib/hooks/use-notifications';
@@ -43,7 +44,7 @@ export function useMarketChatMessageNotifications(userId: string | null): void {
   }, []);
 
   useEffect(() => {
-    if (!userId) {
+    if (!userId || isPostgresChatBackend()) {
       conversationsPrimed.current = false;
       legacyPrimed.current = false;
       lastMessageIdByConv.current.clear();
@@ -186,7 +187,7 @@ export function useMarketChatNotificationTapNavigation(): void {
         if (data?.type !== 'chat_message' || !data.chatId) return;
         if (AppState.currentState !== 'active' && AppState.currentState !== 'background') return;
 
-        const chatId = String(data.chatId);
+        const chatId = String(data.chatId || (data as any).threadId || '');
         const peer = String(data.peerId || '').trim();
         const qs = peer ? `?peerId=${encodeURIComponent(peer)}` : '';
         router.push(`/(market)/messages/${encodeURIComponent(chatId)}${qs}` as any);

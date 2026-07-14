@@ -7,6 +7,8 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { formatRelativeTime } from '@/lib/utils/date-format';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { parseMarketOfferLink } from '@/lib/utils/market-offer-link';
+import { VoiceMessageBubble } from '@/components/chat/voice-message-bubble';
+import { MilestoneCard } from '@/components/chat/milestone-card';
 
 interface MessageBubbleProps {
   message: MarketMessage;
@@ -18,6 +20,7 @@ interface MessageBubbleProps {
     price: number;
     chatId?: string;
   }) => void;
+  onRetryVoice?: (messageId: string) => void;
 }
 
 export const MessageBubble = memo(function MessageBubble({
@@ -25,17 +28,32 @@ export const MessageBubble = memo(function MessageBubble({
   currentUserId,
   peerAvatarUri,
   onOpenOffer,
+  onRetryVoice,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
   const isSent = Boolean(currentUserId && currentUserId === message.senderId);
   const messageId = String(message.id || '').trim();
   const clientMessageId = String(message.clientMessageId || '').trim();
+  const voiceSendStatus = (message as any).voiceSendStatus as 'sending' | 'failed' | undefined;
   const isPending =
-    messageId.startsWith('local-') ||
-    messageId.startsWith('queued-') ||
-    (Boolean(clientMessageId) && messageId === clientMessageId);
+    voiceSendStatus !== 'failed' &&
+    (messageId.startsWith('local-') ||
+      messageId.startsWith('queued-') ||
+      (Boolean(clientMessageId) && messageId === clientMessageId));
   const offerPayload = parseMarketOfferLink(message.paymentLink);
   const messageText = String((message as any).text || message.message || '').trim();
+  const isSystem = message.type === 'system';
+
+  if (isSystem) {
+    return (
+      <MilestoneCard
+        text={messageText}
+        event={message.systemEvent}
+        photoUrl={message.milestonePhotoUrl}
+        createdAt={message.createdAt}
+      />
+    );
+  }
 
   const handlePaymentLink = async () => {
     if (offerPayload) {
@@ -54,6 +72,39 @@ export const MessageBubble = memo(function MessageBubble({
       }
     }
   };
+
+  // Voice notes are their own bubble — no outer message card behind them.
+  if (message.voiceUrl && !messageText && !message.imageUrl && !message.quoteCard && !message.paymentLink && !message.chatOffer) {
+    const pending =
+      voiceSendStatus === 'sending' ||
+      (isPending && voiceSendStatus !== 'failed');
+    return (
+      <View style={[styles.container, isSent ? styles.sentContainer : styles.receivedContainer]}>
+        {!isSent ? (
+          <View style={[styles.avatarWrap, { backgroundColor: colors.backgroundSecondary }]}>
+            {peerAvatarUri ? (
+              <SafeImage uri={peerAvatarUri} style={styles.avatarImage} />
+            ) : (
+              <IconSymbol name="person.circle.fill" size={22} color={colors.textSecondary} />
+            )}
+          </View>
+        ) : null}
+        <VoiceMessageBubble
+          uri={message.voiceUrl}
+          durationSec={message.voiceDurationSec}
+          isSent={isSent}
+          pending={pending}
+          failed={voiceSendStatus === 'failed'}
+          createdAt={message.createdAt}
+          onRetry={
+            voiceSendStatus === 'failed' && messageId
+              ? () => onRetryVoice?.(messageId)
+              : undefined
+          }
+        />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, isSent ? styles.sentContainer : styles.receivedContainer]}>
@@ -76,9 +127,9 @@ export const MessageBubble = memo(function MessageBubble({
           },
         ]}>
         {/* Image Message */}
-        {message.imageUrl && (
+        {message.imageUrl ? (
           <SafeImage uri={message.imageUrl} style={styles.messageImage} />
-        )}
+        ) : null}
 
         {/* Text Message */}
         {messageText ? (
@@ -124,6 +175,24 @@ export const MessageBubble = memo(function MessageBubble({
             ) : null}
           </View>
         )}
+
+        {/* Structured offer chip */}
+        {message.chatOffer && message.type === 'offer' ? (
+          <View
+            style={[
+              styles.offerChip,
+              {
+                backgroundColor: isSent ? 'rgba(255,255,255,0.15)' : colors.background,
+                borderColor: isSent ? 'rgba(255,255,255,0.3)' : colors.border,
+              },
+            ]}>
+            <IconSymbol name="dollarsign.circle.fill" size={14} color={isSent ? '#fff' : colors.primary} />
+            <Text style={[styles.offerChipText, { color: isSent ? '#fff' : colors.text }]}>
+              {message.chatOffer.currency} {message.chatOffer.amount.toLocaleString()}
+              {message.chatOffer.status === 'pending' ? ' · pending' : ''}
+            </Text>
+          </View>
+        ) : null}
 
         {/* Payment Link */}
         {message.paymentLink && (
@@ -223,6 +292,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 4,
   },
+  offerChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  offerChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   paymentLink: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -273,5 +354,23 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 110,
     borderRadius: 8,
+  },
+  systemWrap: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 8,
+  },
+  systemPill: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    maxWidth: '92%',
+  },
+  systemText: {
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 16,
   },
 });
