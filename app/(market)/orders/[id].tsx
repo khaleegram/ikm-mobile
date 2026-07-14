@@ -98,6 +98,14 @@ export default function MarketOrderDetailScreen() {
   const canAccess = Boolean(user?.isAdmin || isSeller || isBuyer);
   const statusColor = getStatusColor(order?.status);
   const statusLabel = getStatusLabel(order?.status);
+  const dealThreadId = String(
+    (order as any)?.dealThreadId || (order as any)?.chatThreadId || (order as any)?.marketMeta?.fromChatId || ''
+  ).trim();
+  const useDealRoomChat = Boolean(dealThreadId);
+
+  React.useEffect(() => {
+    if (useDealRoomChat && activeTab === 'chat') setActiveTab('timeline');
+  }, [useDealRoomChat, activeTab]);
   const autoReleaseDate = useMemo(() => resolveAutoReleaseDate(order), [order]);
 
   const itemSummary = useMemo(() => {
@@ -254,7 +262,9 @@ export default function MarketOrderDetailScreen() {
       {/* Tab Bar */}
       <View style={[styles.tabBar, { borderBottomColor: colors.border }]}>
         {((
-          ['timeline' as DetailTab, 'chat' as DetailTab, 'details' as DetailTab] as DetailTab[]
+          useDealRoomChat
+            ? (['timeline' as DetailTab, 'details' as DetailTab] as DetailTab[])
+            : (['timeline' as DetailTab, 'chat' as DetailTab, 'details' as DetailTab] as DetailTab[])
         )).map((tab) => (
           <TouchableOpacity
             key={tab}
@@ -270,6 +280,32 @@ export default function MarketOrderDetailScreen() {
           </TouchableOpacity>
         ))}
       </View>
+
+      {useDealRoomChat ? (
+        <TouchableOpacity
+          style={[styles.dealRoomBanner, { backgroundColor: `${lightBrown}14`, borderColor: `${lightBrown}44` }]}
+          activeOpacity={0.8}
+          onPress={() => {
+            haptics.light();
+            const peer =
+              user?.uid && order
+                ? order.sellerId === user.uid
+                  ? String(order.customerId || '')
+                  : String(order.sellerId || '')
+                : '';
+            const qs = peer ? `?peerId=${encodeURIComponent(peer)}` : '';
+            router.push(`/(market)/messages/${dealThreadId}${qs}` as any);
+          }}>
+          <IconSymbol name="bubble.left.and.bubble.right.fill" size={18} color={lightBrown} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.dealRoomTitle, { color: colors.text }]}>Open deal room</Text>
+            <Text style={[styles.dealRoomSub, { color: colors.textSecondary }]}>
+              Chat, offers, and order updates live in one thread
+            </Text>
+          </View>
+          <IconSymbol name="chevron.right" size={14} color={colors.textSecondary} />
+        </TouchableOpacity>
+      ) : null}
 
       {/* Tab Content */}
       {activeTab === 'timeline' && (
@@ -319,7 +355,7 @@ export default function MarketOrderDetailScreen() {
         </ScrollView>
       )}
 
-      {activeTab === 'chat' && (
+      {activeTab === 'chat' && !useDealRoomChat && (
         <OrderChatTab
           orderId={orderId!}
           buyerId={order.customerId}
@@ -442,6 +478,20 @@ const styles = StyleSheet.create({
   tabText: { fontSize: 13, fontWeight: '600', color: '#888' },
   tabTextActive: { color: '#FFFFFF' },
   tabIndicator: { position: 'absolute', bottom: 0, height: 2, width: 30, backgroundColor: lightBrown, borderRadius: 1 },
+  dealRoomBanner: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dealRoomTitle: { fontSize: 14, fontWeight: '800' },
+  dealRoomSub: { fontSize: 12, fontWeight: '600', marginTop: 2 },
   tabContent: { flex: 1 },
   card: { borderRadius: 16, borderWidth: 1, padding: 14, marginBottom: 10, gap: 8 },
   sectionTitle: { fontSize: 13, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.6 },

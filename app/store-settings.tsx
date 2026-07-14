@@ -126,10 +126,13 @@ export default function SettingsScreen() {
     if (!user) return;
     try {
       setUploadingLogo(true);
-      const result = await pickImage();
-      if (result && result.assets && result.assets.length > 0) {
-        const uploadedUrl = await uploadImage(result.assets[0].uri, 'store_images', user.uid);
-        setFormData((prev) => ({ ...prev, storeLogoUrl: uploadedUrl }));
+      const uri = await pickImage();
+      if (uri) {
+        const uploaded = await uploadImage(
+          uri,
+          `store_images/${user.uid}/logo_${Date.now()}.jpg`,
+        );
+        setFormData((prev) => ({ ...prev, storeLogoUrl: uploaded.url }));
       }
     } catch {
       Alert.alert('Error', 'Failed to upload logo');
@@ -142,10 +145,13 @@ export default function SettingsScreen() {
     if (!user) return;
     try {
       setUploadingBanner(true);
-      const result = await pickImage();
-      if (result && result.assets && result.assets.length > 0) {
-        const uploadedUrl = await uploadImage(result.assets[0].uri, 'store_images', user.uid);
-        setFormData((prev) => ({ ...prev, storeBannerUrl: uploadedUrl }));
+      const uri = await pickImage();
+      if (uri) {
+        const uploaded = await uploadImage(
+          uri,
+          `store_images/${user.uid}/banner_${Date.now()}.jpg`,
+        );
+        setFormData((prev) => ({ ...prev, storeBannerUrl: uploaded.url }));
       }
     } catch {
       Alert.alert('Error', 'Failed to upload banner');

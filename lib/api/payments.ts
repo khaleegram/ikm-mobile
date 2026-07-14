@@ -246,14 +246,30 @@ export const paymentsApi = {
     quantity: number;
     deliveryAddress: string;
     buyerPhone: string;
-  }): Promise<{ success: boolean; orderId: string; alreadyExists?: boolean; message?: string }> {
+    dealThreadId?: string | null;
+    chatId?: string | null;
+  }): Promise<{
+    success: boolean;
+    orderId: string;
+    dealThreadId?: string | null;
+    alreadyExists?: boolean;
+    message?: string;
+  }> {
     if (!input.reference) throw new Error('Payment reference is required to finalize order');
     if (!input.postId) throw new Error('Market post ID is required to finalize order');
     if (input.quantity <= 0) throw new Error('Invalid quantity');
     if (!input.deliveryAddress) throw new Error('Delivery address is required to finalize order');
     if (!input.buyerPhone) throw new Error('Buyer phone number is required to finalize order');
 
-    return coreCloudClient.request<{ success: boolean; orderId: string; alreadyExists?: boolean; message?: string }>(
+    const dealThreadId = String(input.dealThreadId || input.chatId || '').trim() || null;
+
+    return coreCloudClient.request<{
+      success: boolean;
+      orderId: string;
+      dealThreadId?: string | null;
+      alreadyExists?: boolean;
+      message?: string;
+    }>(
       PAYMENT_FUNCTIONS.finalizeMarketEscrowPayment,
       {
         method: 'POST',
@@ -263,6 +279,7 @@ export const paymentsApi = {
           quantity: input.quantity,
           deliveryAddress: input.deliveryAddress,
           buyerPhone: input.buyerPhone,
+          ...(dealThreadId ? { dealThreadId, chatId: dealThreadId } : {}),
         },
         requiresAuth: true,
       }

@@ -14,17 +14,16 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { showToast } from '@/components/toast';
 import PaymentSheetModal from '@/components/market/payment-sheet-modal';
+import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
-import { firestore } from '@/lib/firebase/config';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
@@ -205,12 +204,10 @@ export default function MarketBuyScreen() {
       return;
     }
 
-    // Auto-save delivery location to Firestore for next time
     try {
-      await setDoc(doc(firestore, 'users', user.uid), {
-        marketBuyerLocation: trimmedLocation,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+      await saveMarketBuyerProfile(user.uid, {
+        marketBuyerLocation: trimmedLocation as Record<string, unknown>,
+      });
     } catch (saveErr) {
       console.warn('Failed to save delivery location:', saveErr);
     }
@@ -278,7 +275,10 @@ export default function MarketBuyScreen() {
           <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
             {post.description?.trim() || marketBrand.genericItemLower}
           </Text>
-          <Text style={[styles.itemMeta, { color: colors.textSecondary }]}>Seller: {sellerName}</Text>
+          <View style={styles.sellerMetaRow}>
+            <Text style={[styles.itemMeta, { color: colors.textSecondary }]}>Seller: {sellerName}</Text>
+            <VerifiedBadge size={12} />
+          </View>
           <Text style={[styles.heroAmount, { color: colors.text }]}>
             {Number.isFinite(total) && total > 0 ? formatAmount(total) : 'NGN 0'}
           </Text>
@@ -603,8 +603,14 @@ export default function MarketBuyScreen() {
           buyerName={profile?.displayName || user.displayName || user.email || 'Market Buyer'}
           buyerId={user.uid}
           fromChatId={chatId}
-          onSuccess={(orderId) => {
+          onSuccess={(orderId, dealThreadId) => {
             setPaymentModalVisible(false);
+            if (dealThreadId) {
+              const sellerPeerId = String(post?.posterId || offerSellerId || '').trim();
+              const qs = sellerPeerId ? `?peerId=${encodeURIComponent(sellerPeerId)}` : '';
+              router.replace(`/(market)/messages/${dealThreadId}${qs}` as any);
+              return;
+            }
             router.replace(`/(market)/orders/${orderId}` as any);
           }}
         />
@@ -713,9 +719,14 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
   itemMeta: {
-    marginTop: 4,
     fontSize: 12,
     fontWeight: '600',
+  },
+  sellerMetaRow: {
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   heroAmount: {
     marginTop: 8,

@@ -155,8 +155,8 @@ export class CoreCloudClient {
       headers,
     };
 
-    if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
-      requestOptions.body = JSON.stringify(body);
+    if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+      requestOptions.body = JSON.stringify(body ?? {});
     }
 
     let lastError: any;

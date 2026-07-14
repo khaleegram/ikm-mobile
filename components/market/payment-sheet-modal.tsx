@@ -54,7 +54,7 @@ interface PaymentSheetModalProps {
   buyerName: string;
   buyerId: string;
   fromChatId?: string | null;
-  onSuccess: (orderId: string) => void;
+  onSuccess: (orderId: string, dealThreadId?: string | null) => void;
 }
 
 export default function PaymentSheetModal({
@@ -78,6 +78,7 @@ export default function PaymentSheetModal({
   const [errorMessage, setErrorMessage] = useState('');
   const [reference, setReference] = useState('');
   const [createdOrderId, setCreatedOrderId] = useState('');
+  const [createdDealThreadId, setCreatedDealThreadId] = useState<string | null>(null);
   const [verifyingText, setVerifyingText] = useState('Verifying escrow transaction...');
   const [paystackRetryKey, setPaystackRetryKey] = useState(0);
 
@@ -153,11 +154,14 @@ export default function PaymentSheetModal({
         quantity,
         deliveryAddress,
         buyerPhone,
+        dealThreadId: fromChatId,
+        chatId: fromChatId,
       });
 
       if (response && response.success && response.orderId) {
         haptics.success();
         setCreatedOrderId(response.orderId);
+        setCreatedDealThreadId(response.dealThreadId || fromChatId || null);
         setPaymentState('SUCCESS');
         await clearPendingEscrowCheckout();
         finalizeAttemptRef.current = false;
@@ -167,6 +171,7 @@ export default function PaymentSheetModal({
       if (response?.alreadyExists) {
         haptics.success();
         setCreatedOrderId(response.orderId);
+        setCreatedDealThreadId(response.dealThreadId || fromChatId || null);
         setPaymentState('SUCCESS');
         await clearPendingEscrowCheckout();
         finalizeAttemptRef.current = false;
@@ -181,7 +186,7 @@ export default function PaymentSheetModal({
       setErrorMessage(msg || 'Unable to finalize payment. Please try again.');
       setPaymentState('ERROR');
     }
-  }, [post.id, quantity, deliveryAddress, buyerPhone]);
+  }, [post.id, quantity, deliveryAddress, buyerPhone, fromChatId]);
 
   const handleStartPayment = async () => {
     try {
@@ -273,7 +278,7 @@ export default function PaymentSheetModal({
   const handleSuccessDone = () => {
     haptics.light();
     setPaymentState('REVIEW');
-    onSuccess(createdOrderId);
+    onSuccess(createdOrderId, createdDealThreadId);
   };
 
   const renderContent = () => {

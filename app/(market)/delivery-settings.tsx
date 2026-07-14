@@ -1,14 +1,13 @@
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
+import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { firestore } from '@/lib/firebase/config';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getDeviceCoordinates } from '@/lib/utils/device-location';
 import { haptics } from '@/lib/utils/haptics';
 import { router } from 'expo-router';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -96,20 +95,15 @@ export default function MarketDeliverySettingsScreen() {
     try {
       setCapturingLocation(true);
       const coordinates = await getDeviceCoordinates();
-      await setDoc(
-        doc(firestore, 'users', user.uid),
-        {
-          marketBuyerLocation: {
-            state: deliveryState,
-            city: deliveryCity,
-            address: addressLine.trim(),
-            latitude: coordinates.latitude,
-            longitude: coordinates.longitude,
-          },
-          updatedAt: serverTimestamp(),
+      await saveMarketBuyerProfile(user.uid, {
+        marketBuyerLocation: {
+          state: deliveryState,
+          city: deliveryCity,
+          address: addressLine.trim(),
+          latitude: coordinates.latitude,
+          longitude: coordinates.longitude,
         },
-        { merge: true }
-      );
+      });
       setCoordinates({
         latitude: coordinates.latitude,
         longitude: coordinates.longitude,
@@ -144,21 +138,16 @@ export default function MarketDeliverySettingsScreen() {
 
     try {
       setSaving(true);
-      await setDoc(
-        doc(firestore, 'users', user.uid),
-        {
-          ...(phone ? { marketBuyerPhone: phone } : {}),
-          marketBuyerLocation: {
-            state: deliveryState,
-            city: deliveryCity,
-            address: addressLine.trim(),
-            latitude: coordinates.latitude,
-            longitude: coordinates.longitude,
-          },
-          updatedAt: serverTimestamp(),
+      await saveMarketBuyerProfile(user.uid, {
+        ...(phone ? { marketBuyerPhone: phone } : {}),
+        marketBuyerLocation: {
+          state: deliveryState,
+          city: deliveryCity,
+          address: addressLine.trim(),
+          latitude: coordinates.latitude,
+          longitude: coordinates.longitude,
         },
-        { merge: true }
-      );
+      });
       haptics.success();
       showToast('Saved delivery settings updated.', 'success');
       router.back();

@@ -1,7 +1,7 @@
 // API client for backend calls
 import { getIdToken } from '../firebase/auth/use-user';
 
-const DEFAULT_API_BASE_URL = 'http://localhost:3000/api';
+const DEFAULT_API_BASE_URL = 'http://localhost:8787/v1';
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 
 let hasWarnedMissingBaseUrl = false;

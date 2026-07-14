@@ -40,6 +40,12 @@ export function useFcmTokenRegistration(userId: string | null) {
         const platform = Platform.OS === 'android' ? 'android' : 'ios';
 
         await notificationsApi.registerFcmToken(token, platform);
+        try {
+          const { usersApi } = await import('@/lib/api/users-api');
+          await usersApi.registerFcmToken(token);
+        } catch {
+          // Postgres token registry is best-effort alongside CF registration.
+        }
         registeredRef.current = true;
 
         console.log('FCM token registered:', platform);

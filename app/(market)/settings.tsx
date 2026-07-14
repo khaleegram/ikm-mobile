@@ -351,21 +351,38 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* Selling & Escrow */}
-      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Selling & Escrow</Text>
+      {/* Library */}
+      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Library</Text>
       <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <TouchableOpacity
           style={[styles.settingRow, { borderBottomColor: colors.border }]}
           onPress={() => {
             haptics.light();
-            router.push('/(market)/saved-sounds' as any);
+            router.push({ pathname: '/(market)/saved', params: { mode: 'liked' } } as any);
           }}>
           <View style={styles.settingLeft}>
-            <IconSymbol name="music.note" size={20} color={colors.text} />
-            <Text style={[styles.settingLabel, { color: colors.text }]}>Saved Sounds</Text>
+            <IconSymbol name="heart.fill" size={20} color="#FF3B55" />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Liked Posts</Text>
           </View>
           <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.settingRow, { borderBottomColor: colors.border }]}
+          onPress={() => {
+            haptics.light();
+            router.push('/(market)/saved' as any);
+          }}>
+          <View style={styles.settingLeft}>
+            <IconSymbol name="bookmark.fill" size={20} color={lightBrown} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>Saved Posts</Text>
+          </View>
+          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Selling & Escrow */}
+      <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Selling & Escrow</Text>
+      <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <TouchableOpacity
           style={[styles.settingRow, { borderBottomColor: colors.border }]}
           onPress={() => {

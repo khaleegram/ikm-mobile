@@ -1,14 +1,13 @@
 import { router, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { FlatList, Platform, ScrollView } from 'react-native';
+import { FlatList, Platform, ScrollView, StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as SystemUI from 'expo-system-ui';
 import 'react-native-reanimated';
 
-
 import { useOfflineSync } from '@/lib/hooks/use-offline-sync';
 import { ThemeProvider, useTheme } from '@/lib/theme/theme-context';
-
 
 const ROOT_STACK_OPTIONS = { headerShown: false as const };
 
@@ -72,12 +71,16 @@ function AppShell() {
   );
 }
 
-
-
 export default function RootLayout() {
   return (
-    <ThemeProvider>
-      <AppShell />
-    </ThemeProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <ThemeProvider>
+        <AppShell />
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+});
