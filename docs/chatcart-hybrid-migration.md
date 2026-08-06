@@ -1,3 +1,8 @@
+> **ARCHIVED / HISTORICAL** — This document no longer matches the running codebase.
+> Canonical migration status: `docs/firebase-market-core-exit.md` and `docs/architecture-boundaries.md`.
+> Do not implement from this file.
+
+---
 # ChatCart â€” Version One (Hybrid Feed Migration)
 
 **Chosen stack.** Cheaper than full AWS. Fixes feed, likes, and ranking without rewriting checkout, chat, or orders.

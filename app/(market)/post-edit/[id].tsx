@@ -1,44 +1,27 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import { HashtagInput } from '@/components/market/hashtag-input';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
+import { useInvalidateMarketPost, useMarketPost } from '@/lib/hooks/use-market-post';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
-const MAX_HASHTAGS = 10;
-const HASHTAG_REGEX = /(^|\s)#([a-zA-Z0-9_]+)/g;
-
-function extractHashtags(text: string): string[] {
-  const found: string[] = [];
-  HASHTAG_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null = null;
-
-  while ((match = HASHTAG_REGEX.exec(text)) !== null) {
-    const tag = (match[2] || '').toLowerCase().trim();
-    if (tag && !found.includes(tag)) {
-      found.push(tag);
-      if (found.length >= MAX_HASHTAGS) break;
-    }
-  }
-
-  return found;
-}
 
 export default function EditMarketPostScreen() {
   const { colors } = useTheme();
@@ -47,9 +30,10 @@ export default function EditMarketPostScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { post, loading } = useMarketPost(postId ?? null);
+  const { setPost, invalidatePost } = useInvalidateMarketPost();
 
-  const [description, setDescription] = useState('');
   const [title, setTitle] = useState('');
+  const [hashtags, setHashtags] = useState<string[]>([]);
   const [price, setPrice] = useState('');
   const [city, setCity] = useState('');
   const [state, setState] = useState('');
@@ -60,8 +44,12 @@ export default function EditMarketPostScreen() {
 
   useEffect(() => {
     if (!post || isInitialized) return;
-    setDescription(post.description || '');
     setTitle(post.title || '');
+    setHashtags(
+      Array.isArray(post.hashtags)
+        ? post.hashtags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean)
+        : []
+    );
     setPrice(post.price ? String(post.price) : '');
     setCity(post.location?.city || '');
     setState(post.location?.state || '');
@@ -70,20 +58,25 @@ export default function EditMarketPostScreen() {
 
   const hasChanges = useMemo(() => {
     if (!post) return false;
-    const initialDescription = post.description || '';
     const initialTitle = post.title || '';
     const initialPrice = post.price ? String(post.price) : '';
     const initialCity = post.location?.city || '';
     const initialState = post.location?.state || '';
+    const initialHashtags = Array.isArray(post.hashtags)
+      ? post.hashtags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+    const tagsChanged =
+      hashtags.length !== initialHashtags.length ||
+      hashtags.some((tag, index) => tag !== initialHashtags[index]);
 
     return (
       title.trim() !== initialTitle.trim() ||
-      description.trim() !== initialDescription.trim() ||
+      tagsChanged ||
       price.trim() !== initialPrice.trim() ||
       city.trim() !== initialCity.trim() ||
       state.trim() !== initialState.trim()
     );
-  }, [city, description, post, price, state, title]);
+  }, [city, hashtags, post, price, state, title]);
 
   const handleSave = async () => {
     if (!post || !post.id || !isOwner || saving) return;
@@ -99,10 +92,9 @@ export default function EditMarketPostScreen() {
       haptics.medium();
 
       const cleanedTitle = title.trim().slice(0, 80);
-      const cleanedDescription = description.trim();
       const cleanedCity = city.trim();
       const cleanedState = state.trim();
-      const hashtags = extractHashtags(cleanedDescription);
+      const hasListedPrice = Number.isFinite(parsedPrice);
 
       if (!cleanedTitle) {
         showToast('Add a product title.', 'error');
@@ -111,9 +103,11 @@ export default function EditMarketPostScreen() {
 
       const payload: Record<string, unknown> = {
         title: cleanedTitle,
-        description: cleanedDescription || null,
+        // This screen has no description field — omit it so PATCH leaves the existing
+        // caption/description untouched instead of wiping it on every save.
         hashtags,
-        price: Number.isFinite(parsedPrice) ? parsedPrice : null,
+        price: hasListedPrice ? parsedPrice : null,
+        isNegotiable: hasListedPrice,
         location:
           cleanedCity || cleanedState
             ? {
@@ -123,7 +117,9 @@ export default function EditMarketPostScreen() {
             : null,
       };
 
-      await marketPostsApi.update(post.id, payload);
+      const updated = await marketPostsApi.update(post.id, payload);
+      setPost(updated);
+      invalidatePost(post.id, post.posterId);
       haptics.success();
       showToast('Post updated successfully.', 'success');
       router.back();
@@ -204,7 +200,7 @@ export default function EditMarketPostScreen() {
           <Text style={[styles.cardTitle, { color: colors.text }]}>Preview</Text>
           <Image source={{ uri: post.images[0] }} style={styles.previewImage} contentFit="cover" />
           <Text style={[styles.cardHint, { color: colors.textSecondary }]}>
-            Update title, caption, price, and location. Photo edits are not available here.
+            Update title, hashtags, price, and location. Photo edits are not available here.
           </Text>
         </View>
 
@@ -226,25 +222,16 @@ export default function EditMarketPostScreen() {
             maxLength={80}
           />
 
-          <Text style={[styles.inputLabel, styles.spacingTop, { color: colors.text }]}>Caption</Text>
-          <TextInput
-            style={[
-              styles.textArea,
-              {
-                color: colors.text,
-                borderColor: colors.border,
-                backgroundColor: colors.backgroundSecondary,
-              },
-            ]}
-            placeholder="Describe your post..."
-            placeholderTextColor={colors.textSecondary}
-            multiline
-            value={description}
-            onChangeText={setDescription}
-            maxLength={500}
-          />
+          <View style={styles.spacingTop}>
+            <Text style={[styles.cardHint, { color: colors.textSecondary, marginBottom: 8 }]}>
+              Hashtags help discovery. They won’t appear on the feed.
+            </Text>
+            <HashtagInput hashtags={hashtags} onHashtagsChange={setHashtags} />
+          </View>
 
-          <Text style={[styles.inputLabel, styles.spacingTop, { color: colors.text }]}>Price (NGN)</Text>
+          <Text style={[styles.inputLabel, styles.spacingTop, { color: colors.text }]}>
+            Starting price (NGN)
+          </Text>
           <TextInput
             style={[
               styles.input,
@@ -254,7 +241,7 @@ export default function EditMarketPostScreen() {
                 backgroundColor: colors.backgroundSecondary,
               },
             ]}
-            placeholder="Optional"
+            placeholder="Optional — buyers can still message to negotiate"
             placeholderTextColor={colors.textSecondary}
             keyboardType="numeric"
             value={price}
@@ -395,16 +382,6 @@ const styles = StyleSheet.create({
   },
   spacingTop: {
     marginTop: 12,
-  },
-  textArea: {
-    minHeight: 110,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    textAlignVertical: 'top',
-    fontSize: 14,
-    lineHeight: 20,
   },
   input: {
     borderWidth: 1,

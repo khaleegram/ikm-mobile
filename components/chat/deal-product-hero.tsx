@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 
 import { SafeImage } from '@/components/safe-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { dealProductLabel } from '@/lib/chat/enrich-inbox-snapshots';
 import { useTheme } from '@/lib/theme/theme-context';
 import type { ChatPostSnapshot } from '@/types/chat';
 
@@ -39,7 +40,7 @@ export const DealProductHero = memo(function DealProductHero({
   linkedOrderId,
 }: DealProductHeroProps) {
   const { colors } = useTheme();
-  const title = String(snapshot?.title || '').trim() || 'Marketplace listing';
+  const title = dealProductLabel(snapshot);
 
   const openPrimary = () => {
     if (linkedOrderId) {

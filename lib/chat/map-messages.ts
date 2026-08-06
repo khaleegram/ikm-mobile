@@ -18,6 +18,9 @@ export function chatMessageToMarketMessage(
   let imageUrl: string | undefined;
   let quoteCard: MarketMessage['quoteCard'];
   let chatOffer: MarketMessage['chatOffer'];
+  const rawSendStatus = String((message.payload as Record<string, unknown> | undefined)?.sendStatus || '');
+  const sendStatus =
+    rawSendStatus === 'sending' || rawSendStatus === 'failed' ? rawSendStatus : undefined;
 
   if (message.type === 'offer' || message.type === 'counter') {
     type = 'offer';
@@ -42,10 +45,17 @@ export function chatMessageToMarketMessage(
   } else if (message.type === 'quote') {
     type = 'quote';
     const payload = message.payload || {};
+    const nested = (payload.quote && typeof payload.quote === 'object'
+      ? (payload.quote as Record<string, unknown>)
+      : null) || {};
     quoteCard = {
-      postId: String(payload.postId || postId),
-      previewText: String(payload.previewText || text),
-      previewImage: payload.previewImage ? String(payload.previewImage) : undefined,
+      postId: String(nested.postId || payload.postId || postId),
+      previewText: String(nested.previewText || payload.previewText || text),
+      previewImage: nested.previewImage
+        ? String(nested.previewImage)
+        : payload.previewImage
+          ? String(payload.previewImage)
+          : undefined,
     };
   } else if (message.type === 'image' && attachment?.url) {
     type = 'media';
@@ -53,7 +63,11 @@ export function chatMessageToMarketMessage(
   } else if (message.type === 'voice' && attachment?.url) {
     type = 'media';
     text = '';
-    const status = String((message.payload as any)?.sendStatus || '');
+    const payload = (message.payload || {}) as Record<string, unknown>;
+    const status = String(payload.sendStatus || '');
+    // Prefer local file while available so upload success never remounts / reloads playback.
+    const localUri = asString(payload.localUri);
+    const voiceUrl = localUri || attachment.url;
     return {
       id: message.id,
       chatId: threadId,
@@ -63,15 +77,13 @@ export function chatMessageToMarketMessage(
       text,
       message: text,
       type,
-      voiceUrl: attachment.url,
+      voiceUrl,
       voiceDurationSec: attachment.durationSec ?? undefined,
       clientMessageId: message.clientMsgId || undefined,
       read: true,
       createdAt: new Date(message.createdAt),
-      ...(status === 'sending' || status === 'failed'
-        ? { voiceSendStatus: status as 'sending' | 'failed' }
-        : {}),
-    } as MarketMessage & { voiceSendStatus?: 'sending' | 'failed' };
+      ...(status === 'sending' || status === 'failed' ? { sendStatus: status } : {}),
+    } as MarketMessage;
   } else if (
     message.type === 'system' ||
     message.type === 'order_created' ||
@@ -119,6 +131,7 @@ export function chatMessageToMarketMessage(
     quoteCard,
     chatOffer,
     clientMessageId: message.clientMsgId || undefined,
+    sendStatus,
     read: true,
     createdAt: new Date(message.createdAt),
   };

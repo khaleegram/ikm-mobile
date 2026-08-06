@@ -6,8 +6,8 @@ import { orderChatApi } from '@/lib/api/order-chat';
 import { orderApi } from '@/lib/api/orders';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useOrderMessages } from '@/lib/firebase/firestore/order-chat';
-import { useOrder } from '@/lib/firebase/firestore/orders';
-import { useParksByState } from '@/lib/firebase/firestore/parks';
+import { useOrder } from '@/lib/hooks/use-order';
+import { useParksByState } from '@/lib/hooks/use-parks';
 import { useProduct } from '@/lib/firebase/firestore/products';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
@@ -43,7 +43,7 @@ const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   Completed: [],
   Cancelled: [],
   Disputed: ['Completed', 'Cancelled'],
-  AvailabilityCheck: ['Cancelled'],
+  AvailabilityCheck: ['Cancelled', 'Sent'],
 };
 
 export default function OrderDetailScreen() {

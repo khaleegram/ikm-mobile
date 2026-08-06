@@ -1,8 +1,9 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { Product } from '@/types';
 
 const SEARCH_FUNCTIONS = {
-  searchProducts: 'https://searchproducts-q3rjv54uka-uc.a.run.app',
+  searchProducts: cloudFunctionUrl('searchProducts'),
 };
 
 export interface SearchOptions {

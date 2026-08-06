@@ -1,5 +1,6 @@
 import { MarketPost } from '@/types';
 import { getMarketBranding } from '@/lib/market-branding';
+import { buildDeepLink } from '@/lib/navigation/deep-links';
 import { Share } from 'react-native';
 
 function getPostTitle(post: MarketPost): string {
@@ -23,11 +24,22 @@ export function buildMarketPostShareMessage(post: MarketPost): string {
     : '';
   const price = post.price && post.price > 0 ? `\nPrice: NGN ${post.price.toLocaleString()}` : '';
   const where = location ? `\nLocation: ${location}` : '';
-  return `${headline}${price}${where}${tags}\n\n${b.shareFromLine}`;
+  const link = post.id ? `\n${buildDeepLink({ type: 'post', postId: post.id })}` : '';
+  return `${headline}${price}${where}${tags}\n\n${b.shareFromLine}${link}`;
 }
 
 export async function shareMarketPost(post: MarketPost): Promise<void> {
+  const url = post.id ? buildDeepLink({ type: 'post', postId: post.id }) : undefined;
   await Share.share({
     message: buildMarketPostShareMessage(post),
+    ...(url ? { url } : {}),
   });
+}
+
+export function buildChatDeepLink(chatId: string, peerId?: string): string {
+  return buildDeepLink({ type: 'chat', chatId, peerId });
+}
+
+export function buildOrderDeepLink(orderId: string): string {
+  return buildDeepLink({ type: 'order', orderId });
 }

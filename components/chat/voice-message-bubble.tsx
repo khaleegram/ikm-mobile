@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { memo, useCallback, useId } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -10,17 +10,10 @@ import {
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
-import { useAudioPlayer } from '@/hooks/use-audio-player';
-import { isExpoAudioAvailable } from '@/lib/hooks/use-voice-recorder';
-import {
-  claimChatVoicePlayback,
-  registerChatVoicePlayer,
-  releaseChatVoicePlayback,
-} from '@/lib/chat/chat-audio';
+import { useChatVoicePlayer } from '@/hooks/use-chat-voice-player';
 import { formatRelativeTime } from '@/lib/utils/date-format';
 
 const BRAND = '#A67C52';
-const SPEEDS = [1, 1.5, 2] as const;
 
 type VoiceMessageBubbleProps = {
   uri: string;
@@ -30,10 +23,12 @@ type VoiceMessageBubbleProps = {
   failed?: boolean;
   createdAt?: any;
   onRetry?: () => void;
+  /** Stable id — prefer clientMsgId so upload success does not remount playback. */
+  messageKey?: string;
 };
 
-function formatClock(sec: number) {
-  const total = Math.max(0, Math.floor(sec));
+function formatClock(msOrSec: number, fromMs = false) {
+  const total = Math.max(0, Math.floor(fromMs ? msOrSec / 1000 : msOrSec));
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
@@ -47,76 +42,31 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
   failed = false,
   createdAt,
   onRetry,
+  messageKey,
 }: VoiceMessageBubbleProps) {
   const { colors } = useTheme();
   const reactId = useId();
-  const playerId = `voice-${reactId}`;
-  const player = useAudioPlayer(uri, { updateIntervalMs: 200 });
-  const [playing, setPlaying] = useState(false);
-  const [speedIndex, setSpeedIndex] = useState(0);
-  const [tick, setTick] = useState(0);
-  const playingRef = useRef(false);
+  const playerId = messageKey || `voice-${reactId}`;
+  const player = useChatVoicePlayer(playerId, uri, durationSec);
 
-  const totalSec = Math.max(durationSec, 0.01);
-  const current = player.currentTime || 0;
-  const remaining = Math.max(0, totalSec - current);
-  const progress = Math.min(1, Math.max(0, current / totalSec));
-  const available = isExpoAudioAvailable();
+  const totalMs = Math.max(player.durationMs, durationSec * 1000, 1);
+  const currentMs = player.isPlaying || player.isActive ? player.positionMs : 0;
+  const remainingMs = Math.max(0, totalMs - currentMs);
+  const progress = Math.min(1, Math.max(0, currentMs / totalMs));
 
-  const forcePause = useCallback(() => {
-    playingRef.current = false;
-    setPlaying(false);
-    void player.pause();
-    releaseChatVoicePlayback(playerId);
-  }, [player, playerId]);
-
-  useEffect(() => registerChatVoicePlayer(playerId, forcePause), [forcePause, playerId]);
-
-  useEffect(() => {
-    if (!playing) return;
-    const timer = setInterval(() => setTick((n) => n + 1), 200);
-    return () => clearInterval(timer);
-  }, [playing]);
-
-  useEffect(() => {
-    if (!playing) return;
-    if (current >= totalSec - 0.05 && current > 0.2) {
-      playingRef.current = false;
-      setPlaying(false);
-      void player.pause();
-      player.currentTime = 0;
-      releaseChatVoicePlayback(playerId);
-    }
-  }, [current, playing, player, playerId, totalSec, tick]);
-
-  const togglePlayback = useCallback(async () => {
+  const onPlayPress = useCallback(() => {
     if (failed) {
       onRetry?.();
       return;
     }
-    if (!available) return;
+    if (!player.available) return;
+    player.toggle();
+  }, [failed, onRetry, player]);
 
-    if (playingRef.current) {
-      forcePause();
-      return;
-    }
-
-    claimChatVoicePlayback(playerId);
-    if (current >= totalSec - 0.08) {
-      player.currentTime = 0;
-    }
-    playingRef.current = true;
-    setPlaying(true);
-    await player.play();
-  }, [available, current, failed, forcePause, onRetry, player, playerId, totalSec]);
-
-  const cycleSpeed = useCallback(() => {
-    setSpeedIndex((idx) => {
-      const next = (idx + 1) % SPEEDS.length;
-      player.rate = SPEEDS[next];
-      return next;
-    });
-  }, [player]);
+  const onSpeedPress = useCallback(() => {
+    if (failed || pending || !player.available) return;
+    void player.cycleRate();
+  }, [failed, pending, player]);
 
   const cardBg = isSent ? BRAND : colors.backgroundSecondary;
   const playBg = isSent ? '#FFFFFF' : BRAND;
@@ -125,12 +75,11 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
   const fillBg = isSent ? '#FFFFFF' : BRAND;
   const muted = isSent ? 'rgba(255,255,255,0.78)' : colors.textSecondary;
   const ink = isSent ? '#FFFFFF' : colors.text;
-
   const cornerStyle = isSent
     ? { borderBottomRightRadius: 4 }
     : { borderBottomLeftRadius: 4 };
 
-  if (!available) {
+  if (!player.available) {
     return (
       <View
         style={[
@@ -144,31 +93,32 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
         ]}>
         <IconSymbol name="mic.fill" size={16} color={ink} />
         <Text style={[styles.fallbackLabel, { color: ink }]}>Voice note</Text>
-        <Text style={[styles.time, { color: muted }]}>{formatClock(totalSec)}</Text>
+        <Text style={[styles.time, { color: muted }]}>{formatClock(totalMs, true)}</Text>
       </View>
     );
   }
 
   return (
-    <AnimatedPressable
-      disabled={!failed}
-      onPress={failed ? onRetry : undefined}
-      scaleValue={failed ? 0.98 : 1}
+    <View
       style={[
         styles.card,
         cornerStyle,
         {
           backgroundColor: cardBg,
           borderColor: failed ? '#E5484D' : isSent ? 'transparent' : colors.border,
-          opacity: pending ? 0.88 : 1,
+          opacity: pending ? 0.92 : 1,
         },
       ]}>
       <View style={styles.row}>
         <AnimatedPressable
-          onPress={togglePlayback}
+          onPress={onPlayPress}
           style={[styles.playBtn, { backgroundColor: playBg }]}
-          scaleValue={0.92}>
-          {playing ? (
+          scaleValue={0.92}
+          accessibilityRole="button"
+          accessibilityLabel={failed ? 'Retry send' : player.isPlaying ? 'Pause' : 'Play'}>
+          {player.isLoading ? (
+            <ActivityIndicator size="small" color={playIcon} />
+          ) : player.isPlaying ? (
             <IconSymbol name="pause.fill" size={14} color={playIcon} />
           ) : (
             <IconSymbol name="play.fill" size={14} color={playIcon} />
@@ -181,16 +131,25 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
           </View>
           <View style={styles.metaRow}>
             <Text style={[styles.time, { color: muted }]}>
-              {playing ? formatClock(remaining) : formatClock(totalSec)}
+              {player.isPlaying ? formatClock(remainingMs, true) : formatClock(totalMs, true)}
             </Text>
-            <AnimatedPressable onPress={cycleSpeed} scaleValue={0.94} style={styles.speedChip}>
-              <Text style={[styles.speedText, { color: ink }]}>{SPEEDS[speedIndex]}x</Text>
+            <AnimatedPressable
+              onPress={onSpeedPress}
+              scaleValue={0.94}
+              style={styles.speedChip}
+              accessibilityRole="button"
+              accessibilityLabel="Playback speed">
+              <Text style={[styles.speedText, { color: ink }]}>{player.rate}x</Text>
             </AnimatedPressable>
           </View>
         </View>
       </View>
 
-      <View style={styles.footer}>
+      <AnimatedPressable
+        disabled={!failed}
+        onPress={failed ? onRetry : undefined}
+        scaleValue={failed ? 0.98 : 1}
+        style={styles.footer}>
         <Text style={[styles.footerText, { color: failed ? '#E5484D' : muted }]}>
           {failed ? 'Tap to retry' : pending ? 'Sending…' : formatRelativeTime(createdAt)}
         </Text>
@@ -201,8 +160,8 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
             <IconSymbol name="checkmark.circle" size={13} color={muted} />
           )
         ) : null}
-      </View>
-    </AnimatedPressable>
+      </AnimatedPressable>
+    </View>
   );
 });
 
@@ -232,9 +191,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   playBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },

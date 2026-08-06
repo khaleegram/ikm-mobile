@@ -1,3 +1,8 @@
+> **ARCHIVED / HISTORICAL** — This document no longer matches the running codebase.
+> Canonical: `docs/firebase-market-core-exit.md` and `docs/architecture-boundaries.md`.
+
+---
+
 # Implementation Summary - Northern Marketplace Update
 
 **Date:** January 2025  

@@ -372,10 +372,12 @@ export interface Order {
   discountCode?: string;          // Applied discount code
   
   // Escrow
-  escrowStatus?: 'held' | 'released' | 'refunded';
+  escrowStatus?: 'held' | 'released' | 'refunded' | 'refund_pending';
   commissionRate?: number;        // Platform commission rate at time of order
   fundsReleasedAt?: Timestamp | Date;    // When funds were released
   autoReleaseDate?: Timestamp | Date;    // Auto-release date if no dispute
+  refundStatus?: 'pending' | 'processed' | 'partial' | 'failed';
+  lastRefundAt?: Timestamp | Date;
   
   // Delivery Tracking
   sentAt?: Timestamp | Date;             // When order was sent
@@ -388,7 +390,7 @@ export interface Order {
   waybillParkName?: string;       // Park name for display
   
   // Order Availability System (for food/snacks sellers)
-  availabilityStatus?: 'available' | 'not_available' | 'waiting_buyer_response';
+  availabilityStatus?: 'available' | 'not_available' | 'waiting_buyer_response' | 'waiting_restock' | 'cancelled';
   waitTimeDays?: number;          // Number of days seller needs to restock (optional)
   waitTimeExpiresAt?: Timestamp | Date;  // When wait time expires
   availabilityReason?: string;    // Seller's reason for unavailability
@@ -428,6 +430,12 @@ export interface Order {
     processedBy?: string;        // adminId
     createdAt: Timestamp | Date;
     processedAt?: Timestamp | Date;
+    paystackRefundId?: string | number | null;
+    paystackStatus?: string | null;
+    transactionReference?: string | null;
+    error?: string | null;
+    sellerAmount?: number;
+    commissionAmount?: number;
   }>;
 
   // Order Communication
@@ -621,6 +629,9 @@ export interface MarketSoundSave {
 export interface MarketPost {
   id?: string;
   posterId: string;              // Firebase Auth UID
+  /** Denormalized on feed/list payloads — prefer over a separate /users fetch for cards. */
+  posterStoreName?: string;
+  posterAvatarUrl?: string;
   mediaType?: MarketPostMediaType;
   images: string[];              // 0-20 image URLs for photo posts; optional cover for video posts
   coverImageUrl?: string;
@@ -644,11 +655,11 @@ export interface MarketPost {
     originalAudioVolume?: number;
     useOriginalVideoAudio?: boolean;
   };
-  hashtags?: string[];           // Optional hashtags
+  hashtags?: string[];           // Optional hashtags (algorithm/discovery; not shown on feed)
   price?: number;                // Optional price (NGN)
-  isNegotiable?: boolean;        // Show DM action when priced posts are negotiable
+  isNegotiable?: boolean;        // Listed price is a starting point; buyers can always message
   title?: string;                // Short product name for deal rooms / listings
-  description?: string;          // Optional caption (feed)
+  description?: string;          // Legacy caption (not shown on feed; prefer title + hashtags)
   location?: {
     state?: string;
     city?: string;
@@ -747,6 +758,8 @@ export interface MarketMessage {
   /** System / order milestone metadata */
   systemEvent?: string;
   milestonePhotoUrl?: string;
+  /** Optimistic send-state — 'sending' while in flight, 'failed' if delivery never confirmed (tap to retry). */
+  sendStatus?: 'sending' | 'failed';
   read: boolean;                 // Read status
   
   // Timestamps
@@ -781,6 +794,7 @@ export type OrderSystemEvent =
   | 'dispute_opened'
   | 'dispute_resolved'
   | 'escrow_released'
+  | 'refund_requested'
   | 'refund_processed';
 
 // Order-scoped chat message (sub-collection: orders/{orderId}/messages)

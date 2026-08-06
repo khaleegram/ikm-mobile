@@ -1,14 +1,27 @@
+import * as VideoThumbnails from 'expo-video-thumbnails';
+
 import { apiUrl } from './api-base';
 import { coreCloudClient } from './core-cloud-client';
 import type { MarketPost, MarketSound } from '@/types';
 
 import { auth } from '@/lib/firebase/config';
 import { inferFileExtension } from '@/lib/utils/market-media';
+import { buildUserMediaPath } from '@/lib/utils/media-path';
 import {
   uploadImage,
   uploadImages,
   uploadVideo,
 } from '@/lib/utils/image-upload';
+
+/** Video posts need a thumbnail for deal-room/feed cards — capture one from the clip itself when the seller skips picking a cover. */
+async function captureVideoThumbnail(videoUri: string): Promise<string | null> {
+  try {
+    const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, { time: 100, quality: 0.7 });
+    return uri || null;
+  } catch {
+    return null;
+  }
+}
 
 /** @deprecated Sound library removed — videos use their own audio only. */
 export interface CreateMarketPostSoundSelection {
@@ -80,11 +93,16 @@ function normalizeApiPost(raw: any): MarketPost {
   } as MarketPost;
 }
 
+/** Deployed API still requires auth on post reads; local API allows public. Prefer token when signed in. */
+function postReadRequiresAuth(): boolean {
+  return Boolean(auth.currentUser);
+}
+
 export const marketPostsApi = {
   async getById(postId: string): Promise<MarketPost | null> {
     const response = await coreCloudClient.request<{ success: boolean; post: MarketPost }>(
       apiUrl(`/posts/${encodeURIComponent(postId)}`),
-      { method: 'GET', requiresAuth: true }
+      { method: 'GET', requiresAuth: postReadRequiresAuth() }
     );
     return response.post ? normalizeApiPost(response.post) : null;
   },
@@ -97,7 +115,7 @@ export const marketPostsApi = {
     if (!ids.length) return [];
     const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
       apiUrl(`/posts/batch?ids=${encodeURIComponent(ids.join(','))}`),
-      { method: 'GET', requiresAuth: true }
+      { method: 'GET', requiresAuth: postReadRequiresAuth() }
     );
     return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];
   },
@@ -132,18 +150,19 @@ export const marketPostsApi = {
       const videoExtension = inferFileExtension(videoUri, 'mp4');
       const uploadedVideo = await uploadVideo(
         videoUri,
-        `marketPosts/${user.uid}/post_${postId}.${videoExtension}`,
+        buildUserMediaPath('marketPosts', user.uid, `post_${postId}.${videoExtension}`),
         (videoProgress) => onProgress?.(0.05 + videoProgress * 0.65)
       );
       uploadedVideoUrl = uploadedVideo.url;
       onProgress?.(0.72);
 
-      const coverImageUri = String(data.coverImageUri || '').trim();
+      const coverImageUri =
+        String(data.coverImageUri || '').trim() || (await captureVideoThumbnail(videoUri)) || '';
       if (coverImageUri) {
         const coverExtension = inferFileExtension(coverImageUri, 'jpg');
         const uploadedCover = await uploadImage(
           coverImageUri,
-          `marketPosts/${user.uid}/cover_${postId}.${coverExtension}`
+          buildUserMediaPath('marketPosts', user.uid, `cover_${postId}.${coverExtension}`)
         );
         uploadedCoverImageUrl = uploadedCover.url;
         uploadedImages = [uploadedCover.url];
@@ -196,6 +215,26 @@ export const marketPostsApi = {
       { method: 'PATCH', body: patch, requiresAuth: true }
     );
     return normalizeApiPost(response.post);
+  },
+
+  async listByPoster(posterId: string, limit = 60): Promise<MarketPost[]> {
+    const id = String(posterId || '').trim();
+    if (!id) return [];
+    const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
+      apiUrl(`/posts?posterId=${encodeURIComponent(id)}&limit=${Math.min(60, Math.max(1, limit))}`),
+      { method: 'GET', requiresAuth: postReadRequiresAuth() }
+    );
+    return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];
+  },
+
+  async listBySound(soundId: string, limit = 40): Promise<MarketPost[]> {
+    const id = String(soundId || '').trim();
+    if (!id) return [];
+    const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
+      apiUrl(`/posts?soundId=${encodeURIComponent(id)}&limit=${Math.min(60, Math.max(1, limit))}`),
+      { method: 'GET', requiresAuth: postReadRequiresAuth() }
+    );
+    return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];
   },
 
   async like(postId: string): Promise<{ likes: number; isLiked: boolean }> {

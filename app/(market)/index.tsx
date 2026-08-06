@@ -2,11 +2,10 @@ import React, { useCallback, useRef } from 'react';
 import {
   View,
   ActivityIndicator,
-  Alert,
   Text,
   StyleSheet,
   StatusBar,
-  TouchableOpacity,
+  TouchableOpacity
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -15,7 +14,7 @@ import { BlurView } from 'expo-blur';
 import { showToast } from '@/components/toast';
 import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
 import { marketFeedApi, type FeedPageParams } from '@/lib/api/market-feed';
-import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
+import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/hooks/use-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
 import {
   getFeedActivePostId,
@@ -23,6 +22,8 @@ import {
   useFeedMediaPrefetch,
 } from '@/lib/hooks/use-feed-active-post';
 import { useClipFeed } from '@/lib/hooks/use-clip-feed';
+import { useUsersBatch } from '@/lib/hooks/use-user-identity';
+import { marketPostsApi } from '@/lib/api/market-posts';
 import { FeedVideoItem } from '@/components/market/feed-video-item';
 import { FeedSegmentSwitch } from '@/components/market/feed-segment-switch';
 import { VerticalClipFeed } from '@/components/market/vertical-clip-feed';
@@ -34,6 +35,7 @@ import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { router, useLocalSearchParams } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Platform } from 'react-native';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 const MARKET_LOCATION_PROMPT_KEY = '@ikm_market_location_prompted_v1';
@@ -49,12 +51,17 @@ export default function MarketFeedScreen() {
   );
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [focused, setFocused] = React.useState(true);
-  const [muted] = React.useState(false);
+  const [muted, setMuted] = React.useState(false);
   const listRef = useRef<any>(null);
   const hasShownLocationPromptRef = useRef(false);
   const navigation = useNavigation();
 
-  const { ids: followingIds, idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
+  const {
+    ids: followingIds,
+    idSet: followingIdSet,
+    error: followingError,
+    refetch: refetchFollowing,
+  } = useFollowingUserIds(user?.uid || null);
   const { idSet: savedIdSet } = useUserSavedPostIds(user?.uid || null);
 
   React.useEffect(() => {
@@ -94,14 +101,40 @@ export default function MarketFeedScreen() {
     markSeen,
   } = useClipFeed(fetchPage);
 
+  // One batched identity fetch for visible posters — warms Query so overlays don't
+  // each flash "Seller" while waiting on N× GET /users/:id.
+  const feedPosterIds = React.useMemo(
+    () => posts.map((post) => post.posterId).filter(Boolean),
+    [posts]
+  );
+  useUsersBatch(feedPosterIds);
+
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   const markSeenRef = useRef(markSeen);
   markSeenRef.current = markSeen;
 
+  const postsRef = useRef(posts);
+  postsRef.current = posts;
+  const patchItemRef = useRef(patchItem);
+  patchItemRef.current = patchItem;
+  const activeIndexRef = useRef(activeIndex);
+  activeIndexRef.current = activeIndex;
+
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
+      const activeId = String(
+        postsRef.current[activeIndexRef.current]?.id || getFeedActivePostId() || ''
+      ).trim();
+      if (activeId) {
+        void marketPostsApi
+          .getById(activeId)
+          .then((fresh) => {
+            if (fresh?.id) patchItemRef.current(fresh.id, fresh);
+          })
+          .catch(() => {});
+      }
       return () => setFocused(false);
     }, [])
   );
@@ -217,9 +250,17 @@ export default function MarketFeedScreen() {
     []
   );
 
-  const handleViewableIds = useCallback((ids: string[]) => {
-    if (ids.length) markSeenRef.current(ids);
-  }, []);
+  // Mark seen only after real dwell (~1.5s) on the active clip — not on every viewability flicker.
+  const activePostId = String(posts[activeIndex]?.id || '').trim();
+  React.useEffect(() => {
+    if (!user || !focused || !activePostId) return;
+    const startedAt = Date.now();
+    const timer = setTimeout(() => {
+      const dwellSec = Math.max(1.5, (Date.now() - startedAt) / 1000);
+      markSeenRef.current([activePostId], dwellSec);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [activePostId, focused, user]);
 
   useFeedMediaPrefetch(posts);
 
@@ -242,6 +283,7 @@ export default function MarketFeedScreen() {
         isActive={index === activeIndex}
         focused={focused}
         muted={muted}
+        onMutedChange={setMuted}
         onPatchItem={patchItem}
         onRemoveItem={removeItem}
       />
@@ -322,15 +364,31 @@ export default function MarketFeedScreen() {
         {renderHomeAppBar()}
         {isFollowingMode ? (
           <>
-            <IconSymbol name="person.2.fill" size={48} color={lightBrown} />
+            <IconSymbol
+              name={followingError ? 'exclamationmark.triangle.fill' : 'person.2.fill'}
+              size={48}
+              color={followingError ? '#FF3B55' : lightBrown}
+            />
             <Text style={[styles.emptyText, { color: 'rgba(255,255,255,0.7)', marginTop: 12 }]}>
               {!user
                 ? 'Sign in to see posts from sellers you follow'
-                : followingIds.length === 0
-                  ? 'Follow sellers to see their posts here'
-                  : 'No posts from followed sellers yet'}
+                : followingError
+                  ? 'Could not load who you follow'
+                  : followingIds.length === 0
+                    ? 'Follow sellers to see their posts here'
+                    : 'No posts from followed sellers yet'}
             </Text>
-            {user && followingIds.length === 0 ? (
+            {user && followingError ? (
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => {
+                  haptics.medium();
+                  void refetchFollowing();
+                }}>
+                <IconSymbol name="arrow.clockwise" size={18} color="#FFFFFF" />
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </TouchableOpacity>
+            ) : user && followingIds.length === 0 ? (
               <TouchableOpacity
                 style={styles.retryButton}
                 onPress={() => {
@@ -362,7 +420,6 @@ export default function MarketFeedScreen() {
           onRefresh={onRefresh}
           refreshing={refreshing}
           loadingMore={loadingMore}
-          onViewableIds={handleViewableIds}
         />
         {renderHomeAppBar()}
       </View>

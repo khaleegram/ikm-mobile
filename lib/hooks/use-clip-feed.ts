@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { marketFeedApi, type FeedPageParams, type FeedPageResult } from '@/lib/api/market-feed';
-import { normalizeMarketPostRecord } from '@/lib/firebase/firestore/market-posts';
+import { normalizeMarketPostRecord } from '@/lib/market/normalize-market-post';
 import type { MarketPost } from '@/types';
 
 export type ClipFeedMode = 'initial' | 'refresh' | 'more';

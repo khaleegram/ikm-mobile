@@ -11,7 +11,6 @@ export type MarketBranding = {
   genericItemTitle: string;
   signupJoinSubtitle: string;
   deletePostMessage: string;
-  phoneGateLine: string;
   shareFromLine: string;
   ordersNavLabel: string;
 };
@@ -23,7 +22,6 @@ const FALLBACK: MarketBranding = {
   genericItemTitle: 'Market Street Item',
   signupJoinSubtitle: 'Join Market Street',
   deletePostMessage: 'This will permanently remove this post from Market Street.',
-  phoneGateLine: 'Add a phone number so buyers and sellers can reach you. Use your country code (e.g. +234).',
   shareFromLine: 'Shared from Market Street',
   ordersNavLabel: 'Market Orders',
 };

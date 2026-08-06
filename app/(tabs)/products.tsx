@@ -13,16 +13,18 @@ import { Product } from '@/types';
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
-  Alert,
   Dimensions,
   FlatList,
-  RefreshControl, StatusBar,
-  StyleSheet, Text,
+  RefreshControl,
+  StatusBar,
+  StyleSheet,
+  Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert } from '@/components/app-alert';
 
 const { width } = Dimensions.get('window');
 const COLUMN_WIDTH = (width - 52) / 2;

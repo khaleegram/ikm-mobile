@@ -275,7 +275,7 @@ export default function AnalyticsScreen() {
         colors={colorScheme === 'light' 
           ? [colors.primary, colors.accent] 
           : [colors.gradientStart, colors.gradientEnd]}
-        style={styles.header}>
+        style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <View style={styles.headerContent}>
           <View>
             <Text style={styles.title}>Analytics & Reports</Text>
@@ -549,7 +549,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
     alignItems: 'center',
   },
   header: {
-    paddingTop: 60,
+    /* safe-area applied at header usage */
     paddingBottom: 24,
     paddingHorizontal: 20,
     borderBottomLeftRadius: 24,

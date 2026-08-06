@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform, type AppStateStatus } from 'react-native';
 
+import { chatVoicePlayer } from '@/lib/chat/voice-player';
+
 let Audio: any = null;
 try {
   Audio = require('expo-av').Audio;
@@ -22,7 +24,6 @@ export function isExpoAudioAvailable() {
 }
 
 function recordingOptions() {
-  // HIGH_QUALITY is fine on iOS; Android is more stable with AAC + lower startup latency.
   if (Platform.OS === 'android' && Audio?.RecordingOptionsPresets?.HIGH_QUALITY) {
     return {
       ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
@@ -52,12 +53,13 @@ export function useVoiceRecorder(options?: {
   const [isRecording, setIsRecording] = useState(false);
   const [durationMs, setDurationMs] = useState(0);
 
-  const restoreAudioMode = useCallback(async () => {
+  const restorePlaybackMode = useCallback(async () => {
     if (!Audio) return;
     try {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
         interruptionModeIOS: Audio.InterruptionModeIOS?.DoNotMix ?? 1,
         interruptionModeAndroid: Audio.InterruptionModeAndroid?.DoNotMix ?? 1,
         shouldDuckAndroid: true,
@@ -80,12 +82,14 @@ export function useVoiceRecorder(options?: {
     opLockRef.current = true;
 
     try {
+      // WhatsApp-style: stop any playing note before opening the mic session.
+      await chatVoicePlayer.stop();
+
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
         throw new Error('Microphone permission is required for voice notes.');
       }
 
-      // Tear down any leftover recorder instance before creating a new one (common Android stall).
       try {
         const leftover = recordingRef.current;
         if (leftover) {
@@ -99,6 +103,7 @@ export function useVoiceRecorder(options?: {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
         interruptionModeIOS: Audio.InterruptionModeIOS?.DoNotMix ?? 1,
         interruptionModeAndroid: Audio.InterruptionModeAndroid?.DoNotMix ?? 1,
         shouldDuckAndroid: false,
@@ -110,29 +115,48 @@ export function useVoiceRecorder(options?: {
       startedAtRef.current = Date.now();
       setDurationMs(0);
       setIsRecording(true);
+    } catch (error) {
+      recordingRef.current = null;
+      setIsRecording(false);
+      setDurationMs(0);
+      await restorePlaybackMode();
+      throw error;
     } finally {
       opLockRef.current = false;
     }
-  }, []);
+  }, [restorePlaybackMode]);
 
   const finalizeRecording = useCallback(
     async (mode: 'stop' | 'cancel'): Promise<VoiceRecordingResult | null> => {
+      if (opLockRef.current) {
+        // Wait briefly for start/stop handoff rather than dropping the take.
+        await new Promise((r) => setTimeout(r, 40));
+      }
       const recording = recordingRef.current;
       if (!recording) {
         setIsRecording(false);
         setDurationMs(0);
+        await restorePlaybackMode();
         return null;
       }
 
+      opLockRef.current = true;
       recordingRef.current = null;
       setIsRecording(false);
 
       try {
-        const statusBefore = await recording.getStatusAsync().catch(() => null);
+        let statusBefore: any = null;
+        try {
+          statusBefore = await recording.getStatusAsync();
+        } catch {
+          statusBefore = null;
+        }
+
         await recording.stopAndUnloadAsync();
+
         if (mode === 'cancel') {
           setDurationMs(0);
-          void restoreAudioMode();
+          await restorePlaybackMode();
           return null;
         }
 
@@ -144,17 +168,19 @@ export function useVoiceRecorder(options?: {
           fromStatus > 0 ? fromStatus : fromClock
         );
         setDurationMs(0);
-        // Restore audio session after returning so the bubble can paint first.
-        void restoreAudioMode();
+        // Await session restore so the next play/send does not hit a recording-locked route.
+        await restorePlaybackMode();
         if (!uri) return null;
         return { uri, durationMs: duration, mime: 'audio/m4a' };
       } catch {
         setDurationMs(0);
-        void restoreAudioMode();
+        await restorePlaybackMode();
         return null;
+      } finally {
+        opLockRef.current = false;
       }
     },
-    [restoreAudioMode]
+    [restorePlaybackMode]
   );
 
   const stopRecording = useCallback(

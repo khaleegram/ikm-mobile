@@ -1,20 +1,26 @@
 // Domain management screen
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useStore } from '@/lib/firebase/firestore/stores';
 import { router } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { premiumShadow } from '@/lib/theme/styles';
-import { Linking, Alert } from 'react-native';
+import { Linking } from 'react-native';
+import { Alert } from '@/components/app-alert';
+import { getMarketBranding } from '@/lib/market-branding';
 
 export default function DomainScreen() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { store, loading } = useStore(user?.uid || null);
+  const marketBrand = getMarketBranding();
   const styles = createStyles(colors);
 
-  const baseDomain = 'ikm.com'; // This should come from environment variable
+  // Seller storefront host — not the market consumer app brand.
+  const baseDomain = 'chatcart.shop';
   const subdomain = store?.subdomain || '';
   const storeUrl = subdomain ? `https://${subdomain}.${baseDomain}` : '';
 
@@ -39,7 +45,7 @@ export default function DomainScreen() {
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <IconSymbol name="chevron.left" size={24} color={colors.text} />
         </TouchableOpacity>
@@ -54,7 +60,7 @@ export default function DomainScreen() {
           </View>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>Your Store URL</Text>
           <Text style={[styles.sectionDescription, { color: colors.textSecondary }]}>
-            Your store is accessible at the following address
+            Your {marketBrand.proseName} seller storefront is accessible at the following address
           </Text>
 
           {subdomain ? (
@@ -141,7 +147,6 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       justifyContent: 'space-between',
       alignItems: 'center',
       padding: 16,
-      paddingTop: 60,
       borderBottomWidth: 1,
       borderBottomColor: colors.cardBorder,
       ...premiumShadow,

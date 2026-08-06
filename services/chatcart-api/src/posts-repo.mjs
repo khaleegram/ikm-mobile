@@ -33,8 +33,22 @@ function toIso(value) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-/** Map Postgres post row (+ images) to client MarketPost shape. */
-export function mapPostRow(row, images = []) {
+function posterLabelFromUserRow(user) {
+  if (!user) return null;
+  const store = asString(user.store_name);
+  if (store) return store;
+  const display = asString(user.display_name);
+  if (display && !display.includes('@') && display !== 'User') return display;
+  return null;
+}
+
+function posterAvatarFromUserRow(user) {
+  if (!user) return null;
+  return asString(user.store_logo_url) || asString(user.avatar_url) || null;
+}
+
+/** Map Postgres post row (+ images + optional poster identity) to client MarketPost shape. */
+export function mapPostRow(row, images = [], posterUser = null) {
   if (!row) return null;
   const imageUrls =
     images.length > 0
@@ -44,9 +58,16 @@ export function mapPostRow(row, images = []) {
         : [];
   const videoUrl = asString(row.video_url) || undefined;
   const coverUrl = asString(row.cover_url) || imageUrls[0] || undefined;
+  const posterStoreName =
+    asString(row.poster_store_name) || posterLabelFromUserRow(posterUser) || undefined;
+  const posterAvatarUrl =
+    asString(row.poster_avatar_url) || posterAvatarFromUserRow(posterUser) || undefined;
   return {
     id: row.id,
     posterId: row.poster_id,
+    // Denormalized seller identity — feed/list cards paint instantly without N× /users/:id.
+    posterStoreName,
+    posterAvatarUrl,
     mediaType: row.media_type || (videoUrl ? 'video' : 'image_gallery'),
     images: imageUrls,
     coverImageUrl: coverUrl,
@@ -69,6 +90,20 @@ export function mapPostRow(row, images = []) {
     updatedAt: toIso(row.updated_at),
     expiresAt: toIso(row.expires_at),
   };
+}
+
+/** One query for poster store names / logos used by hydratePosts / feed. */
+async function loadPosterUsersByIds(posterIds) {
+  const db = requirePool();
+  const ids = [...new Set((posterIds || []).map(asString).filter(Boolean))];
+  if (!ids.length) return new Map();
+  const { rows } = await db.query(
+    `SELECT id, store_name, display_name, store_logo_url, avatar_url
+     FROM users
+     WHERE id = ANY($1::text[])`,
+    [ids]
+  );
+  return new Map(rows.map((row) => [row.id, row]));
 }
 
 export async function loadPostImages(postIds) {
@@ -98,9 +133,14 @@ export async function hydratePosts(postIds) {
 
   const { rows } = await db.query(`SELECT * FROM posts WHERE id = ANY($1::text[])`, [ids]);
   const imagesByPost = await loadPostImages(ids);
+  const postersById = await loadPosterUsersByIds(rows.map((row) => row.poster_id));
   const byId = {};
   for (const row of rows) {
-    byId[row.id] = mapPostRow(row, imagesByPost.get(row.id) || []);
+    byId[row.id] = mapPostRow(
+      row,
+      imagesByPost.get(row.id) || [],
+      postersById.get(row.poster_id) || null
+    );
   }
   return byId;
 }
@@ -112,12 +152,31 @@ export async function getPostById(postId) {
   const { rows } = await db.query(`SELECT * FROM posts WHERE id = $1 LIMIT 1`, [id]);
   if (!rows[0]) return null;
   const images = await loadPostImages([id]);
-  return mapPostRow(rows[0], images.get(id) || []);
+  const postersById = await loadPosterUsersByIds([rows[0].poster_id]);
+  return mapPostRow(rows[0], images.get(id) || [], postersById.get(rows[0].poster_id) || null);
 }
 
 export async function getPostsBatch(ids) {
   const byId = await hydratePosts(ids);
   return (ids || []).map((id) => byId[asString(id)]).filter(Boolean);
+}
+
+/** Active posts whose sound_meta.soundId matches (Neon source of truth for sound grids). */
+export async function listPostsBySound(soundId, limit = 40) {
+  const db = requirePool();
+  const id = asString(soundId);
+  if (!id) return [];
+  const safeLimit = Math.min(60, Math.max(1, Number(limit) || 40));
+  const { rows } = await db.query(
+    `SELECT id FROM posts
+     WHERE status = 'active'
+       AND sound_meta IS NOT NULL
+       AND sound_meta->>'soundId' = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [id, safeLimit]
+  );
+  return getPostsBatch(rows.map((r) => r.id));
 }
 
 async function replacePostImages(client, postId, imageUrls) {
@@ -307,6 +366,28 @@ export async function updatePost(userId, postId, payload = {}) {
     if (payload.images != null || payload.coverImageUrl != null) {
       await replacePostImages(client, id, images.length ? images : coverUrl ? [coverUrl] : []);
     }
+
+    // Keep deal-room cards in sync when sellers edit title/price/media.
+    const nextTitle =
+      payload.title !== undefined
+        ? asString(payload.title)?.slice(0, 80) || null
+        : existing.title || null;
+    const nextLocation =
+      payload.location !== undefined ? payload.location : existing.location || null;
+    const snapshot = postSnapshotFromPost({
+      ...existing,
+      title: nextTitle,
+      price,
+      coverImageUrl: coverUrl,
+      images: images.length ? images : coverUrl ? [coverUrl] : existing.images || [],
+      location: nextLocation,
+    });
+    await client.query(
+      `UPDATE chat_threads
+       SET post_snapshot = $2::jsonb, updated_at = now()
+       WHERE post_id = $1`,
+      [id, JSON.stringify(snapshot)]
+    );
     await client.query(
       `UPDATE post_scores SET hashtags = $2::text[], updated_at = now() WHERE post_id = $1`,
       [id, hashtags]
@@ -395,13 +476,12 @@ export function postSnapshotFromPost(post) {
     asString(post.coverImageUrl) ||
     (Array.isArray(post.images) ? asString(post.images[0]) : '') ||
     null;
-  const title =
-    asString(post.title).slice(0, 80) ||
-    asString(post.description).split('\n')[0].slice(0, 80) ||
-    'Listing';
+  const price = typeof post.price === 'number' && post.price > 0 ? post.price : null;
+  // Title field only — never description/caption, never price stub
+  const title = asString(post.title).slice(0, 80) || 'Product';
   return {
     title,
-    price: typeof post.price === 'number' ? post.price : null,
+    price,
     currency: 'NGN',
     imageUrl,
     location: [post.location?.city, post.location?.state].filter(Boolean).join(', ') || null,
@@ -452,7 +532,8 @@ export async function searchPosts(searchQuery, limit = 50) {
     `SELECT id FROM posts
      WHERE status = 'active'
        AND (
-         lower(coalesce(description, '')) LIKE ANY($1::text[])
+         lower(coalesce(title, '')) LIKE ANY($1::text[])
+         OR lower(coalesce(description, '')) LIKE ANY($1::text[])
          OR lower(coalesce(location->>'city', '')) LIKE ANY($1::text[])
          OR lower(coalesce(location->>'state', '')) LIKE ANY($1::text[])
          OR EXISTS (

@@ -1,8 +1,20 @@
-// Client-side hooks for reading user data (read-only)
-import { PublicUser, User } from '@/types';
-import { Unsubscribe, doc, getDoc, onSnapshot } from 'firebase/firestore';
+// Client-side hooks for reading user data.
+//
+// Public identity (avatars / names / store cards) lives in lib/hooks/use-user-identity.ts
+// backed by TanStack Query + Neon. Re-exported here so existing import paths keep working.
+//
+// useUserProfile below is the full own-profile Firestore listener (settings, payouts, admin)
+// — it still needs fields Neon does not yet store (payoutDetails, storePolicies, etc.).
+// Public-facing avatar/name reads must NOT use it; use useUserIdentity / usePublicUserProfile.
+import { User } from '@/types';
+import { Unsubscribe, doc, onSnapshot } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { firestore } from '../config';
+
+export {
+  usePublicUserProfile,
+  usePublicUserProfileOnce,
+} from '@/lib/hooks/use-user-identity';
 
 function isOfflineFirestoreError(error: any): boolean {
   const code = String(error?.code || '').toLowerCase();
@@ -94,140 +106,6 @@ export function useUserProfile(userId: string | null) {
   return { user, loading, error };
 }
 
-// Get public user profile (for store browsing)
-export function usePublicUserProfile(userId: string | null) {
-  const [user, setUser] = useState<PublicUser | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
-    if (!userId) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
-
-    const unsubscribe: Unsubscribe = onSnapshot(
-      doc(firestore, 'users', userId),
-      (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          // Filter to only public fields
-          setUser({
-            id: snapshot.id,
-            displayName: data.displayName,
-            storeName: data.storeName,
-            storeDescription: data.storeDescription,
-            storeLogoUrl: data.storeLogoUrl,
-            storeBannerUrl: data.storeBannerUrl,
-            storeLocation: data.storeLocation
-              ? {
-                  state: data.storeLocation.state,
-                  lga: data.storeLocation.lga,
-                  city: data.storeLocation.city,
-                }
-              : undefined,
-            businessType: data.businessType,
-            storePolicies: data.storePolicies,
-            bio: data.bio || '',
-            followerCount: data.followerCount || 0,
-            followingCount: data.followingCount || 0,
-          } as PublicUser);
-        } else {
-          setUser(null);
-        }
-        setLoading(false);
-        setError(null);
-      },
-      (err) => {
-        if (!isOfflineFirestoreError(err)) {
-          console.error('Error fetching public user profile:', err);
-        }
-        setError(err);
-        setLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [userId]);
-
-  return { user, loading, error };
-}
-
-const publicProfileCache = new Map<string, PublicUser | null>();
-
-function mapPublicUser(snapshot: { id: string; exists: () => boolean; data: () => Record<string, any> | undefined }): PublicUser | null {
-  if (!snapshot.exists()) return null;
-  const data = snapshot.data() || {};
-  return {
-    id: snapshot.id,
-    displayName: data.displayName,
-    storeName: data.storeName,
-    storeDescription: data.storeDescription,
-    storeLogoUrl: data.storeLogoUrl,
-    storeBannerUrl: data.storeBannerUrl,
-    storeLocation: data.storeLocation
-      ? {
-          state: data.storeLocation.state,
-          lga: data.storeLocation.lga,
-          city: data.storeLocation.city,
-        }
-      : undefined,
-    businessType: data.businessType,
-    storePolicies: data.storePolicies,
-    bio: data.bio || '',
-    followerCount: data.followerCount || 0,
-    followingCount: data.followingCount || 0,
-  } as PublicUser;
-}
-
-export function usePublicUserProfileOnce(userId: string | null) {
-  const cached = userId ? publicProfileCache.get(userId) : undefined;
-  const [user, setUser] = useState<PublicUser | null>(cached ?? null);
-  const [loading, setLoading] = useState(cached === undefined && Boolean(userId));
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
-    if (!userId) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
-
-    if (publicProfileCache.has(userId)) {
-      setUser(publicProfileCache.get(userId) ?? null);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-
-    getDoc(doc(firestore, 'users', userId))
-      .then((snapshot) => {
-        if (cancelled) return;
-        const mapped = mapPublicUser(snapshot);
-        publicProfileCache.set(userId, mapped);
-        setUser(mapped);
-        setLoading(false);
-        setError(null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (!isOfflineFirestoreError(err)) {
-          console.error('Error fetching public user profile:', err);
-        }
-        setError(err);
-        setLoading(false);
-      });
-
-    return () => { cancelled = true; };
-  }, [userId]);
-
-  return { user, loading, error };
-}
-
 // Hardened Update Helper for User Profile (Identity Layer)
 export async function updateUserProfile(
   userId: string, 
@@ -239,5 +117,6 @@ export async function updateUserProfile(
     ...data,
     updatedAt: serverTimestamp(),
   });
+  const { invalidateUserIdentity } = await import('@/lib/hooks/use-user-identity');
+  invalidateUserIdentity(userId);
 }
-

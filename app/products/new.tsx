@@ -9,20 +9,13 @@ import { premiumShadow } from '@/lib/theme/styles';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
-import {
-  pickAudio,
-  pickMultipleImages,
-  pickVideo,
-  uploadAudio,
-  uploadImages,
-  uploadVideo,
-} from '@/lib/utils/image-upload';
+import { buildUserMediaPath } from '@/lib/utils/media-path';
+import { pickAudio, pickMultipleImages, pickVideo, uploadAudio, uploadImages, uploadVideo } from '@/lib/utils/image-upload';
 import { ProductCategory } from '@/types';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Dimensions,
   Image,
   KeyboardAvoidingView,
@@ -35,9 +28,10 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert } from '@/components/app-alert';
 
 const { width } = Dimensions.get('window');
 type Step = 1 | 2 | 3;
@@ -333,14 +327,14 @@ export default function NewProductScreen() {
 
       if (selectedVideoUri) {
         const extension = inferFileExtension(selectedVideoUri, 'mp4');
-        const path = `products/${user.uid}/video_${Date.now()}.${extension}`;
+        const path = buildUserMediaPath('products', user.uid, `video_${Date.now()}.${extension}`);
         const uploadedVideo = await uploadVideo(selectedVideoUri, path);
         videoUrl = uploadedVideo.url;
       }
 
       if (selectedAudioUri) {
         const extension = inferFileExtension(selectedAudioUri, 'm4a');
-        const path = `products/${user.uid}/audio_${Date.now()}.${extension}`;
+        const path = buildUserMediaPath('products', user.uid, `audio_${Date.now()}.${extension}`);
         const uploadedAudio = await uploadAudio(selectedAudioUri, path);
         audioDescription = uploadedAudio.url;
       }

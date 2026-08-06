@@ -1,28 +1,32 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { PaystackCheckout } from '@/components/market/paystack-checkout';
-import { paymentsApi } from '@/lib/api/payments';
+import { canStartNewEscrowPayment, paymentsApi } from '@/lib/api/payments';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { haptics } from '@/lib/utils/haptics';
 import {
   clearPendingEscrowCheckout,
+  markPendingEscrowCheckoutSubmitted,
   readPendingEscrowCheckout,
   savePendingEscrowCheckout,
 } from '@/lib/utils/pending-escrow-checkout';
 import type { MarketPost } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const ACCENT = '#A67C52';
 const PAYSTACK_PUBLIC_KEY = process.env.EXPO_PUBLIC_PAYSTACK_PUBLIC_KEY || '';
+const FINALIZE_PENDING_MAX_ATTEMPTS = 4;
+const FINALIZE_PENDING_DELAY_MS = 1200;
 
 function formatNgn(value: number): string {
   return `NGN ${value.toLocaleString()}`;
@@ -30,6 +34,34 @@ function formatNgn(value: number): string {
 
 function buildDefaultReference(): string {
   return `ikm_escrow_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTerminalFailedPaymentMessage(message: string): boolean {
+  const normalized = String(message || '').toLowerCase();
+  return (
+    normalized.includes('abandoned') ||
+    normalized.includes('failed') ||
+    normalized.includes('reversed') ||
+    normalized.includes('cancelled') ||
+    normalized.includes('canceled') ||
+    normalized.includes('declined')
+  );
+}
+
+function isRetryablePendingPaymentMessage(message: string): boolean {
+  const normalized = String(message || '').toLowerCase();
+  if (isTerminalFailedPaymentMessage(normalized)) return false;
+  return (
+    normalized.includes('pending') ||
+    normalized.includes('not successful') ||
+    normalized.includes('not confirmed') ||
+    normalized.includes('try again') ||
+    normalized.includes('could not be verified')
+  );
 }
 
 type PaymentState =
@@ -44,6 +76,8 @@ interface PaymentSheetModalProps {
   visible: boolean;
   onClose: () => void;
   post: MarketPost;
+  /** Agreed unit price (accepted offer or listed). Must match what the buyer pays. */
+  unitPrice: number;
   quantity: number;
   deliveryAddress: string;
   deliveryState: string;
@@ -61,6 +95,7 @@ export default function PaymentSheetModal({
   visible,
   onClose,
   post,
+  unitPrice,
   quantity,
   deliveryAddress,
   deliveryState,
@@ -82,20 +117,31 @@ export default function PaymentSheetModal({
   const [verifyingText, setVerifyingText] = useState('Verifying escrow transaction...');
   const [paystackRetryKey, setPaystackRetryKey] = useState(0);
 
-  const total = (post.price || 0) * quantity;
+  const safeUnitPrice = Math.max(0, Number(unitPrice) || 0);
+  const total = safeUnitPrice * Math.max(1, Number(quantity) || 1);
+  const postId = String(post.id || '').trim();
   const finalizeAttemptRef = useRef(false);
+  const pendingResumeCheckedRef = useRef(false);
+  const triggerFinalizationRef = useRef<
+    (
+      verifyRef: string,
+      overrideUnitPrice?: number,
+      options?: { quietTerminalUnpaid?: boolean; paidInspectRetry?: boolean }
+    ) => Promise<void>
+  >(async () => {});
 
   const handleClose = () => {
     if (paymentState === 'GATEWAY' || paymentState === 'CONFIRMING') {
       Alert.alert(
         'Confirm Cancel',
-        'Are you sure you want to exit? If you have completed payment, we will still check and verify your order.',
+        'If you already paid (or a bank/USSD charge is still processing), keep this checkout. We will verify the same payment reference — we will not throw it away.',
         [
           { text: 'Keep Checking', style: 'cancel' },
           {
             text: 'Yes, Exit',
             style: 'destructive',
             onPress: () => {
+              // Money-safety: never clear pending on UI exit. Reopen will inspect Paystack first.
               setPaymentState('REVIEW');
               onClose();
             },
@@ -108,72 +154,95 @@ export default function PaymentSheetModal({
     }
   };
 
-  useEffect(() => {
-    if (!visible) return;
-
-    const checkPendingTransaction = async () => {
-      try {
-        const pending = await readPendingEscrowCheckout();
-        if (pending && pending.post?.id === post.id && pending.buyerId === buyerId) {
-          Alert.alert(
-            'Unfinished Checkout Found',
-            'We found an interrupted payment. Would you like to check its completion status now?',
-            [
-              { text: 'Start Fresh', style: 'cancel', onPress: () => void clearPendingEscrowCheckout() },
-              {
-                text: 'Check Status',
-                onPress: () => {
-                  setReference(pending.reference);
-                  setPaymentState('CONFIRMING');
-                  triggerFinalization(pending.reference);
-                },
-              },
-            ]
-          );
-        }
-      } catch (e) {
-        console.warn('Error reading pending checkout:', e);
-      }
-    };
-
-    void checkPendingTransaction();
-  }, [visible]);
-
-  const triggerFinalization = useCallback(async (verifyRef: string) => {
+  const triggerFinalization = useCallback(async (
+    verifyRef: string,
+    overrideUnitPrice?: number,
+    options?: { quietTerminalUnpaid?: boolean; paidInspectRetry?: boolean }
+  ) => {
     if (finalizeAttemptRef.current) return;
     finalizeAttemptRef.current = true;
+
+    const unitForFinalize =
+      typeof overrideUnitPrice === 'number' && overrideUnitPrice > 0
+        ? overrideUnitPrice
+        : safeUnitPrice;
+    const quietTerminalUnpaid = options?.quietTerminalUnpaid === true;
+    const paidInspectRetry = options?.paidInspectRetry === true;
+    const normalizedRef = String(verifyRef || '').trim();
 
     setVerifyingText('Confirming secure escrow transaction...');
 
     try {
-      setVerifyingText('Finalizing your order...');
-
-      const response = await paymentsApi.finalizeMarketEscrowPayment({
-        reference: verifyRef,
-        postId: post.id || '',
-        quantity,
-        deliveryAddress,
-        buyerPhone,
-        dealThreadId: fromChatId,
-        chatId: fromChatId,
-      });
-
-      if (response && response.success && response.orderId) {
-        haptics.success();
-        setCreatedOrderId(response.orderId);
-        setCreatedDealThreadId(response.dealThreadId || fromChatId || null);
-        setPaymentState('SUCCESS');
-        await clearPendingEscrowCheckout();
-        finalizeAttemptRef.current = false;
-        return;
+      if (!normalizedRef) {
+        throw new Error('Missing payment reference.');
       }
 
-      if (response?.alreadyExists) {
+      setVerifyingText('Finalizing your order...');
+
+      // Prefer locked pending checkout values so a UI qty/price edit cannot desync Paystack.
+      const pendingForFinalize = await readPendingEscrowCheckout({ postId, buyerId });
+      const pendingQty = Number(pendingForFinalize?.quantity || 0);
+      const finalizeQuantity =
+        Number.isFinite(pendingQty) && pendingQty > 0
+          ? Math.max(1, Math.floor(pendingQty))
+          : quantity;
+      const finalizeUnitPrice =
+        pendingForFinalize && Number(pendingForFinalize.finalPrice) > 0
+          ? Number(pendingForFinalize.finalPrice)
+          : unitForFinalize;
+      const finalizeDelivery =
+        String(pendingForFinalize?.deliveryAddress || deliveryAddress || '').trim() ||
+        deliveryAddress;
+      const finalizePhone =
+        String(pendingForFinalize?.buyerPhone || buyerPhone || '').trim() || buyerPhone;
+      const finalizeDealThread =
+        pendingForFinalize?.fromChatId || fromChatId;
+
+      let response: Awaited<ReturnType<typeof paymentsApi.finalizeMarketEscrowPayment>> | null = null;
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt < FINALIZE_PENDING_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          response = await paymentsApi.finalizeMarketEscrowPayment({
+            reference: normalizedRef,
+            postId: postId || post.id || '',
+            quantity: finalizeQuantity,
+            deliveryAddress: finalizeDelivery,
+            buyerPhone: finalizePhone,
+            dealThreadId: finalizeDealThread,
+            chatId: finalizeDealThread,
+            agreedUnitPrice: finalizeUnitPrice,
+            sellerId: post.posterId,
+            itemTitle: String(post.title || post.description || 'Marketplace Item').slice(0, 80),
+          });
+          lastError = null;
+          break;
+        } catch (attemptError) {
+          lastError = attemptError;
+          const attemptMessage = String((attemptError as any)?.message || '');
+          if (isTerminalFailedPaymentMessage(attemptMessage)) {
+            throw attemptError;
+          }
+          if (
+            !isRetryablePendingPaymentMessage(attemptMessage) ||
+            attempt === FINALIZE_PENDING_MAX_ATTEMPTS - 1
+          ) {
+            throw attemptError;
+          }
+          setVerifyingText('Payment is still confirming…');
+          await sleep((attempt + 1) * FINALIZE_PENDING_DELAY_MS);
+        }
+      }
+
+      if (lastError) throw lastError;
+
+      if (response && (response.success || response.alreadyExists) && response.orderId) {
         haptics.success();
         setCreatedOrderId(response.orderId);
         setCreatedDealThreadId(response.dealThreadId || fromChatId || null);
         setPaymentState('SUCCESS');
-        await clearPendingEscrowCheckout();
+        // Only safe clear: order exists for this payment.
+        await clearPendingEscrowCheckout({ postId, buyerId });
         finalizeAttemptRef.current = false;
         return;
       }
@@ -181,59 +250,329 @@ export default function PaymentSheetModal({
       throw new Error(response?.message || 'Order creation failed');
     } catch (err: any) {
       finalizeAttemptRef.current = false;
-      haptics.error();
       const msg = String(err?.message || '');
-      setErrorMessage(msg || 'Unable to finalize payment. Please try again.');
+
+      if (isTerminalFailedPaymentMessage(msg)) {
+        // Never trust a single error string — re-inspect Paystack before discarding recovery data.
+        try {
+          const inspected = await paymentsApi.inspectEscrowPaymentStatus({
+            reference: normalizedRef,
+            amount: total,
+            email: buyerEmail,
+          });
+
+          if (inspected.paid) {
+            if (paidInspectRetry) {
+              // Paid but order create still failing — keep recovery data, never clear.
+              haptics.error();
+              setReference(normalizedRef);
+              setErrorMessage(
+                'Payment is confirmed, but order creation failed. Tap Complete order again. Do not pay again. Save this reference for support.'
+              );
+              setPaymentState('ERROR');
+              return;
+            }
+            setVerifyingText('Payment found — creating your order…');
+            finalizeAttemptRef.current = false;
+            await triggerFinalizationRef.current(normalizedRef, unitForFinalize, {
+              quietTerminalUnpaid,
+              paidInspectRetry: true,
+            });
+            return;
+          }
+
+          if (inspected.terminalUnpaid || inspected.safeToStartNewPayment) {
+            // Confirmed unpaid / never charged for THIS product reference only.
+            await clearPendingEscrowCheckout({ postId, buyerId });
+            setReference('');
+            setErrorMessage('');
+            setPaymentState('REVIEW');
+            if (!quietTerminalUnpaid) {
+              haptics.light();
+              Alert.alert(
+                'Payment not completed',
+                'Paystack confirms this checkout was not charged. Tap Pay to Escrow to start a new payment.'
+              );
+            }
+            return;
+          }
+        } catch (inspectError) {
+          console.warn('Payment inspect after finalize failure:', inspectError);
+        }
+
+        // Ambiguous: keep pending + reference so the buyer can recover a real charge.
+        haptics.error();
+        setReference(normalizedRef);
+        setErrorMessage(
+          'We could not confirm payment status yet. If you were charged, tap Complete order — do not pay again.'
+        );
+        setPaymentState('ERROR');
+        return;
+      }
+
+      haptics.error();
+      setReference(normalizedRef);
+      setErrorMessage(
+        msg
+          ? `${msg} If Paystack charged you, tap Complete order — do not start a new payment.`
+          : 'Unable to finalize payment. If you were charged, tap Complete order.'
+      );
       setPaymentState('ERROR');
     }
-  }, [post.id, quantity, deliveryAddress, buyerPhone, fromChatId]);
+  }, [
+    postId,
+    post.posterId,
+    post.title,
+    post.description,
+    quantity,
+    deliveryAddress,
+    buyerPhone,
+    fromChatId,
+    safeUnitPrice,
+    total,
+    buyerEmail,
+    buyerId,
+  ]);
+
+  triggerFinalizationRef.current = triggerFinalization;
+
+  useEffect(() => {
+    if (!visible) {
+      pendingResumeCheckedRef.current = false;
+      return;
+    }
+    if (!postId || !buyerId) return;
+    if (pendingResumeCheckedRef.current) return;
+    pendingResumeCheckedRef.current = true;
+
+    const checkPendingTransaction = async () => {
+      try {
+        // Scoped to this product only — other posts' pending payments are ignored.
+        const pending = await readPendingEscrowCheckout({ postId, buyerId });
+        if (!pending) return;
+
+        setReference(pending.reference);
+        setPaymentState('CONFIRMING');
+        setVerifyingText('Checking your previous payment with Paystack…');
+
+        const inspected = await paymentsApi.inspectEscrowPaymentStatus({
+          reference: pending.reference,
+          amount: Number(pending.amount) || total,
+          email: pending.buyerEmail || buyerEmail,
+        });
+
+        // Gateway reported success earlier — always attempt order create first.
+        if (inspected.paid || pending.phase === 'submitted') {
+          setVerifyingText(
+            inspected.paid
+              ? 'Payment found — finishing your order…'
+              : 'Finishing a payment that already reported success…'
+          );
+          void triggerFinalizationRef.current(
+            pending.reference,
+            Number(pending.finalPrice) || undefined,
+            { quietTerminalUnpaid: true }
+          );
+          return;
+        }
+
+        const gate = canStartNewEscrowPayment({
+          inspected,
+          phase: pending.phase,
+          createdAtMs: pending.createdAtMs,
+        });
+
+        if (inspected.terminalUnpaid || (gate.allow && inspected.safeToStartNewPayment)) {
+          // No charge for this product reference — clear slot so buyer can pay immediately.
+          await clearPendingEscrowCheckout({ postId, buyerId });
+          setReference('');
+          setPaymentState('REVIEW');
+          return;
+        }
+
+        // Pending/unknown (bank transfer, slow webhook): keep recovery data, let buyer choose.
+        setErrorMessage(
+          gate.allow
+            ? `${gate.label} Tap Complete order if you paid, or Pay again if you were not charged.`
+            : gate.label
+        );
+        setPaymentState('ERROR');
+      } catch (e) {
+        console.warn('Error resuming pending checkout:', e);
+        // Keep pending on inspect failure — never discard recovery data because the network failed.
+        try {
+          const pending = await readPendingEscrowCheckout({ postId, buyerId });
+          if (pending) {
+            setReference(pending.reference);
+            setErrorMessage(
+              'Could not reach Paystack to check your last payment for this item. Tap Complete order if you paid.'
+            );
+            setPaymentState('ERROR');
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    void checkPendingTransaction();
+  }, [visible, postId, buyerId, total, buyerEmail]);
+
+  const beginFreshPaystackSession = async () => {
+    const defaultRef = buildDefaultReference();
+    const mockCallbackUrl = 'https://chatcart-mobile.web.app/paystack-callback';
+
+    const initialized = await paymentsApi.initializeEscrowPayment({
+      amount: total,
+      email: buyerEmail,
+      callbackUrl: mockCallbackUrl,
+      reference: defaultRef,
+      metadata: {
+        source: 'chatcart-market-buy',
+        postId: post.id,
+        buyerId,
+        sellerId: post.posterId,
+        quantity,
+        agreedUnitPrice: safeUnitPrice,
+        dealThreadId: fromChatId || null,
+        firebaseUid: buyerId,
+        deliveryAddress,
+        buyerPhone,
+        buyerEmail,
+        buyerName,
+        itemTitle: String(post.title || post.description || 'Marketplace Item').slice(0, 80),
+      },
+    });
+
+    const finalRef = initialized.reference || defaultRef;
+    setReference(finalRef);
+
+    await savePendingEscrowCheckout({
+      reference: finalRef,
+      amount: total,
+      buyerId,
+      buyerName,
+      buyerEmail,
+      buyerPhone,
+      post,
+      quantity,
+      finalPrice: safeUnitPrice,
+      deliveryAddress,
+      fromChatId,
+      deliveryState,
+      deliveryCity,
+      addressLine,
+      createdAtMs: Date.now(),
+      phase: 'initialized',
+    });
+
+    setPaymentState('GATEWAY');
+  };
 
   const handleStartPayment = async () => {
     try {
+      if (!(safeUnitPrice > 0)) {
+        throw new Error('Invalid checkout price. Go back and reopen Complete purchase.');
+      }
       haptics.light();
       setPaymentState('INITIALIZING');
       setErrorMessage('');
       finalizeAttemptRef.current = false;
 
-      const defaultRef = buildDefaultReference();
-      const mockCallbackUrl = 'https://chatcart-mobile.web.app/paystack-callback';
+      // Only inspect THIS product's pending payment — never Product B's.
+      const existing = await readPendingEscrowCheckout({ postId, buyerId });
+      if (existing) {
+        const inspected = await paymentsApi.inspectEscrowPaymentStatus({
+          reference: existing.reference,
+          amount: Number(existing.amount) || total,
+          email: existing.buyerEmail || buyerEmail,
+        });
 
-      const initialized = await paymentsApi.initializeEscrowPayment({
-        amount: total,
-        email: buyerEmail,
-        callbackUrl: mockCallbackUrl,
-        reference: defaultRef,
-        metadata: {
-          source: 'chatcart-market-buy',
-          postId: post.id,
-          buyerId,
-          sellerId: post.posterId,
-          quantity,
-        },
-      });
+        // Already paid — finish that order. Never open a second charge.
+        if (inspected.paid || existing.phase === 'submitted') {
+          setReference(existing.reference);
+          setPaymentState('CONFIRMING');
+          setVerifyingText('Previous payment found — finishing your order…');
+          void triggerFinalization(
+            existing.reference,
+            Number(existing.finalPrice) || undefined
+          );
+          return;
+        }
 
-      const finalRef = initialized.reference || defaultRef;
-      setReference(finalRef);
+        const gate = canStartNewEscrowPayment({
+          inspected,
+          phase: existing.phase,
+          createdAtMs: existing.createdAtMs,
+        });
 
-      await savePendingEscrowCheckout({
-        reference: finalRef,
-        amount: total,
-        buyerId,
-        buyerName,
-        buyerEmail,
-        buyerPhone,
-        post,
-        quantity,
-        finalPrice: post.price || 0,
-        deliveryAddress,
-        fromChatId,
-        deliveryState,
-        deliveryCity,
-        addressLine,
-        createdAtMs: Date.now(),
-      });
+        if (!gate.allow) {
+          setReference(existing.reference);
+          setPaymentState('ERROR');
+          setErrorMessage(gate.label);
+          Alert.alert('Unfinished payment found', gate.label, [
+            {
+              text: 'Complete order',
+              onPress: () => {
+                setPaymentState('CONFIRMING');
+                void triggerFinalization(
+                  existing.reference,
+                  Number(existing.finalPrice) || undefined
+                );
+              },
+            },
+            {
+              text: 'I was not charged — new payment',
+              style: 'destructive',
+              onPress: () => {
+                void (async () => {
+                  const again = await paymentsApi.inspectEscrowPaymentStatus({
+                    reference: existing.reference,
+                    amount: Number(existing.amount) || total,
+                    email: existing.buyerEmail || buyerEmail,
+                  });
+                  if (again.paid) {
+                    setReference(existing.reference);
+                    setPaymentState('CONFIRMING');
+                    void triggerFinalization(
+                      existing.reference,
+                      Number(existing.finalPrice) || undefined
+                    );
+                    return;
+                  }
+                  const againGate = canStartNewEscrowPayment({
+                    inspected: again,
+                    phase: existing.phase,
+                    createdAtMs: existing.createdAtMs,
+                  });
+                  if (!againGate.allow) {
+                    const mins = Math.max(1, Math.ceil(againGate.waitMsRemaining / 60000));
+                    Alert.alert(
+                      'Still processing',
+                      `${againGate.label}\n\nYou can try a new payment in about ${mins} minute(s) if no money left your account. Keep this reference: ${existing.reference}`,
+                      [{ text: 'OK' }]
+                    );
+                    setReference(existing.reference);
+                    setPaymentState('ERROR');
+                    setErrorMessage(againGate.label);
+                    return;
+                  }
+                  await clearPendingEscrowCheckout({ postId, buyerId });
+                  setPaymentState('INITIALIZING');
+                  await beginFreshPaystackSession();
+                })();
+              },
+            },
+            { text: 'Cancel', style: 'cancel', onPress: () => setPaymentState('REVIEW') },
+          ]);
+          return;
+        }
 
-      setPaymentState('GATEWAY');
+        // Safe: not found / abandoned / grace elapsed — drop this product slot and start fresh.
+        await clearPendingEscrowCheckout({ postId, buyerId });
+      }
+
+      await beginFreshPaystackSession();
     } catch (error: any) {
       haptics.error();
       setErrorMessage(error?.message || 'Failed to initialize payment gateway.');
@@ -242,23 +581,35 @@ export default function PaymentSheetModal({
   };
 
   const handlePaystackSuccess = useCallback((data: any) => {
-    const sdkReference = data?.reference || data?.transactionRef || reference;
-    if (sdkReference && sdkReference !== reference) {
+    const sdkReference = String(data?.reference || data?.transactionRef || reference || '').trim();
+    if (sdkReference) {
       setReference(sdkReference);
     }
+    // Persist submitted phase BEFORE finalize so crash mid-finalize stays recoverable.
+    void markPendingEscrowCheckoutSubmitted(
+      { postId, buyerId },
+      sdkReference || reference
+    );
     setPaymentState('CONFIRMING');
     triggerFinalization(sdkReference || reference);
-  }, [reference, triggerFinalization]);
+  }, [reference, triggerFinalization, postId, buyerId]);
 
   const handlePaystackCancel = useCallback(() => {
     haptics.light();
-    setPaymentState('REVIEW');
+    // Keep pending — cancel UI is not proof of unpaid (bank/USSD can still settle).
+    setErrorMessage(
+      'Checkout closed. If money left your account, tap Complete order with the same reference — do not pay again.'
+    );
+    setPaymentState('ERROR');
   }, []);
 
   const handlePaystackError = useCallback((error: any) => {
     haptics.error();
+    // Keep pending until Paystack inspect proves unpaid.
     const msg = error?.message || 'Payment failed. Please try again.';
-    setErrorMessage(msg);
+    setErrorMessage(
+      `${msg} If you were charged, tap Complete order — do not start a new payment yet.`
+    );
     setPaymentState('ERROR');
   }, []);
 
@@ -270,9 +621,27 @@ export default function PaymentSheetModal({
   };
 
   const handleVerifyManualPress = () => {
+    const ref = reference;
+    if (!ref) {
+      void (async () => {
+        const pending = await readPendingEscrowCheckout({ postId, buyerId });
+        if (pending?.reference) {
+          setReference(pending.reference);
+          setPaymentState('CONFIRMING');
+          void triggerFinalization(
+            pending.reference,
+            Number(pending.finalPrice) || undefined
+          );
+          return;
+        }
+        Alert.alert('No payment to complete', 'Start a new payment with Pay to Escrow.');
+        setPaymentState('REVIEW');
+      })();
+      return;
+    }
     haptics.light();
     setPaymentState('CONFIRMING');
-    triggerFinalization(reference);
+    triggerFinalization(ref);
   };
 
   const handleSuccessDone = () => {
@@ -295,8 +664,12 @@ export default function PaymentSheetModal({
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Item</Text>
                 <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>
-                  {post.description?.trim() || 'Marketplace Post'}
+                  {String(post.title || post.description || 'Marketplace Post').trim()}
                 </Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Unit price</Text>
+                <Text style={[styles.value, { color: colors.text }]}>{formatNgn(safeUnitPrice)}</Text>
               </View>
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Quantity</Text>
@@ -420,21 +793,35 @@ export default function PaymentSheetModal({
               <Text style={[styles.errorSub, { color: colors.textSecondary }]}>
                 {errorMessage || 'Unable to confirm payment status at this moment.'}
               </Text>
+              <Text style={[styles.errorSub, { color: colors.textSecondary, marginTop: 8 }]}>
+                If Paystack already charged you, tap Complete order first — never start a second payment until that fails with “not charged”.
+              </Text>
+              {!!reference && (
+                <TouchableOpacity
+                  onPress={() => {
+                    void Share.share({ message: `ChatCart payment reference: ${reference}` });
+                  }}
+                >
+                  <Text style={[styles.errorSub, { color: ACCENT, marginTop: 8 }]}>
+                    Reference: {reference} (tap to share)
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.actionButtons}>
               <TouchableOpacity
-                style={[styles.outlineButton, { borderColor: colors.border }]}
-                onPress={handleRetryPayment}
-              >
-                <Text style={[styles.outlineButtonText, { color: colors.text }]}>Retry Payment</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
                 style={[styles.primaryButton, { backgroundColor: ACCENT, flex: 1 }]}
                 onPress={handleVerifyManualPress}
               >
-                <Text style={styles.buttonText}>Verify Payment</Text>
+                <Text style={styles.buttonText}>Complete order</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.outlineButton, { borderColor: colors.border }]}
+                onPress={handleRetryPayment}
+              >
+                <Text style={[styles.outlineButtonText, { color: colors.text }]}>Pay again</Text>
               </TouchableOpacity>
             </View>
           </View>

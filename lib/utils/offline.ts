@@ -1,14 +1,14 @@
-// Offline support and data caching utilities
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { appStorage } from '@/lib/storage/mmkv';
 
-const CACHE_PREFIX = '@ikm_cache_';
-const QUEUE_PREFIX = '@ikm_queue_';
+/**
+ * Offline **write queue** only — not a second server-state cache.
+ *
+ * Server reads go through TanStack Query + MMKV persistence (`lib/query/*`).
+ * This module queues mutations (messages/products/orders) for replay when
+ * connectivity returns. Do not add TTL read-caches here.
+ */
 
-export interface CachedData<T> {
-  data: T;
-  timestamp: number;
-  expiresAt: number;
-}
+const QUEUE_KEY = '@ikm_queue_writes_v1';
 
 export interface QueuedWrite {
   id: string;
@@ -19,176 +19,70 @@ export interface QueuedWrite {
   retryCount?: number;
 }
 
-/**
- * Cache data with expiration
- */
-export async function cacheData<T>(
-  key: string,
-  data: T,
-  ttl: number = 3600000 // 1 hour default
-): Promise<void> {
-  const cached: CachedData<T> = {
-    data,
-    timestamp: Date.now(),
-    expiresAt: Date.now() + ttl,
-  };
-  await AsyncStorage.setItem(`${CACHE_PREFIX}${key}`, JSON.stringify(cached));
-}
-
-/**
- * Get cached data if not expired
- */
-export async function getCachedData<T>(key: string): Promise<T | null> {
+function readQueue(): QueuedWrite[] {
   try {
-    const cachedStr = await AsyncStorage.getItem(`${CACHE_PREFIX}${key}`);
-    if (!cachedStr) return null;
-
-    const cached: CachedData<T> = JSON.parse(cachedStr);
-    
-    // Check if expired
-    if (Date.now() > cached.expiresAt) {
-      await AsyncStorage.removeItem(`${CACHE_PREFIX}${key}`);
-      return null;
-    }
-
-    return cached.data;
-  } catch (error) {
-    console.error('Error getting cached data:', error);
-    return null;
-  }
-}
-
-/**
- * Clear cached data
- */
-export async function clearCache(key: string): Promise<void> {
-  await AsyncStorage.removeItem(`${CACHE_PREFIX}${key}`);
-}
-
-/**
- * Clear all cached data
- */
-export async function clearAllCache(): Promise<void> {
-  const keys = await AsyncStorage.getAllKeys();
-  const cacheKeys = keys.filter((key) => key.startsWith(CACHE_PREFIX));
-  await AsyncStorage.multiRemove(cacheKeys);
-}
-
-/**
- * Queue a write operation for offline sync
- */
-export async function queueWrite(write: QueuedWrite): Promise<void> {
-  try {
-    const queue = await getWriteQueue();
-    const nextQueue = [...queue];
-
-    // Avoid duplicate queued market messages with the same client id.
-    if (write.type === 'marketMessage' && write.action === 'create') {
-      const chatId = String(write.data?.chatId || '').trim();
-      const clientMessageId = String(write.data?.clientMessageId || '').trim();
-      if (chatId && clientMessageId) {
-        const existingIndex = nextQueue.findIndex((queued) => {
-          if (queued.type !== 'marketMessage' || queued.action !== 'create') return false;
-          return (
-            String(queued.data?.chatId || '').trim() === chatId &&
-            String(queued.data?.clientMessageId || '').trim() === clientMessageId
-          );
-        });
-        if (existingIndex >= 0) {
-          nextQueue[existingIndex] = {
-            ...nextQueue[existingIndex],
-            ...write,
-            timestamp: write.timestamp || Date.now(),
-          };
-          await AsyncStorage.setItem(QUEUE_PREFIX, JSON.stringify(nextQueue));
-          return;
-        }
-      }
-    }
-
-    nextQueue.push(write);
-    await AsyncStorage.setItem(QUEUE_PREFIX, JSON.stringify(nextQueue));
-  } catch (error) {
-    console.error('Error queueing write:', error);
-  }
-}
-
-/**
- * Get all queued writes
- */
-export async function getWriteQueue(): Promise<QueuedWrite[]> {
-  try {
-    const queueStr = await AsyncStorage.getItem(QUEUE_PREFIX);
-    if (!queueStr) return [];
-    return JSON.parse(queueStr);
-  } catch (error) {
-    console.error('Error getting write queue:', error);
+    const raw = appStorage.getString(QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
     return [];
   }
 }
 
-/**
- * Remove a write from the queue
- */
-export async function removeQueuedWrite(writeId: string): Promise<void> {
-  const queue = await getWriteQueue();
-  const filtered = queue.filter((w) => w.id !== writeId);
-  await AsyncStorage.setItem(QUEUE_PREFIX, JSON.stringify(filtered));
+function writeQueue(queue: QueuedWrite[]): void {
+  appStorage.set(QUEUE_KEY, JSON.stringify(queue));
 }
 
-/**
- * Clear all queued writes
- */
-export async function clearWriteQueue(): Promise<void> {
-  await AsyncStorage.removeItem(QUEUE_PREFIX);
+export async function queueWrite(write: QueuedWrite): Promise<void> {
+  const queue = readQueue().filter((item) => item.id !== write.id);
+  queue.push({ ...write, retryCount: write.retryCount ?? 0 });
+  writeQueue(queue);
 }
 
-/**
- * Get queued market messages, optionally scoped to a chat.
- */
+export async function removeQueuedWrite(id: string): Promise<void> {
+  writeQueue(readQueue().filter((item) => item.id !== id));
+}
+
+export async function getWriteQueue(): Promise<QueuedWrite[]> {
+  return readQueue();
+}
+
 export async function getQueuedMarketMessages(chatId?: string): Promise<QueuedWrite[]> {
-  const queue = await getWriteQueue();
-  const normalizedChatId = String(chatId || '').trim();
-  return queue.filter((write) => {
-    if (write.type !== 'marketMessage' || write.action !== 'create') return false;
-    if (!normalizedChatId) return true;
-    return String(write.data?.chatId || '').trim() === normalizedChatId;
+  const id = String(chatId || '').trim();
+  return readQueue().filter((item) => {
+    if (item.type !== 'marketMessage' || item.action !== 'create') return false;
+    if (!id) return true;
+    return String(item.data?.chatId || '') === id;
   });
 }
 
-/**
- * Check if device is online
- * Note: This is a simple check. Use NetInfo in components for accurate status.
- */
-export function isOnline(): boolean {
-  // Default to true - actual check should use NetInfo hook
-  return true;
-}
-
-/**
- * Sync queued writes when online
- */
 export async function syncQueuedWrites(
-  syncFn: (write: QueuedWrite) => Promise<void>
+  handler: (write: QueuedWrite) => Promise<void>
 ): Promise<void> {
-  if (!isOnline()) return;
+  const queue = readQueue();
+  if (!queue.length) return;
 
-  const queue = await getWriteQueue();
-  const sortedQueue = [...queue].sort((left, right) => {
-    const leftTs = Number(left.timestamp || 0);
-    const rightTs = Number(right.timestamp || 0);
-    return leftTs - rightTs;
-  });
-
-  for (const write of sortedQueue) {
+  const remaining: QueuedWrite[] = [];
+  for (const write of queue) {
     try {
-      await syncFn(write);
-      await removeQueuedWrite(write.id);
-    } catch (error) {
-      console.error(`Error syncing write ${write.id}:`, error);
-      // Keep in queue for retry
-      continue;
+      await handler(write);
+    } catch {
+      remaining.push({
+        ...write,
+        retryCount: (write.retryCount || 0) + 1,
+      });
     }
   }
+  writeQueue(remaining);
 }
 
+/** @deprecated Server-state caching belongs in TanStack Query/MMKV — no-op kept for stray imports. */
+export async function cacheData(_key: string, _data: unknown, _ttl?: number): Promise<void> {
+  // Intentionally empty — do not reintroduce AsyncStorage read caches.
+}
+
+/** @deprecated Always returns null; use TanStack Query. */
+export async function getCachedData<T>(_key: string): Promise<T | null> {
+  return null;
+}

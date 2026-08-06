@@ -281,6 +281,12 @@ export async function markPostsSeen(userId, postIds, dwellSec) {
     .filter(Boolean);
   if (ids.length === 0) return { success: true, count: 0 };
 
+  // Ignore flicker / fast-scroll marks — require real dwell when provided.
+  const dwell = dwellSec == null ? null : Number(dwellSec);
+  if (dwell != null && Number.isFinite(dwell) && dwell < 1.2) {
+    return { success: true, count: 0, skipped: true, reason: 'dwell_too_short' };
+  }
+
   await ensureUser(userId);
 
   if (pool) {
@@ -289,7 +295,7 @@ export async function markPostsSeen(userId, postIds, dwellSec) {
         `INSERT INTO user_seen_posts (user_id, post_id, dwell_sec)
          VALUES ($1, $2, $3)
          ON CONFLICT (user_id, post_id) DO UPDATE SET seen_at = now(), dwell_sec = COALESCE($3, user_seen_posts.dwell_sec)`,
-        [userId, postId, dwellSec ?? null]
+        [userId, postId, dwell ?? null]
       );
     }
   }

@@ -77,8 +77,11 @@ async function getUserLikedPostIds(userId) {
 
 async function getUserSeenPostIds(userId) {
   if (!pool) return [];
+  // Soft memory: only deprioritize recently seen posts (48h), then they can return.
   const { rows } = await pool.query(
-    `SELECT post_id FROM user_seen_posts WHERE user_id = $1`,
+    `SELECT post_id FROM user_seen_posts
+     WHERE user_id = $1
+       AND seen_at >= now() - interval '48 hours'`,
     [userId]
   );
   return rows.map((r) => r.post_id);
@@ -192,9 +195,11 @@ async function loadSession(ownerKey, sessionId) {
  * @param {string|null} userId - null = public / no taste
  */
 async function rankOrderedIds(userId) {
-  const excludeIds = new Set();
+  const softExcludeIds = new Set(); // seen — deprioritize, don't wipe the feed
+  const hardExcludeIds = new Set(); // already picked in this session build
 
   let tasteTags = [];
+  let likedIds = [];
   if (userId) {
     const [tags, likedPg, seenPg] = await Promise.all([
       getUserTasteHashtags(userId),
@@ -202,18 +207,19 @@ async function rankOrderedIds(userId) {
       getUserSeenPostIds(userId),
     ]);
     tasteTags = tags;
-    [...likedPg, ...seenPg].forEach((id) => excludeIds.add(id));
+    likedIds = likedPg;
+    [...likedPg, ...seenPg].forEach((id) => softExcludeIds.add(id));
   }
 
   const [bucketAIds, bucketBIds, bucketCIds] = await Promise.all([
     tasteTags.length
-      ? fetchScorePostIds(tasteTags, BUCKET_A_SIZE, excludeIds)
+      ? fetchScorePostIds(tasteTags, BUCKET_A_SIZE, softExcludeIds)
       : Promise.resolve([]),
-    fetchScorePostIds([], BUCKET_B_SIZE, excludeIds),
-    fetchColdStartPostIds(BUCKET_C_SIZE, excludeIds),
+    fetchScorePostIds([], BUCKET_B_SIZE, softExcludeIds),
+    fetchColdStartPostIds(BUCKET_C_SIZE, softExcludeIds),
   ]);
 
-  const used = new Set(excludeIds);
+  const used = new Set(hardExcludeIds);
   const takeUnique = (ids, target) => {
     const picked = [];
     ids.forEach((id) => {
@@ -231,8 +237,9 @@ async function rankOrderedIds(userId) {
 
   const shortfall = FEED_SESSION_SIZE - (taste.length + trending.length + coldStart.length);
   if (shortfall > 0) {
-    const backfill = await fetchScorePostIds([], shortfall, used);
-    trending = [...trending, ...takeUnique(backfill, shortfall)];
+    // Prefer unseen first
+    const backfillFresh = await fetchScorePostIds([], shortfall, new Set([...used, ...softExcludeIds]));
+    trending = [...trending, ...takeUnique(backfillFresh, shortfall)];
   }
 
   let orderedIds = interleaveBuckets([
@@ -241,13 +248,20 @@ async function rankOrderedIds(userId) {
     shuffleInPlace(coldStart),
   ]).slice(0, FEED_SESSION_SIZE);
 
+  // Recycle active listings (including previously seen) so stores with posts never vanish from For You
   if (orderedIds.length < FEED_SESSION_SIZE) {
-    const fallbackIds = await fetchActivePostIdsFromPostgres(FEED_SESSION_SIZE, used);
+    const recycleExclude = new Set(orderedIds);
+    likedIds.forEach((id) => recycleExclude.add(id));
+    const fallbackIds = await fetchActivePostIdsFromPostgres(FEED_SESSION_SIZE, recycleExclude);
     fallbackIds.forEach((id) => {
       if (orderedIds.length >= FEED_SESSION_SIZE) return;
-      used.add(id);
       orderedIds.push(id);
     });
+  }
+
+  // Last resort: if still empty (e.g. tiny catalog all soft-excluded), allow everything active
+  if (orderedIds.length === 0) {
+    orderedIds = await fetchActivePostIdsFromPostgres(FEED_SESSION_SIZE, new Set());
   }
 
   return {

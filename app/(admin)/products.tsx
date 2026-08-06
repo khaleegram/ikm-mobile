@@ -10,8 +10,18 @@ import { haptics } from '@/lib/utils/haptics';
 import { Product } from '@/types';
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Platform, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator,
+  FlatList,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert } from '@/components/app-alert';
 
 export default function AdminProducts() {
   const { colors, colorScheme, toggleTheme } = useTheme();

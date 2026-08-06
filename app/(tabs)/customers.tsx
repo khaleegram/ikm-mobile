@@ -1,5 +1,6 @@
 // Customers management screen
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, ActivityIndicator, Modal, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState, useMemo } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -11,6 +12,7 @@ import { Customer } from '@/lib/firebase/firestore/customers';
 import { router } from 'expo-router';
 
 export default function CustomersScreen() {
+  const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { user } = useUser();
   const { customers, loading } = useSellerCustomers(user?.uid || null);
@@ -116,7 +118,7 @@ export default function CustomersScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <Text style={[styles.title, { color: colors.text }]}>Customers</Text>
 
         {/* Search */}
@@ -320,7 +322,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       backgroundColor: colors.background,
     },
     header: {
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       paddingBottom: 20,
       paddingHorizontal: 20,
       ...premiumShadow,

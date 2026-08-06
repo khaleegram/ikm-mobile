@@ -1,12 +1,13 @@
 // Payouts API endpoints - Uses Cloud Functions
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { Payout } from '@/types';
 
 const PAYOUT_FUNCTIONS = {
-  getBanksList: 'https://getbankslist-q3rjv54uka-uc.a.run.app',
-  resolveAccountNumber: 'https://resolveaccountnumber-q3rjv54uka-uc.a.run.app',
-  savePayoutDetails: 'https://savepayoutdetails-q3rjv54uka-uc.a.run.app',
-  requestPayout: 'https://requestpayout-q3rjv54uka-uc.a.run.app',
+  getBanksList: cloudFunctionUrl('getBanksList'),
+  resolveAccountNumber: cloudFunctionUrl('resolveAccountNumber'),
+  savePayoutDetails: cloudFunctionUrl('savePayoutDetails'),
+  requestPayout: cloudFunctionUrl('requestPayout'),
 };
 
 export interface PayoutDetails {

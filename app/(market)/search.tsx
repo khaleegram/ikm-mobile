@@ -12,7 +12,7 @@ import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
-import { useMarketPostsSearch } from '@/lib/firebase/firestore/market-posts';
+import { useMarketPostsSearch } from '@/lib/hooks/use-market-post';
 import { FeedCard } from '@/components/market/feed-card';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -183,6 +183,7 @@ export default function SearchScreen() {
     return (
       <KeyboardFlatList
         data={posts}
+        estimatedItemSize={320}
         renderItem={({ item }) => (
           <FeedCard
             post={item}

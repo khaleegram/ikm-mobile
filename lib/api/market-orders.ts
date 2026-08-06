@@ -1,135 +1,85 @@
-import { addDoc, collection, getDocs, limit, query, serverTimestamp, where } from 'firebase/firestore';
+import { apiUrl } from './api-base';
+import { coreCloudClient } from './core-cloud-client';
+import type { Order, OrderTimelineEvent } from '@/types';
 
-import { firestore } from '@/lib/firebase/config';
-import { getMarketBranding } from '@/lib/market-branding';
-import { MarketPost, Order } from '@/types';
-
-export interface CreateMarketOrderInput {
-  buyerId: string;
-  buyerName: string;
-  buyerEmail: string;
-  buyerPhone: string;
-  post: MarketPost;
-  quantity: number;
-  finalPrice: number;
-  deliveryAddress: string;
-  fromChatId?: string;
-  paymentReference?: string;
-  paystackReference?: string;
+function normalizeOrder(raw: any): Order {
+  return {
+    ...raw,
+    id: String(raw?.id || ''),
+    createdAt: raw?.createdAt ? new Date(raw.createdAt) : undefined,
+    updatedAt: raw?.updatedAt ? new Date(raw.updatedAt) : undefined,
+    sentAt: raw?.sentAt ? new Date(raw.sentAt) : undefined,
+    receivedAt: raw?.receivedAt ? new Date(raw.receivedAt) : undefined,
+    autoReleaseDate: raw?.autoReleaseDate ? new Date(raw.autoReleaseDate) : undefined,
+    fundsReleasedAt: raw?.fundsReleasedAt ? new Date(raw.fundsReleasedAt) : undefined,
+    sellerAcceptedAt: raw?.sellerAcceptedAt ? new Date(raw.sellerAcceptedAt) : undefined,
+    preparingAt: raw?.preparingAt ? new Date(raw.preparingAt) : undefined,
+    paymentVerifiedAt: raw?.paymentVerifiedAt ? new Date(raw.paymentVerifiedAt) : undefined,
+  } as Order;
 }
 
-function buildMarketItemName(post: MarketPost): string {
-  const description = post.description?.trim() || '';
-  if (!description) return getMarketBranding().genericItemTitle;
-  return description.length > 70 ? `${description.slice(0, 67)}...` : description;
+function normalizeTimeline(raw: any): OrderTimelineEvent {
+  return {
+    id: String(raw?.id || ''),
+    orderId: String(raw?.orderId || ''),
+    event: raw?.event,
+    status: raw?.status,
+    text: String(raw?.text || ''),
+    actorId: raw?.actorId,
+    actorRole: raw?.actorRole,
+    createdAt: raw?.createdAt ? new Date(raw.createdAt) : new Date(),
+  } as OrderTimelineEvent;
 }
 
-function marketPostProductId(postId: string): string {
-  return `market_post_${postId}`;
-}
+export const marketOrdersReadApi = {
+  async list(role: 'all' | 'buyer' | 'seller' = 'all', limit = 40): Promise<Order[]> {
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      orders: Order[];
+    }>(apiUrl(`/orders?role=${encodeURIComponent(role)}&limit=${limit}`), {
+      method: 'GET',
+      requiresAuth: true,
+    });
+    return Array.isArray(response.orders) ? response.orders.map(normalizeOrder) : [];
+  },
 
-function buildIdempotencyKey(data: CreateMarketOrderInput): string {
-  const reference = String(data.paystackReference || data.paymentReference || '').trim();
-  const suffix = reference || `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const raw = `${data.buyerId}_${data.post.id}_${data.quantity}_${data.finalPrice}_${suffix}`;
-  return raw.replace(/[^a-zA-Z0-9_]/g, '');
-}
+  async getById(orderId: string): Promise<{ order: Order | null; timeline: OrderTimelineEvent[] }> {
+    const id = String(orderId || '').trim();
+    if (!id) return { order: null, timeline: [] };
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      order: Order;
+      timeline?: OrderTimelineEvent[];
+    }>(apiUrl(`/orders/${encodeURIComponent(id)}`), {
+      method: 'GET',
+      requiresAuth: true,
+    });
+    const order = response.order ? normalizeOrder(response.order) : null;
+    const timeline = Array.isArray(response.timeline)
+      ? response.timeline.map(normalizeTimeline)
+      : Array.isArray((response.order as any)?.timeline)
+        ? ((response.order as any).timeline as any[]).map(normalizeTimeline)
+        : [];
+    return { order, timeline };
+  },
 
-async function findExistingOrderByPaymentReference(
-  reference: string
-): Promise<(Order & { id: string }) | null> {
-  const normalizedReference = String(reference || '').trim();
-  if (!normalizedReference) return null;
-
-  const ordersRef = collection(firestore, 'orders');
-  const paystackSnap = await getDocs(
-    query(ordersRef, where('paystackReference', '==', normalizedReference), limit(1))
-  );
-  if (!paystackSnap.empty) {
-    const docSnap = paystackSnap.docs[0];
-    return { ...(docSnap.data() as Order), id: docSnap.id };
-  }
-
-  const paymentSnap = await getDocs(
-    query(ordersRef, where('paymentReference', '==', normalizedReference), limit(1))
-  );
-  if (!paymentSnap.empty) {
-    const docSnap = paymentSnap.docs[0];
-    return { ...(docSnap.data() as Order), id: docSnap.id };
-  }
-
-  return null;
-}
-
-export const marketOrdersApi = {
-  async createFromPost(input: CreateMarketOrderInput): Promise<Order & { id: string }> {
-    if (!input.post.id) {
-      throw new Error('Post id is required to create order');
-    }
-    if (!input.post.posterId) {
-      throw new Error('Seller id is missing on this post');
-    }
-
-    const reference = String(input.paystackReference || input.paymentReference || '').trim();
-    if (reference) {
-      const existing = await findExistingOrderByPaymentReference(reference).catch(() => null);
-      if (existing?.id) {
-        return existing;
-      }
-    }
-
-    const now = new Date();
-    const total = Math.max(0, Number(input.finalPrice) * Math.max(1, input.quantity));
-    const sellerId = input.post.posterId;
-
-    const payload: Record<string, any> = {
-      customerId: input.buyerId,
-      sellerId,
-      idempotencyKey: buildIdempotencyKey(input),
-      items: [
-        {
-          productId: marketPostProductId(input.post.id),
-          name: buildMarketItemName(input.post),
-          price: Number(input.finalPrice),
-          quantity: Math.max(1, input.quantity),
-        },
-      ],
-      total,
-      shippingPrice: 0,
-      shippingType: 'pickup',
-      status: 'Processing',
-      deliveryAddress: input.deliveryAddress.trim(),
-      customerInfo: {
-        name: input.buyerName.trim(),
-        email: input.buyerEmail.trim(),
-        phone: input.buyerPhone.trim(),
-      },
-      paymentMethod: 'Paystack Escrow',
-      // Firestore does not allow `undefined` values.
-      paymentReference: input.paymentReference ? String(input.paymentReference).trim() : null,
-      paystackReference: (input.paystackReference || input.paymentReference)
-        ? String(input.paystackReference || input.paymentReference).trim()
-        : null,
-      escrowStatus: 'held',
-      commissionRate: null,
-      autoReleaseDate: null,
-      marketMeta: {
-        postId: input.post.id,
-        source: 'market_post',
-        fromChatId: input.fromChatId || null,
-      },
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      localCreatedAt: now.toISOString(),
-    };
-
-    const ref = await addDoc(collection(firestore, 'orders'), payload);
-
-    return {
-      ...(payload as Order),
-      id: ref.id,
-      createdAt: now,
-      updatedAt: now,
-    };
+  async getByDealThread(
+    threadId: string
+  ): Promise<{ order: Order | null; timeline: OrderTimelineEvent[] }> {
+    const id = String(threadId || '').trim();
+    if (!id) return { order: null, timeline: [] };
+    const response = await coreCloudClient.request<{
+      success: boolean;
+      order: Order;
+      timeline?: OrderTimelineEvent[];
+    }>(apiUrl(`/orders/by-thread/${encodeURIComponent(id)}`), {
+      method: 'GET',
+      requiresAuth: true,
+    });
+    const order = response.order ? normalizeOrder(response.order) : null;
+    const timeline = Array.isArray(response.timeline)
+      ? response.timeline.map(normalizeTimeline)
+      : [];
+    return { order, timeline };
   },
 };

@@ -20,7 +20,7 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { useClipEngagement } from '@/lib/hooks/use-clip-engagement';
 import { useIsFeedItemActive, useShouldMountMedia } from '@/lib/hooks/use-feed-active-post';
 import { useFeedWatchSession } from '@/lib/hooks/use-feed-watch-session';
-import { subscribeChatVoicePlaying } from '@/lib/chat/chat-audio';
+import { subscribeChatVoicePlaying } from '@/lib/chat/voice-player';
 import { downloadMarketClip } from '@/lib/utils/download-market-clip';
 import { getMarketPostPrimaryImage, isVideoMarketPost } from '@/lib/utils/market-media';
 import { haptics } from '@/lib/utils/haptics';
@@ -84,6 +84,7 @@ export interface FeedVideoItemProps {
   isActive?: boolean;
   focused?: boolean;
   muted?: boolean;
+  onMutedChange?: (muted: boolean) => void;
   onPatchItem?: (clipId: string, patch: Partial<MarketPost>) => void;
   onRemoveItem?: (clipId: string) => void;
   onComment?: () => void;
@@ -97,6 +98,7 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
   isActive: isActiveProp,
   focused = true,
   muted = false,
+  onMutedChange,
   onPatchItem,
   onComment,
   onShare,
@@ -142,9 +144,8 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
 
   const isVideo = isVideoMarketPost(post);
   const videoDurationSec = Number(post.videoMeta?.durationMs || 0) / 1000;
-  const shouldPlay = Boolean(
-    isActive && focused && appForeground && !isPaused && mountMedia && !chatVoicePlaying
-  );
+  const feedActive = Boolean(isActive && focused && appForeground && mountMedia);
+  const shouldPlay = Boolean(feedActive && !isPaused && !chatVoicePlaying);
   const isTrackingActive = Boolean(post.id && shouldPlay);
 
   const getPlaybackPosition = useCallback(() => playbackSnapshotRef.current, []);
@@ -285,6 +286,11 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
     onShare?.();
   }, [engagement, onShare]);
 
+  const handleMuteToggle = useCallback(() => {
+    haptics.light();
+    onMutedChange?.(!muted);
+  }, [muted, onMutedChange]);
+
   return (
     <View style={[styles.container, { width, height: cardHeight }]}>
       {isVideo && post.videoUrl ? (
@@ -297,7 +303,8 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
             {mountMedia ? (
               <>
                 <MarketVideoSurface
-                  active={shouldPlay}
+                  active={feedActive}
+                  paused={isPaused || chatVoicePlaying}
                   muted={muted || !appForeground || chatVoicePlaying}
                   videoUri={post.videoUrl}
                   onPlaybackSnapshot={(snapshot) => {
@@ -331,8 +338,8 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
               <View style={[styles.mediaImage, { backgroundColor: '#000' }]} />
             )}
             {isPaused && mountMedia && (
-              <View style={styles.pauseOverlay}>
-                <IconSymbol name="play.rectangle.fill" size={60} color="rgba(255,255,255,0.8)" />
+              <View style={styles.pauseOverlay} pointerEvents="none">
+                <IconSymbol name="play.fill" size={56} color="rgba(255,255,255,0.92)" />
               </View>
             )}
             <HeartBurst visible={heartBurst} />
@@ -428,6 +435,8 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
         onComment={handleChat}
         onShare={handleShare}
         onFavorite={handleFavorite}
+        muted={muted}
+        onMuteToggle={isVideo ? handleMuteToggle : undefined}
       />
     </View>
   );
@@ -442,6 +451,7 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
   prev.isActive === next.isActive &&
   prev.focused === next.focused &&
   prev.muted === next.muted &&
+  prev.onMutedChange === next.onMutedChange &&
   prev.index === next.index
 );
 

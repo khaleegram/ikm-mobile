@@ -1,8 +1,9 @@
 import { FlashList } from '@shopify/flash-list';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -14,13 +15,14 @@ import { InboxStatusBadge } from '@/components/chat/inbox-status-badge';
 import { SafeImage } from '@/components/safe-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VerifiedBadge } from '@/components/ui/verified-badge';
-import { enrichInboxRoomsWithPosts } from '@/lib/chat/enrich-inbox-snapshots';
+import { enrichInboxRoomsWithPosts, dealProductLabel } from '@/lib/chat/enrich-inbox-snapshots';
 import {
   filterRoomsBySegment,
   groupInboxByPeer,
 } from '@/lib/chat/group-inbox-by-peer';
+import { openDealRoom } from '@/lib/chat/prefetch-deal-room';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostsByIds } from '@/lib/firebase/firestore/market-posts';
+import { useMarketPostsByIds } from '@/lib/hooks/use-market-post';
 import { useChatInbox } from '@/lib/hooks/use-chat-inbox';
 import { useInboxPeerSummaries } from '@/lib/hooks/use-inbox-peer-summaries';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -32,12 +34,7 @@ import type { MarketPost } from '@/types';
 const lightBrown = '#A67C52';
 
 function roomProductTitle(room: ChatInboxItem): string {
-  const snap = room.postSnapshot || {};
-  return (
-    String(snap.title || '').trim() ||
-    String((snap as { caption?: string }).caption || '').trim() ||
-    'Product'
-  );
+  return dealProductLabel(room.postSnapshot);
 }
 
 function roomProductImage(room: ChatInboxItem): string | undefined {
@@ -67,9 +64,11 @@ function formatRoomPrice(room: ChatInboxItem): string {
 function ProductRoomRow({
   room,
   colors,
+  userId,
 }: {
   room: ChatInboxItem;
   colors: ReturnType<typeof useTheme>['colors'];
+  userId?: string | null;
 }) {
   const title = roomProductTitle(room);
   const imageUri = roomProductImage(room);
@@ -89,7 +88,7 @@ function ProductRoomRow({
       activeOpacity={0.85}
       onPress={() => {
         haptics.light();
-        router.push(`/(market)/messages/${room.threadId}?peerId=${room.peerId}` as any);
+        void openDealRoom(room, userId);
       }}>
       {imageUri ? (
         <SafeImage uri={imageUri} style={styles.productThumb} />
@@ -140,6 +139,34 @@ function ProductRoomRow({
   );
 }
 
+function RoomSkeleton({
+  count,
+  colors,
+}: {
+  count: number;
+  colors: ReturnType<typeof useTheme>['colors'];
+}) {
+  return (
+    <View style={{ paddingHorizontal: 16, paddingTop: 8, gap: 10 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <View
+          key={i}
+          style={[
+            styles.roomCard,
+            { backgroundColor: colors.card, borderColor: colors.border, opacity: 0.55 },
+          ]}>
+          <View style={[styles.productThumb, { backgroundColor: colors.backgroundSecondary }]} />
+          <View style={{ flex: 1, gap: 8 }}>
+            <View style={{ height: 15, width: '60%', borderRadius: 6, backgroundColor: colors.backgroundSecondary }} />
+            <View style={{ height: 12, width: '30%', borderRadius: 6, backgroundColor: colors.backgroundSecondary }} />
+            <View style={{ height: 12, width: '85%', borderRadius: 6, backgroundColor: colors.backgroundSecondary }} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export default function PeerDealHubScreen() {
   const { peerId: peerIdParam } = useLocalSearchParams<{ peerId: string }>();
   const peerId = String(peerIdParam || '').trim();
@@ -147,7 +174,15 @@ export default function PeerDealHubScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const inbox = useChatInbox(user?.uid || null);
+  const refreshInbox = inbox.refresh;
+  const refreshInboxIfStale = inbox.refreshIfStale;
   const [segment, setSegment] = useState<'deals' | 'completed' | 'unread'>('deals');
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshInboxIfStale();
+    }, [refreshInboxIfStale])
+  );
 
   const peerRoomsRaw = useMemo(
     () => inbox.items.filter((item) => item.peerId === peerId),
@@ -155,14 +190,7 @@ export default function PeerDealHubScreen() {
   );
 
   const postIdsNeedingHydration = useMemo(
-    () =>
-      peerRoomsRaw
-        .filter((room) => {
-          const snap = room.postSnapshot || {};
-          return !String(snap.title || '').trim() && !String(snap.imageUrl || '').trim();
-        })
-        .map((room) => room.postId)
-        .filter(Boolean),
+    () => [...new Set(peerRoomsRaw.map((room) => String(room.postId || '').trim()).filter(Boolean))],
     [peerRoomsRaw]
   );
 
@@ -181,8 +209,14 @@ export default function PeerDealHubScreen() {
   }, [peerRoomsRaw, postsById]);
 
   const peerSummaries = useInboxPeerSummaries(peerId ? [peerId] : []);
-  const peerName = peerSummaries[peerId]?.displayName || peerGroup?.peerName || 'User';
+  const peerName =
+    peerSummaries[peerId]?.displayName ||
+    (peerGroup?.peerName && !String(peerGroup.peerName).includes('@')
+      ? peerGroup.peerName
+      : '') ||
+    'User';
   const peerAvatar = peerSummaries[peerId]?.avatarUri || peerGroup?.peerAvatar || undefined;
+  const peerVerified = Boolean(peerSummaries[peerId]?.isVerified);
 
   const rooms = useMemo(() => {
     const all = peerGroup?.rooms || [];
@@ -197,8 +231,10 @@ export default function PeerDealHubScreen() {
   }, [peerGroup?.peerPresence]);
 
   const renderRoom = useCallback(
-    ({ item }: { item: ChatInboxItem }) => <ProductRoomRow room={item} colors={colors} />,
-    [colors]
+    ({ item }: { item: ChatInboxItem }) => (
+      <ProductRoomRow room={item} colors={colors} userId={user?.uid} />
+    ),
+    [colors, user?.uid]
   );
 
   return (
@@ -228,7 +264,7 @@ export default function PeerDealHubScreen() {
               <Text style={[styles.headerName, { color: colors.text }]} numberOfLines={1}>
                 {peerName}
               </Text>
-              <VerifiedBadge size={14} />
+              {peerVerified ? <VerifiedBadge size={14} /> : null}
             </View>
             <Text style={[styles.headerSub, { color: colors.textSecondary }]} numberOfLines={1}>
               {presenceLabel}
@@ -270,10 +306,8 @@ export default function PeerDealHubScreen() {
         ))}
       </View>
 
-      {inbox.loading && !peerGroup ? (
-        <View style={styles.emptyWrap}>
-          <Text style={{ color: colors.textSecondary, fontWeight: '600' }}>Loading rooms…</Text>
-        </View>
+      {inbox.loading && rooms.length === 0 && !peerGroup ? (
+        <RoomSkeleton count={5} colors={colors} />
       ) : rooms.length === 0 ? (
         <View style={styles.emptyWrap}>
           <View style={[styles.emptyIcon, { backgroundColor: `${lightBrown}18` }]}>
@@ -287,7 +321,9 @@ export default function PeerDealHubScreen() {
                 : 'No product rooms yet'}
           </Text>
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-            Ask for price on a post to open a product room with this seller.
+            {inbox.error
+              ? 'Could not load rooms. Pull down to retry.'
+              : 'Ask for price on a post to open a product room with this seller.'}
           </Text>
         </View>
       ) : (
@@ -302,6 +338,16 @@ export default function PeerDealHubScreen() {
             paddingBottom: insets.bottom + 32,
           }}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={inbox.refreshing}
+              onRefresh={() => {
+                void inbox.refresh();
+              }}
+              tintColor={lightBrown}
+              colors={[lightBrown]}
+            />
+          }
         />
       )}
     </View>

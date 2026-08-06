@@ -1,5 +1,6 @@
 // Marketing screen - Discount Codes & Email Campaigns
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Modal } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -10,8 +11,10 @@ import { marketingApi } from '@/lib/api/marketing';
 import { DiscountCode } from '@/types';
 import { useSellerEmailCampaigns } from '@/lib/firebase/firestore/email-campaigns';
 import { EmailCampaign } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 export default function MarketingScreen() {
+  const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { user } = useUser();
   const { discountCodes, loading } = useSellerDiscountCodes(user?.uid || null);
@@ -94,7 +97,7 @@ export default function MarketingScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <Text style={[styles.title, { color: colors.text }]}>Marketing</Text>
 
         {/* Tabs */}
@@ -284,7 +287,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       backgroundColor: colors.background,
     },
     header: {
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       paddingBottom: 20,
       paddingHorizontal: 20,
       ...premiumShadow,

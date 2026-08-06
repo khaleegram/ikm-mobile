@@ -66,7 +66,8 @@ export function SellerCardMediaViewer({
   const viewportHeight = Math.max(1, Math.round(windowHeight));
   const hasPrice = typeof post?.price === 'number' && (post?.price ?? 0) > 0;
   const showAsk = !hasPrice && Boolean(onAskPress);
-  const showActions = (hasPrice && onBuyPress) || (showAsk && onAskPress);
+  const showMessage = hasPrice && Boolean(onAskPress);
+  const showActions = (hasPrice && onBuyPress) || showAsk || showMessage;
 
   useEffect(() => {
     if (!visible || !slides.length) return;
@@ -154,6 +155,15 @@ export function SellerCardMediaViewer({
                 activeOpacity={0.85}>
                 <IconSymbol name="cart.fill" size={14} color="#FFF" />
                 <Text style={styles.actionPillSolidText}>Buy</Text>
+              </TouchableOpacity>
+            ) : null}
+
+            {showMessage && onAskPress ? (
+              <TouchableOpacity
+                style={[styles.actionPill, styles.actionPillOutline, { borderColor: accentColor }]}
+                onPress={onAskPress}
+                activeOpacity={0.85}>
+                <Text style={[styles.actionPillOutlineText, { color: accentColor }]}>Message</Text>
               </TouchableOpacity>
             ) : null}
 

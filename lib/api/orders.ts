@@ -3,17 +3,18 @@
 // All status values: 'Paid', 'Accepted', 'Preparing', 'Sent', 'Received', 'Completed', 'Cancelled', 'Disputed'
 //
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { Order, OrderStatus } from '@/types';
 
 const ORDER_FUNCTIONS = {
-  updateOrderStatus: 'https://updateorderstatus-q3rjv54uka-uc.a.run.app',
-  sellerAcceptOrder: 'https://selleracceptorder-q3rjv54uka-uc.a.run.app',
-  markOrderAsSent: 'https://markorderassent-q3rjv54uka-uc.a.run.app',
-  markOrderAsReceived: 'https://markorderasreceived-q3rjv54uka-uc.a.run.app',
-  getOrdersByCustomer: 'https://getordersbycustomer-q3rjv54uka-uc.a.run.app',
-  getOrdersBySeller: 'https://getordersbyseller-q3rjv54uka-uc.a.run.app',
-  markOrderAsNotAvailable: 'https://markorderasnotavailable-q3rjv54uka-uc.a.run.app',
-  respondToAvailabilityCheck: 'https://respondtoavailabilitycheck-q3rjv54uka-uc.a.run.app',
+  updateOrderStatus: cloudFunctionUrl('updateOrderStatus'),
+  sellerAcceptOrder: cloudFunctionUrl('sellerAcceptOrder'),
+  markOrderAsSent: cloudFunctionUrl('markOrderAsSent'),
+  markOrderAsReceived: cloudFunctionUrl('markOrderAsReceived'),
+  getOrdersByCustomer: cloudFunctionUrl('getOrdersByCustomer'),
+  getOrdersBySeller: cloudFunctionUrl('getOrdersBySeller'),
+  markOrderAsNotAvailable: cloudFunctionUrl('markOrderAsNotAvailable'),
+  respondToAvailabilityCheck: cloudFunctionUrl('respondToAvailabilityCheck'),
 };
 
 export const orderApi = {

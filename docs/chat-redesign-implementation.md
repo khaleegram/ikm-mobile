@@ -1,3 +1,14 @@
+> **ARCHIVED / HISTORICAL** � This document no longer matches the running codebase.
+> Canonical migration status: `docs/firebase-market-core-exit.md` and `docs/architecture-boundaries.md`.
+> Do not implement from this file.
+
+---
+> **ARCHIVED — historical planning doc.** The migration runner commands referenced below
+> (`npm run migrate:chat`, etc.) no longer exist; schema migrations now run via
+> `npm run migrate` (see `docs/firebase-market-core-exit.md`). Chat backend defaults to
+> Postgres in code, not Firestore as implied by some sections here. Treat this file as a
+> record of the original plan, not the current state of the codebase.
+
 # Chat Redesign — Detailed Implementation Plan
 
 > **Goal:** Move from 4/10 (11 Firestore listeners, client-side merge, generic DM UX) to 9/10 (Deal Thread model, Postgres + WebSocket, commerce-native UI).

@@ -8,7 +8,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { haptics } from '@/lib/utils/haptics';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useNotifications, markNotificationAsRead } from '@/lib/firebase/firestore/notifications';
+import { useInAppNotifications } from '@/lib/hooks/use-in-app-notifications';
 // Format date to relative time (e.g., "2 hours ago")
 const formatTimeAgo = (date: Date): string => {
   const now = new Date();
@@ -29,14 +29,17 @@ export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
-  const { notifications, loading } = useNotifications(user?.uid || null);
+  const { notifications, loading, refresh, markRead } = useInAppNotifications(user?.uid || null);
   const styles = createStyles(colors, insets);
 
   const onRefresh = async () => {
     setRefreshing(true);
     haptics.light();
-    // Notifications are real-time, so just reset refreshing state
-    setTimeout(() => setRefreshing(false), 500);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const handleNotificationPress = async (notification: typeof notifications[0]) => {
@@ -45,7 +48,7 @@ export default function NotificationsScreen() {
     // Mark as read if not already read
     if (!notification.read && notification.id) {
       try {
-        await markNotificationAsRead(notification.id);
+        await markRead(notification.id);
       } catch (error) {
         console.error('Error marking notification as read:', error);
       }
@@ -81,9 +84,17 @@ export default function NotificationsScreen() {
   };
 
   const renderNotification = ({ item }: { item: typeof notifications[0] }) => {
-    const timeAgo = item.createdAt 
-      ? formatTimeAgo(new Date(item.createdAt))
-      : '';
+    const created =
+      item.createdAt instanceof Date
+        ? item.createdAt
+        : typeof (item.createdAt as any)?.toDate === 'function'
+          ? (item.createdAt as any).toDate()
+          : typeof (item.createdAt as any)?.seconds === 'number'
+            ? new Date((item.createdAt as any).seconds * 1000)
+            : item.createdAt
+              ? new Date(String(item.createdAt))
+              : null;
+    const timeAgo = created && !Number.isNaN(created.getTime()) ? formatTimeAgo(created) : '';
 
     return (
       <TouchableOpacity
@@ -105,7 +116,7 @@ export default function NotificationsScreen() {
             {item.title}
           </Text>
           <Text style={[styles.notificationMessage, { color: colors.textSecondary }]} numberOfLines={2}>
-            {item.message}
+            {item.body || item.message}
           </Text>
           <Text style={[styles.notificationTime, { color: colors.textSecondary }]}>{timeAgo}</Text>
         </View>

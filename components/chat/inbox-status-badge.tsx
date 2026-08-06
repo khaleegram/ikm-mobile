@@ -2,11 +2,13 @@ import React, { memo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 
 const BADGE_LABELS: Record<string, string> = {
+  browsing: 'Browsing',
   offer_sent: 'Offer',
   accepted: 'Accepted',
   order_active: 'In order',
   in_order: 'In order',
   completed: 'Completed',
+  closed: 'Closed',
   negotiating: 'Negotiating',
   seller: 'Seller',
 };
@@ -17,7 +19,11 @@ type InboxStatusBadgeProps = {
 
 export const InboxStatusBadge = memo(function InboxStatusBadge({ badge }: InboxStatusBadgeProps) {
   if (!badge) return null;
-  const label = BADGE_LABELS[badge] || badge;
+  const key = String(badge).trim().toLowerCase();
+  // Skip noisy defaults that don't help the user
+  if (key === 'browsing') return null;
+  const label = BADGE_LABELS[key] || BADGE_LABELS[badge] || null;
+  if (!label) return null;
   return (
     <View style={styles.wrap}>
       <Text style={styles.text}>{label}</Text>

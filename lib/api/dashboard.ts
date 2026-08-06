@@ -1,8 +1,9 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const DASHBOARD_FUNCTIONS = {
-  getDashboardStats: 'https://getdashboardstats-q3rjv54uka-uc.a.run.app',
-  getSellerAnalytics: 'https://getselleranalytics-q3rjv54uka-uc.a.run.app',
+  getDashboardStats: cloudFunctionUrl('getDashboardStats'),
+  getSellerAnalytics: cloudFunctionUrl('getSellerAnalytics'),
 };
 
 export interface DashboardStats {

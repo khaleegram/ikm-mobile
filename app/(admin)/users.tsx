@@ -10,8 +10,20 @@ import { haptics } from '@/lib/utils/haptics';
 import { User } from '@/types';
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator,
+  FlatList,
+  Modal,
+  Platform,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert } from '@/components/app-alert';
 
 function normalizeUserRole(role: unknown, isAdmin: boolean, hasStore: boolean): 'user' | 'seller' | 'admin' {
   if (isAdmin) return 'admin';

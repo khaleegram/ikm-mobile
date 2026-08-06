@@ -1,0 +1,168 @@
+---
+description: Expo / React Native app rules for ChatCart market app
+alwaysApply: true
+---
+
+# Expo / React Native App Rules
+
+You are building Expo (`expo-router`) React Native apps. Prefer Expo SDK
+APIs and existing project patterns over inventing new abstractions. These
+are outcome-based rules — the experience described must hold, not just the
+library named.
+
+---
+
+## 1. Navigation & Structure
+
+- Use `expo-router` file-based routes (`app/`). Prefer `Link` /
+  `router.push` / `router.replace` over raw React Navigation calls unless
+  the project already does otherwise.
+- Keep screens thin: reusable UI in `src/components`, hooks in
+  `src/hooks`, API/data clients in `src/api` (or the project's equivalent).
+- Respect the existing tab/stack layout. Do not invent a second
+  navigation shell.
+
+## 2. Layout & Safe Areas
+
+- Use `react-native-safe-area-context` (`SafeAreaView` /
+  `useSafeAreaInsets`) — never hardcode status-bar or notch padding.
+- Account for home-indicator / tab-bar overlap on bottom CTAs and lists.
+- Prefer `flex: 1` screen roots. Avoid fixed heights that break on small
+  phones.
+
+## 3. Keyboard Handling (non-negotiable)
+
+Every screen with a `TextInput` must keep the focused field visible above
+the keyboard automatically — this must never take a follow-up prompt to fix.
+
+- Wrap the root layout (`app/_layout.tsx`) in `<KeyboardProvider>` from
+  `react-native-keyboard-controller`. Add it if missing rather than
+  building a screen-level workaround.
+- Every screen/sheet with one or more inputs uses `KeyboardAwareScrollView`
+  from that same library as its scroll container — not a bare
+  `ScrollView`, and not the built-in `KeyboardAvoidingView`, which behaves
+  inconsistently between iOS and Android.
+- Never set `justifyContent: "center"` on a form's
+  `contentContainerStyle` — it pins fields under the keyboard instead of
+  scrolling them into view.
+- Tapping outside an input dismisses the keyboard.
+- The submit/primary CTA must stay reachable while the keyboard is open.
+- For multi-field forms, add `KeyboardToolbar` so users can jump between
+  fields with next/prev controls.
+- Bottom sheets with inputs: pad using the library's offset/inset props,
+  not guesswork.
+- This requires a development build, not Expo Go — assume a dev build
+  exists unless told otherwise.
+
+## 4. Data Fetching, Caching & Instant Navigation
+
+Data is fetched once, cached properly, and reused. Revisiting any
+previously loaded screen — even after the app was fully closed and
+reopened — must feel instant, with fresh data syncing quietly underneath.
+
+- Use TanStack Query for all server-state. Never hand-roll fetching with
+  `useEffect` + `useState`.
+- Persist the query cache to disk via `@tanstack/react-query-persist-client`
+  backed by `react-native-mmkv` — not `AsyncStorage`, which rehydrates too
+  slowly to feel instant on cold start.
+- Restore the persisted cache before the first screen renders (gate on a
+  hydration flag / hold the splash screen) rather than after.
+- Set a real `staleTime` per query based on how often that data actually
+  changes. If cached data exists, render it immediately and refetch in
+  the background — never block rendering to check for updates.
+- Never refetch on every screen focus by default; scope refetch-on-focus
+  to queries that are genuinely time-sensitive for that screen.
+- Avoid duplicate fetches for the same resource across components.
+- Local UI/app state that should survive restarts (last tab, filters,
+  draft input, auth) goes through Zustand with MMKV-backed persistence —
+  not React Context, not plain in-memory state.
+- Never store secrets in the client bundle; use env vars via Expo config
+  (`expo-constants` / EAS secrets) as the project already does.
+- Handle auth expiry, offline/network errors, and empty API responses in
+  the UI itself, not only in console logs.
+
+## 5. Loading States
+
+A loading spinner is the exception, not the default.
+
+- Show a full-screen loader only the very first time a query has never
+  been cached — if cached data exists, render it immediately regardless
+  of staleness.
+- Use skeleton placeholders instead of bare spinners when a genuine
+  loading state is unavoidable.
+- Keep previous data visible during a background refresh; pull-to-refresh
+  must never clear existing content while it runs.
+- Every data screen needs loading, empty, and error states — never a
+  blank spinner forever or a silent failure.
+
+## 6. Real-Time Updates
+
+Where the backend supports it, screens stay live instead of re-fetching
+on a loop.
+
+- Use real-time subscriptions instead of polling when the backend allows it.
+- Merge incoming updates into existing state rather than reloading the
+  whole screen.
+- Preserve scroll position and in-progress user interaction when new data
+  arrives; don't interrupt what the user is doing.
+
+## 7. Lists, Media & Performance
+
+Assume every screen is judged against a smooth 60fps mobile experience.
+
+- Use `FlatList` for small/simple lists (roughly under a few hundred
+  items). For anything larger, or any list showing scroll jank or blank
+  cells, use `FlashList` (`@shopify/flash-list`) — v2 requires the New
+  Architecture, needs no size estimates, and runs in Expo Go on SDK 55+.
+  Never render long lists with `ScrollView` + `.map()`.
+- Virtualize feeds; avoid mounting every video/image at once, and pause
+  off-screen media.
+- Use `expo-image`, not the bare `Image` component, for loading/caching;
+  size images appropriately — don't load full-res into small thumbnails.
+- Memoize expensive components/values; never fetch data inside a render
+  function.
+- Use pagination or infinite scroll for large datasets instead of loading
+  everything at once.
+
+## 8. Platform Handling
+
+- Use `Platform.OS` / `Platform.select` only when behavior genuinely
+  differs (keyboard, shadows, status bar, file pickers, haptics).
+- Prefer cross-platform Expo modules (`expo-image`, `expo-video`,
+  `expo-secure-store`, `expo-haptics`, `expo-image-picker`, etc.) over
+  custom native modules unless required.
+- Mentally test both iOS and Android; call out platform-only APIs explicitly.
+
+## 9. Styling & UX
+
+- Match the project's existing theme tokens / design system — don't
+  invent one-off colors or spacing if tokens already exist.
+- Touch targets ≥ ~44pt. Disable double-submit on buttons while a request
+  is in flight.
+- Prefer native-feeling transitions already used in the app (sheets,
+  fades) over introducing a new animation library.
+
+## 10. Forms & Inputs
+
+- Controlled inputs with clear, inline validation errors.
+- Dismiss the keyboard on submit where appropriate; keep the primary CTA
+  reachable while typing (see Section 3).
+- Pickers/modals restore focus and scroll position sensibly when closed.
+
+---
+
+## Before Finishing Any Screen
+
+1. Trace the full user path: open → load → act → success/error.
+2. Confirm keyboard coverage on every new or edited input.
+3. Confirm safe-area top and bottom on notched devices.
+4. Confirm loading, empty, and error UI all exist.
+5. Confirm revisiting the screen renders from cache instantly, with no
+   avoidable spinner.
+6. Don't leave TODO stubs for core UX.
+
+### Default stack this project assumes
+`expo-router` · `react-native-safe-area-context` ·
+`react-native-keyboard-controller` · TanStack Query ·
+`react-native-mmkv` · Zustand · FlashList (for large lists) ·
+`expo-image` · real-time subscriptions over polling where supported.

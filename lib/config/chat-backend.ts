@@ -1,5 +1,4 @@
-/** Market chat uses chatcart-api Deal Threads (Postgres). Firestore chat is retired. */
+/** Market chat is chatcart-api Deal Threads (Postgres). Firestore chat is deleted. */
 export function isPostgresChatBackend(): boolean {
-  const raw = (process.env.EXPO_PUBLIC_CHAT_BACKEND || 'postgres').toLowerCase();
-  return raw !== 'firestore';
+  return true;
 }

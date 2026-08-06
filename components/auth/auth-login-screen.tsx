@@ -9,7 +9,6 @@ import { router } from 'expo-router';
 import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   StatusBar,
   StyleSheet,
   Text,
@@ -19,6 +18,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import { Alert } from '@/components/app-alert';
 
 type AuthLoginScreenProps = {
   variant: AppVariant;

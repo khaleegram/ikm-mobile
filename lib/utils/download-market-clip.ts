@@ -1,10 +1,10 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { Alert } from 'react-native';
 
 import { showToast } from '@/components/toast';
 import { getMarketPostPrimaryImage, isVideoMarketPost } from '@/lib/utils/market-media';
 import type { MarketPost } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 function extensionForUri(uri: string, fallback: string) {
   const clean = String(uri || '').split('?')[0];

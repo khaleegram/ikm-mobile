@@ -2,13 +2,14 @@
 // This app is currently Cloud-Functions-first. Until a standalone REST backend exists,
 // keep seller write operations routed through Cloud Functions.
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { DiscountCode, EmailCampaign } from '@/types';
 
 const MARKETING_FUNCTIONS = {
-  createDiscountCode: 'https://creatediscountcode-q3rjv54uka-uc.a.run.app',
-  updateDiscountCode: 'https://updatediscountcode-q3rjv54uka-uc.a.run.app',
-  deleteDiscountCode: 'https://deletediscountcode-q3rjv54uka-uc.a.run.app',
-  validateDiscountCode: 'https://validatediscountcode-q3rjv54uka-uc.a.run.app',
+  createDiscountCode: cloudFunctionUrl('createDiscountCode'),
+  updateDiscountCode: cloudFunctionUrl('updateDiscountCode'),
+  deleteDiscountCode: cloudFunctionUrl('deleteDiscountCode'),
+  validateDiscountCode: cloudFunctionUrl('validateDiscountCode'),
 };
 
 export interface CreateDiscountCodeData {

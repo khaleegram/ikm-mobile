@@ -1,28 +1,21 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { firestore } from './firebase.mjs';
+import { getUser, getUserFcmTokens } from './users.mjs';
 
 const NOTIFICATION_EXPIRY_DAYS = 30;
 
-async function getFcmTokens(userId) {
-  const snap = await firestore
-    .collection('users')
-    .doc(userId)
-    .collection('fcmTokens')
-    .get();
-  return snap.docs.map((d) => d.data()?.token).filter(Boolean);
-}
-
 async function loadSenderName(senderId) {
-  const snap = await firestore.collection('users').doc(senderId).get();
-  if (!snap.exists) return 'Someone';
-  const data = snap.data() || {};
-  return (
-    String(data.displayName || '').trim() ||
-    String(data.fullName || '').trim() ||
-    String(data.username || '').trim() ||
-    'Someone'
-  );
+  try {
+    const user = await getUser(senderId);
+    const name =
+      String(user?.storeName || '').trim() ||
+      String(user?.displayName || '').trim();
+    if (name && !name.includes('@')) return name;
+  } catch {
+    // fall through
+  }
+  return 'Someone';
 }
 
 async function createInAppNotification(input) {
@@ -92,8 +85,11 @@ export async function notifyChatMessage({
     peerId: String(peerId || senderId),
   };
 
+  // Sole FCM token store is Neon users.fcm_tokens — not Firestore fcmTokens subcollection.
+  const tokens = await getUserFcmTokens(recipientId);
+
   await Promise.allSettled([
     createInAppNotification({ recipientId, threadId, peerId: peerId || senderId, title, body }),
-    sendFcmPush(await getFcmTokens(recipientId), title, body, data),
+    sendFcmPush(tokens, title, body, data),
   ]);
 }

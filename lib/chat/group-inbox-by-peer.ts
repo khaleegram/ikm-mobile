@@ -26,7 +26,10 @@ const ACTIVE_STATUSES = new Set<string>([
 const COMPLETED_STATUSES = new Set<string>(['completed', 'closed']);
 
 export function isActiveDealStatus(status?: ChatThreadStatus | string | null): boolean {
-  return ACTIVE_STATUSES.has(String(status || ''));
+  const value = String(status || '').trim();
+  // Missing status = still an open room (treat as browsing)
+  if (!value) return true;
+  return ACTIVE_STATUSES.has(value);
 }
 
 export function isCompletedDealStatus(status?: ChatThreadStatus | string | null): boolean {
@@ -51,7 +54,8 @@ export function groupInboxByPeer(items: ChatInboxItem[]): PeerDealGroup[] {
     if (!existing) {
       map.set(peerId, {
         peerId,
-        peerName: item.peerName || 'User',
+        peerName:
+          item.peerName && !String(item.peerName).includes('@') ? item.peerName : 'User',
         peerAvatar: item.peerAvatar || null,
         peerPresence: item.peerPresence,
         rooms: [item],
@@ -74,14 +78,35 @@ export function groupInboxByPeer(items: ChatInboxItem[]): PeerDealGroup[] {
       existing.lastPreview = item.lastPreview || existing.lastPreview;
       existing.topProductTitle = item.postSnapshot?.title || existing.topProductTitle;
       existing.topProductImage = item.postSnapshot?.imageUrl || existing.topProductImage;
-      if (item.peerName) existing.peerName = item.peerName;
+      if (item.peerName && !String(item.peerName).includes('@')) {
+        existing.peerName = item.peerName;
+      }
       if (item.peerAvatar) existing.peerAvatar = item.peerAvatar;
       if (item.peerPresence) existing.peerPresence = item.peerPresence;
     }
   }
 
   for (const group of map.values()) {
-    group.rooms.sort((a, b) => lastAtMs(b.lastAt) - lastAtMs(a.lastAt));
+    // One room per product — keep newest thread for each postId
+    const buckets = new Map<string, ChatInboxItem[]>();
+    for (const room of group.rooms) {
+      const key = String(room.postId || room.threadId || '').trim();
+      if (!key) continue;
+      const list = buckets.get(key) || [];
+      list.push(room);
+      buckets.set(key, list);
+    }
+    group.rooms = Array.from(buckets.values())
+      .map((list) => {
+        const sorted = [...list].sort((a, b) => lastAtMs(b.lastAt) - lastAtMs(a.lastAt));
+        const best = sorted[0];
+        return {
+          ...best,
+          unreadCount: list.reduce((sum, room) => sum + Number(room.unreadCount || 0), 0),
+        };
+      })
+      .sort((a, b) => lastAtMs(b.lastAt) - lastAtMs(a.lastAt));
+    group.activeRoomCount = group.rooms.filter((room) => isActiveDealStatus(room.status)).length;
   }
 
   return Array.from(map.values()).sort((a, b) => lastAtMs(b.lastAt) - lastAtMs(a.lastAt));

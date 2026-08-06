@@ -1,8 +1,9 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const TRANSACTION_FUNCTIONS = {
-  calculateSellerEarnings: 'https://calculatesellerearnings-q3rjv54uka-uc.a.run.app',
-  getSellerTransactions: 'https://getsellertransactions-q3rjv54uka-uc.a.run.app',
+  calculateSellerEarnings: cloudFunctionUrl('calculateSellerEarnings'),
+  getSellerTransactions: cloudFunctionUrl('getSellerTransactions'),
 };
 
 export interface EarningsStats {

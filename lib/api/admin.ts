@@ -5,27 +5,29 @@
 // All platform_settings writes must be server-side only.
 //
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { User, Order, OrderStatus } from '@/types';
 
 const ADMIN_FUNCTIONS = {
-  getAllUsers: 'https://getallusers-q3rjv54uka-uc.a.run.app',
-  grantAdminRole: 'https://grantadminrole-q3rjv54uka-uc.a.run.app',
-  revokeAdminRole: 'https://revokeadminrole-q3rjv54uka-uc.a.run.app',
-  getPlatformSettings: 'https://getplatformsettings-q3rjv54uka-uc.a.run.app',
-  updatePlatformSettings: 'https://updateplatformsettings-q3rjv54uka-uc.a.run.app',
-  getAllOrders: 'https://getallorders-q3rjv54uka-uc.a.run.app',
-  resolveDispute: 'https://resolvedispute-q3rjv54uka-uc.a.run.app',
-  getAllPayouts: 'https://getallpayouts-q3rjv54uka-uc.a.run.app',
-  updateOrderStatus: 'https://updateorderstatus-q3rjv54uka-uc.a.run.app',
-  getAccessLogs: 'https://getaccesslogs-q3rjv54uka-uc.a.run.app',
-  getFailedLogins: 'https://getfailedlogins-q3rjv54uka-uc.a.run.app',
-  getApiKeys: 'https://getapikeys-q3rjv54uka-uc.a.run.app',
-  createApiKey: 'https://createapikey-q3rjv54uka-uc.a.run.app',
-  revokeApiKey: 'https://revokeapikey-q3rjv54uka-uc.a.run.app',
-  getSecuritySettings: 'https://getsecuritysettings-q3rjv54uka-uc.a.run.app',
-  updateSecuritySettings: 'https://updatesecuritysettings-q3rjv54uka-uc.a.run.app',
-  getAuditTrail: 'https://getaudittrail-q3rjv54uka-uc.a.run.app',
-  getFirestoreRules: 'https://getfirestorerules-q3rjv54uka-uc.a.run.app',
+  getAllUsers: cloudFunctionUrl('getAllUsers'),
+  grantAdminRole: cloudFunctionUrl('grantAdminRole'),
+  revokeAdminRole: cloudFunctionUrl('revokeAdminRole'),
+  getPlatformSettings: cloudFunctionUrl('getPlatformSettings'),
+  updatePlatformSettings: cloudFunctionUrl('updatePlatformSettings'),
+  getAllOrders: cloudFunctionUrl('getAllOrders'),
+  resolveDispute: cloudFunctionUrl('resolveDispute'),
+  retryOrderRefund: cloudFunctionUrl('retryOrderRefund'),
+  getAllPayouts: cloudFunctionUrl('getAllPayouts'),
+  updateOrderStatus: cloudFunctionUrl('updateOrderStatus'),
+  getAccessLogs: cloudFunctionUrl('getAccessLogs'),
+  getFailedLogins: cloudFunctionUrl('getFailedLogins'),
+  getApiKeys: cloudFunctionUrl('getApiKeys'),
+  createApiKey: cloudFunctionUrl('createApiKey'),
+  revokeApiKey: cloudFunctionUrl('revokeApiKey'),
+  getSecuritySettings: cloudFunctionUrl('getSecuritySettings'),
+  updateSecuritySettings: cloudFunctionUrl('updateSecuritySettings'),
+  getAuditTrail: cloudFunctionUrl('getAuditTrail'),
+  getFirestoreRules: cloudFunctionUrl('getFirestoreRules'),
 };
 
 export interface UpdateUserRoleData {
@@ -199,6 +201,18 @@ export const adminApi = {
     refundAmount?: number;
   }): Promise<void> => {
     await coreCloudClient.request(ADMIN_FUNCTIONS.resolveDispute, {
+      method: 'POST',
+      body: data,
+      requiresAuth: true,
+    });
+  },
+
+  retryOrderRefund: async (data: {
+    orderId: string;
+    amountNgn?: number;
+    reason?: string;
+  }): Promise<void> => {
+    await coreCloudClient.request(ADMIN_FUNCTIONS.retryOrderRefund, {
       method: 'POST',
       body: data,
       requiresAuth: true,

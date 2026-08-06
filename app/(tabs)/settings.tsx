@@ -6,8 +6,9 @@ import { useTheme } from '@/lib/theme/theme-context';
 import { isAdmin } from '@/lib/utils/auth-helpers';
 import { haptics } from '@/lib/utils/haptics';
 import { router } from 'expo-router';
-import { ActivityIndicator, Alert, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Alert } from '@/components/app-alert';
 
 export default function SettingsTabScreen() {
   const { user, signOut, loading: authLoading } = useUser();

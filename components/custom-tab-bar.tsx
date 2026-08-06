@@ -1,11 +1,13 @@
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import type { IconSymbolName } from '@/components/ui/icon-symbol';
+import { useUser } from '@/lib/firebase/auth/use-user';
+import { useChatInbox } from '@/lib/hooks/use-chat-inbox';
 import { premiumShadow } from '@/lib/theme/styles';
 import { useTheme } from '@/lib/theme/theme-context';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
-import { useRouter } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -58,7 +60,15 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  
+  const pathname = usePathname();
+  const { user } = useUser();
+  const { items: inboxItems } = useChatInbox(user?.uid || null);
+  const inboxUnreadTotal = useMemo(
+    () =>
+      inboxItems.reduce((sum, item) => sum + Math.max(0, Number(item.unreadCount || 0)), 0),
+    [inboxItems]
+  );
+
   // Unique gradient ID for this component instance
   const gradientId = useMemo(() => `barGradient-${Math.random().toString(36).substr(2, 9)}`, []);
 
@@ -140,9 +150,14 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
   const nestedRouteName =
     nestedState?.routes?.[nestedState.index ?? Math.max((nestedState.routes?.length || 1) - 1, 0)]?.name ||
     null;
+  // Pathname is more reliable than nested state during push transitions (avoids a flash of tab bar / bottom gap).
+  const path = String(pathname || '');
+  const hideOnMessagesPath =
+    /\/messages\/(?:peer\/[^/]+|[^/]+)/.test(path) && !/\/messages\/?$/.test(path);
   // Hide bottom nav inside chat threads + peer product hubs (keep it on inbox root only).
   const hideOnNestedMessages =
-    focusedRoute.name === 'messages' && Boolean(nestedRouteName) && nestedRouteName !== 'index';
+    hideOnMessagesPath ||
+    (focusedRoute.name === 'messages' && Boolean(nestedRouteName) && nestedRouteName !== 'index');
   const shouldHideTabBar = focusedTabBarStyle?.display === 'none' || hideOnNestedMessages;
   if (shouldHideTabBar) {
     return null;
@@ -199,20 +214,40 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
               );
             }
 
+            const showInboxBadge = name === 'messages' && inboxUnreadTotal > 0;
+            const badgeLabel = inboxUnreadTotal > 99 ? '99+' : String(inboxUnreadTotal);
+
             return (
               <TouchableOpacity
                 key={route.key}
                 accessibilityRole="button"
                 accessibilityState={isFocused ? { selected: true } : {}}
-                accessibilityLabel={descriptors[route.key]?.options?.tabBarAccessibilityLabel}
+                accessibilityLabel={
+                  showInboxBadge
+                    ? `Inbox, ${inboxUnreadTotal} unread`
+                    : descriptors[route.key]?.options?.tabBarAccessibilityLabel
+                }
                 onPress={() => handleTabPress(route, index)}
                 style={styles.marketTabButton}>
                 <View style={styles.marketTabInner}>
-                  <IconSymbol
-                    size={23}
-                    name={isFocused ? fallbackIcon.focused : fallbackIcon.unfocused}
-                    color={iconColor}
-                  />
+                  <View style={styles.iconWithBadge}>
+                    <IconSymbol
+                      size={23}
+                      name={isFocused ? fallbackIcon.focused : fallbackIcon.unfocused}
+                      color={iconColor}
+                    />
+                    {showInboxBadge ? (
+                      <View
+                        style={[
+                          styles.inboxBadge,
+                          isImmersiveMarketFeed
+                            ? styles.inboxBadgeOnFeed
+                            : { backgroundColor: lightBrown },
+                        ]}>
+                        <Text style={styles.inboxBadgeText}>{badgeLabel}</Text>
+                      </View>
+                    ) : null}
+                  </View>
                   {isFocused && (
                     <View style={[
                       styles.glowDot,
@@ -380,6 +415,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
+  },
+  iconWithBadge: {
+    position: 'relative',
+    width: 28,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inboxBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: 'rgba(0,0,0,0.35)',
+  },
+  inboxBadgeOnFeed: {
+    backgroundColor: '#E85D4C',
+    borderColor: 'rgba(0,0,0,0.45)',
+  },
+  inboxBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+    lineHeight: 12,
   },
   glowDot: {
     width: 4,

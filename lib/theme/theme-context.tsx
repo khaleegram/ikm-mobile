@@ -1,10 +1,31 @@
 // Theme context for managing light/dark mode
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { useColorScheme as useSystemColorScheme } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { appStorage } from '@/lib/storage/mmkv';
 import { ColorScheme, getColors } from './colors';
 
 const THEME_STORAGE_KEY = '@ikm_theme_preference';
+
+function readStoredTheme(): ColorScheme | null {
+  const saved = appStorage.getString(THEME_STORAGE_KEY);
+  if (saved === 'light' || saved === 'dark') return saved;
+  return null;
+}
+
+function writeStoredTheme(scheme: ColorScheme) {
+  appStorage.set(THEME_STORAGE_KEY, scheme);
+}
+
+// One-time migrate legacy AsyncStorage theme into MMKV.
+void AsyncStorage.getItem(THEME_STORAGE_KEY)
+  .then((saved) => {
+    if ((saved === 'light' || saved === 'dark') && !appStorage.contains(THEME_STORAGE_KEY)) {
+      appStorage.set(THEME_STORAGE_KEY, saved);
+    }
+  })
+  .catch(() => {});
 
 interface ThemeContextType {
   colorScheme: ColorScheme;
@@ -17,32 +38,21 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemScheme = useSystemColorScheme();
-  const [colorScheme, setColorScheme] = useState<ColorScheme>(
-    (systemScheme || 'light') as ColorScheme
-  );
-
-  useEffect(() => {
-    // Load saved theme preference
-    AsyncStorage.getItem(THEME_STORAGE_KEY).then((saved) => {
-      if (saved === 'light' || saved === 'dark') {
-        setColorScheme(saved);
-      } else if (systemScheme) {
-        setColorScheme(systemScheme as ColorScheme);
-      }
-    });
-  }, [systemScheme]);
+  const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
+    return readStoredTheme() ?? ((systemScheme || 'light') as ColorScheme);
+  });
 
   const toggleTheme = useCallback(() => {
     setColorScheme((prev: ColorScheme) => {
       const next = prev === 'light' ? 'dark' : 'light';
-      AsyncStorage.setItem(THEME_STORAGE_KEY, next);
+      writeStoredTheme(next);
       return next;
     });
   }, []);
 
   const setTheme = useCallback((scheme: ColorScheme) => {
     setColorScheme(scheme);
-    AsyncStorage.setItem(THEME_STORAGE_KEY, scheme);
+    writeStoredTheme(scheme);
   }, []);
 
   const colors = useMemo(() => getColors(colorScheme), [colorScheme]);
@@ -65,4 +75,3 @@ export function useTheme() {
   }
   return context;
 }
-

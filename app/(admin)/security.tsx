@@ -1,5 +1,5 @@
 // Admin security and access management
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -8,6 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useAllUsers, useAllOrders } from '@/lib/firebase/firestore/admin';
+import { Alert } from '@/components/app-alert';
 
 export default function AdminSecurity() {
   const { colors, colorScheme } = useTheme();

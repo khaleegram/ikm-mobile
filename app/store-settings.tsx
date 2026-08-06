@@ -1,5 +1,7 @@
 // Store settings screen with organized categories
-import { useState, useEffect } from 'react';
+import {
+  useState,
+  useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,23 +9,26 @@ import {
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
-  Image,
+  Image
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { useStore } from '@/lib/firebase/firestore/stores';
 import { userApi } from '@/lib/api/user';
+import { buildUserMediaPath } from '@/lib/utils/media-path';
 import { pickImage, uploadImage } from '@/lib/utils/image-upload';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { premiumShadow } from '@/lib/theme/styles';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import { Alert } from '@/components/app-alert';
 
 type Category = 'personal' | 'store' | 'location' | 'policies' | 'social' | 'hours' | 'contact' | 'payout';
 
 export default function SettingsScreen() {
+  const insets = useSafeAreaInsets();
   const { user, signOut } = useUser();
   const { user: profile, loading: profileLoading } = useUserProfile(user?.uid || null);
   const { store, loading: storeLoading } = useStore(user?.uid || null);
@@ -130,7 +135,7 @@ export default function SettingsScreen() {
       if (uri) {
         const uploaded = await uploadImage(
           uri,
-          `store_images/${user.uid}/logo_${Date.now()}.jpg`,
+          buildUserMediaPath('store_images', user.uid, `logo_${Date.now()}.jpg`),
         );
         setFormData((prev) => ({ ...prev, storeLogoUrl: uploaded.url }));
       }
@@ -149,7 +154,7 @@ export default function SettingsScreen() {
       if (uri) {
         const uploaded = await uploadImage(
           uri,
-          `store_images/${user.uid}/banner_${Date.now()}.jpg`,
+          buildUserMediaPath('store_images', user.uid, `banner_${Date.now()}.jpg`),
         );
         setFormData((prev) => ({ ...prev, storeBannerUrl: uploaded.url }));
       }
@@ -272,7 +277,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <IconSymbol name="chevron.left" size={24} color={colors.text} />
         </TouchableOpacity>
@@ -701,7 +706,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       justifyContent: 'space-between',
       alignItems: 'center',
       padding: 16,
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       borderBottomWidth: 1,
       borderBottomColor: colors.cardBorder,
       ...premiumShadow,

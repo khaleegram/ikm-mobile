@@ -1,27 +1,8 @@
 import type { MarketSound } from '@/types';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  increment,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  writeBatch,
-} from 'firebase/firestore';
 
-import { auth, firestore } from '@/lib/firebase/config';
-
-export interface CreateMarketSoundData {
-  title: string;
-  sourceUri: string;
-  sourceType: MarketSound['sourceType'];
-  artworkUrl?: string;
-  durationMs?: number;
-  creatorName?: string;
-  rightsStatus?: MarketSound['rightsStatus'];
-}
+import { apiUrl } from './api-base';
+import { coreCloudClient } from './core-cloud-client';
+import { auth } from '@/lib/firebase/config';
 
 function requireAuthenticatedUserId(): string {
   const userId = auth.currentUser?.uid;
@@ -31,149 +12,92 @@ function requireAuthenticatedUserId(): string {
   return userId;
 }
 
-function normalizeSoundTitle(value: string): string {
-  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-}
-
-function buildLocalSoundSnapshot(id: string, data: CreateMarketSoundData, userId: string): MarketSound {
-  const now = new Date();
+function normalizeSound(raw: any): MarketSound {
   return {
-    id,
-    title: normalizeSoundTitle(data.title) || 'Untitled sound',
-    createdBy: userId,
-    creatorName: String(data.creatorName || '').trim() || undefined,
-    sourceType: data.sourceType,
-    sourceUri: String(data.sourceUri || '').trim(),
-    artworkUrl: String(data.artworkUrl || '').trim() || undefined,
-    durationMs: Number.isFinite(data.durationMs) ? Math.max(0, Number(data.durationMs)) : undefined,
-    usageCount: 0,
-    savedCount: 0,
-    rightsStatus: data.rightsStatus || 'owned',
-    status: 'active',
-    createdAt: now,
-    updatedAt: now,
+    id: String(raw?.id || ''),
+    title: String(raw?.title || '').trim() || 'Untitled sound',
+    createdBy: String(raw?.createdBy || '').trim(),
+    creatorName: String(raw?.creatorName || '').trim() || undefined,
+    sourceType: raw?.sourceType || 'uploaded',
+    sourceUri: String(raw?.sourceUri || '').trim(),
+    artworkUrl: String(raw?.artworkUrl || '').trim() || undefined,
+    durationMs: Number.isFinite(raw?.durationMs) ? Number(raw.durationMs) : undefined,
+    usageCount: typeof raw?.usageCount === 'number' ? raw.usageCount : 0,
+    savedCount: typeof raw?.savedCount === 'number' ? raw.savedCount : 0,
+    rightsStatus: raw?.rightsStatus || 'owned',
+    status: raw?.status || 'active',
+    createdAt: raw?.createdAt ? new Date(raw.createdAt) : new Date(0),
+    updatedAt: raw?.updatedAt ? new Date(raw.updatedAt) : new Date(0),
   };
 }
 
+/** Neon-backed market sounds API — Firestore marketSounds path removed. */
 export const marketSoundsApi = {
-  async create(data: CreateMarketSoundData): Promise<MarketSound> {
-    const userId = requireAuthenticatedUserId();
-    const title = normalizeSoundTitle(data.title);
-    const sourceUri = String(data.sourceUri || '').trim();
-
-    if (!title) {
-      throw new Error('Sound title is required.');
-    }
-    if (!sourceUri) {
-      throw new Error('Sound source is required.');
-    }
-
-    const soundRef = doc(collection(firestore, 'marketSounds'));
-    const sound = buildLocalSoundSnapshot(soundRef.id, data, userId);
-
-    await setDoc(soundRef, {
-      title: sound.title,
-      createdBy: userId,
-      creatorName: sound.creatorName || null,
-      sourceType: sound.sourceType,
-      sourceUri: sound.sourceUri,
-      artworkUrl: sound.artworkUrl || null,
-      durationMs: sound.durationMs ?? null,
-      usageCount: 0,
-      savedCount: 0,
-      rightsStatus: sound.rightsStatus,
-      status: sound.status,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-
-    return sound;
-  },
-
   async get(soundId: string): Promise<MarketSound | null> {
-    const normalizedSoundId = String(soundId || '').trim();
-    if (!normalizedSoundId) return null;
-
-    const snapshot = await getDoc(doc(firestore, 'marketSounds', normalizedSoundId));
-    if (!snapshot.exists()) return null;
-
-    const data = snapshot.data();
-    return {
-      id: snapshot.id,
-      title: String(data.title || '').trim() || 'Untitled sound',
-      createdBy: String(data.createdBy || '').trim(),
-      creatorName: String(data.creatorName || '').trim() || undefined,
-      sourceType: data.sourceType || 'uploaded',
-      sourceUri: String(data.sourceUri || '').trim(),
-      artworkUrl: String(data.artworkUrl || '').trim() || undefined,
-      durationMs: Number.isFinite(data.durationMs) ? Number(data.durationMs) : undefined,
-      usageCount: typeof data.usageCount === 'number' ? data.usageCount : 0,
-      savedCount: typeof data.savedCount === 'number' ? data.savedCount : 0,
-      rightsStatus: data.rightsStatus || 'owned',
-      status: data.status || 'active',
-      createdAt: data.createdAt?.toDate?.() || new Date(0),
-      updatedAt: data.updatedAt?.toDate?.() || new Date(0),
-    };
+    const id = String(soundId || '').trim();
+    if (!id) return null;
+    try {
+      const response = await coreCloudClient.request<{
+        success: boolean;
+        sound: MarketSound;
+      }>(apiUrl(`/sounds/${encodeURIComponent(id)}`), {
+        method: 'GET',
+        requiresAuth: Boolean(auth.currentUser),
+      });
+      return response.sound ? normalizeSound(response.sound) : null;
+    } catch (error: any) {
+      if (error?.status === 404 || error?.statusCode === 404) return null;
+      throw error;
+    }
   },
 
-  async incrementUsage(soundId: string, amount: number = 1): Promise<void> {
-    const normalizedSoundId = String(soundId || '').trim();
-    if (!normalizedSoundId || !Number.isFinite(amount) || amount === 0) return;
+  async list(limit = 60, q = ''): Promise<MarketSound[]> {
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.min(120, Math.max(1, limit))));
+    if (String(q || '').trim()) params.set('q', String(q).trim());
+    const response = await coreCloudClient.request<{ success: boolean; sounds: MarketSound[] }>(
+      apiUrl(`/sounds?${params.toString()}`),
+      { method: 'GET', requiresAuth: false }
+    );
+    return Array.isArray(response.sounds) ? response.sounds.map(normalizeSound) : [];
+  },
 
-    await updateDoc(doc(firestore, 'marketSounds', normalizedSoundId), {
-      usageCount: increment(amount),
-      updatedAt: serverTimestamp(),
-    });
+  async listSaved(limit = 150): Promise<MarketSound[]> {
+    requireAuthenticatedUserId();
+    const response = await coreCloudClient.request<{ success: boolean; sounds: MarketSound[] }>(
+      apiUrl(`/sounds/saved?limit=${Math.min(200, Math.max(1, limit))}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.sounds) ? response.sounds.map(normalizeSound) : [];
+  },
+
+  async listSavedIds(limit = 150): Promise<string[]> {
+    requireAuthenticatedUserId();
+    const response = await coreCloudClient.request<{ success: boolean; ids: string[] }>(
+      apiUrl(`/sounds/saved/ids?limit=${Math.min(200, Math.max(1, limit))}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.ids) ? response.ids : [];
   },
 
   async saveSound(soundId: string): Promise<void> {
-    const userId = requireAuthenticatedUserId();
-    const normalizedSoundId = String(soundId || '').trim();
-    if (!normalizedSoundId) {
-      throw new Error('Sound not found.');
-    }
-
-    const saveRef = doc(firestore, 'marketSoundSaves', `${userId}_${normalizedSoundId}`);
-    const saveSnapshot = await getDoc(saveRef);
-    if (saveSnapshot.exists()) return;
-
-    const batch = writeBatch(firestore);
-    batch.set(saveRef, {
-      soundId: normalizedSoundId,
-      userId,
-      createdAt: serverTimestamp(),
+    requireAuthenticatedUserId();
+    const id = String(soundId || '').trim();
+    if (!id) throw new Error('Sound not found.');
+    await coreCloudClient.request(apiUrl(`/sounds/${encodeURIComponent(id)}/save`), {
+      method: 'POST',
+      requiresAuth: true,
     });
-    batch.set(
-      doc(firestore, 'marketSounds', normalizedSoundId),
-      {
-        savedCount: increment(1),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-    await batch.commit();
   },
 
   async unsaveSound(soundId: string): Promise<void> {
-    const userId = requireAuthenticatedUserId();
-    const normalizedSoundId = String(soundId || '').trim();
-    if (!normalizedSoundId) return;
-
-    const saveRef = doc(firestore, 'marketSoundSaves', `${userId}_${normalizedSoundId}`);
-    const saveSnapshot = await getDoc(saveRef);
-    if (!saveSnapshot.exists()) return;
-
-    const batch = writeBatch(firestore);
-    batch.delete(saveRef);
-    batch.set(
-      doc(firestore, 'marketSounds', normalizedSoundId),
-      {
-        savedCount: increment(-1),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-    await batch.commit();
+    requireAuthenticatedUserId();
+    const id = String(soundId || '').trim();
+    if (!id) return;
+    await coreCloudClient.request(apiUrl(`/sounds/${encodeURIComponent(id)}/save`), {
+      method: 'DELETE',
+      requiresAuth: true,
+    });
   },
 
   async toggleSaveSound(soundId: string, isSaved: boolean): Promise<void> {
@@ -182,21 +106,5 @@ export const marketSoundsApi = {
       return;
     }
     await this.saveSound(soundId);
-  },
-
-  async delete(soundId: string): Promise<void> {
-    const userId = requireAuthenticatedUserId();
-    const normalizedSoundId = String(soundId || '').trim();
-    if (!normalizedSoundId) return;
-
-    const soundSnapshot = await getDoc(doc(firestore, 'marketSounds', normalizedSoundId));
-    if (!soundSnapshot.exists()) return;
-
-    const ownerId = String(soundSnapshot.data()?.createdBy || '').trim();
-    if (!ownerId || ownerId !== userId) {
-      throw new Error('Only the sound owner can delete this sound.');
-    }
-
-    await deleteDoc(doc(firestore, 'marketSounds', normalizedSoundId));
   },
 };

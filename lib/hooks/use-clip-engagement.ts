@@ -1,9 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { marketPostsApi } from '@/lib/api/market-posts';
+import { queryClient } from '@/lib/query/client';
+import { queryKeys } from '@/lib/query/keys';
 import { haptics } from '@/lib/utils/haptics';
 import { shareMarketPost } from '@/lib/utils/market-post-share';
 import type { MarketPost } from '@/types';
+
+function patchLikedPostIds(userId: string, postId: string, liked: boolean) {
+  const key = queryKeys.social.liked(userId);
+  const previous = queryClient.getQueryData<string[]>(key);
+  if (!previous && !queryClient.getQueryState(key)) {
+    // Don't invent a liked list if the screen never loaded one — invalidate so Liked tab
+    // picks it up on next open rather than seeding a partial cache.
+    void queryClient.invalidateQueries({ queryKey: key });
+    return;
+  }
+  const list = previous ?? [];
+  const next = liked
+    ? [...new Set([...list, postId])]
+    : list.filter((id) => id !== postId);
+  queryClient.setQueryData(key, next);
+}
 
 export interface UseClipEngagementOptions {
   post: MarketPost;
@@ -53,6 +71,7 @@ export function useClipEngagement({
 
   const fireLike = useCallback(async (targetLiked: boolean) => {
     const pid = postIdRef.current;
+    const uid = userRef.current?.uid;
     if (!pid || likePendingRef.current) return;
     likePendingRef.current = true;
     try {
@@ -61,6 +80,9 @@ export function useClipEngagement({
       serverIsLikedRef.current = result.isLiked;
       setOptLikes(result.likes);
       setOptLiked(result.isLiked === targetLiked ? null : result.isLiked);
+      if (uid) {
+        patchLikedPostIds(uid, pid, result.isLiked);
+      }
       onPatchItemRef.current?.(pid, {
         likes: result.likes,
         likedBy: result.isLiked
@@ -70,6 +92,9 @@ export function useClipEngagement({
     } catch {
       setOptLiked(serverIsLikedRef.current);
       setOptLikes(serverLikesRef.current);
+      if (uid) {
+        patchLikedPostIds(uid, pid, serverIsLikedRef.current);
+      }
       haptics.error();
     } finally {
       likePendingRef.current = false;
@@ -77,18 +102,23 @@ export function useClipEngagement({
   }, [post.likedBy]);
 
   const toggleLike = useCallback(() => {
-    if (!userRef.current) return;
+    const uid = userRef.current?.uid;
+    const pid = postIdRef.current;
+    if (!uid || !pid) return;
     const previousLiked = optLiked ?? serverIsLikedRef.current;
     const nextLiked = !previousLiked;
     const nextLikes = Math.max(0, optLikes + (nextLiked ? 1 : -1));
     setOptLiked(nextLiked);
     setOptLikes(nextLikes);
+    patchLikedPostIds(uid, pid, nextLiked);
     haptics.light();
     void fireLike(nextLiked);
   }, [fireLike, optLiked, optLikes]);
 
   const likeIfNeeded = useCallback(() => {
-    if (!userRef.current) return;
+    const uid = userRef.current?.uid;
+    const pid = postIdRef.current;
+    if (!uid || !pid) return;
     const alreadyLiked = optLiked ?? serverIsLikedRef.current;
     if (alreadyLiked) {
       haptics.light();
@@ -97,6 +127,7 @@ export function useClipEngagement({
     const nextLikes = Math.max(0, optLikes + 1);
     setOptLiked(true);
     setOptLikes(nextLikes);
+    patchLikedPostIds(uid, pid, true);
     haptics.medium();
     void fireLike(true);
   }, [fireLike, optLiked, optLikes]);

@@ -67,35 +67,37 @@ export async function upsertUserFromAuth(userId, profile = {}) {
   return getUser(userId);
 }
 
-export async function getUser(userId) {
-  const db = requirePool();
-  const id = asString(userId);
-  if (!id) return null;
-  const { rows } = await db.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [id]);
-  if (rows[0] && (rows[0].display_name || rows[0].avatar_url)) {
-    return mapUserRow(rows[0]);
+async function hydrateUserFromFirestoreIfNeeded(id, row) {
+  // Skip Firestore when Neon already has a usable store/display name.
+  // (Do not require avatar_url — logos often live only in store_logo_url.)
+  const hasName = Boolean(asString(row?.store_name) || asString(row?.display_name));
+  if (row && hasName) {
+    return mapUserRow(row);
   }
 
-  // One-time hydrate from Firestore users doc if Postgres row is thin.
+  // One-time hydrate from Firestore users doc if Postgres row is thin / missing store.
   try {
     const snap = await firestore.collection('users').doc(id).get();
     if (snap.exists) {
       const data = snap.data() || {};
       const first = asString(data.firstName);
       const last = asString(data.lastName);
-      const displayName =
-        asString(data.displayName) || `${first} ${last}`.trim() || asString(data.storeName) || null;
+      const storeName = asString(data.storeName);
+      const personName = asString(data.displayName) || `${first} ${last}`.trim() || null;
+      const safePersonName =
+        personName && String(personName).includes('@') ? null : personName;
       await upsertUserFromAuth(id, {
         email: data.email,
-        displayName,
-        storeName: data.storeName,
-        avatarUrl: data.photoURL || data.avatarUrl,
+        displayName: storeName || safePersonName,
+        storeName: storeName || null,
+        avatarUrl: data.storeLogoUrl || data.photoURL || data.avatarUrl,
         storeLogoUrl: data.storeLogoUrl,
         role: data.role || data.marketRole,
         marketLocation: data.marketLocation || data.location || null,
         marketBuyerLocation: data.marketBuyerLocation || null,
         marketBuyerPhone: data.marketBuyerPhone || null,
       });
+      const db = requirePool();
       const refreshed = await db.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [id]);
       return mapUserRow(refreshed.rows[0]);
     }
@@ -103,11 +105,53 @@ export async function getUser(userId) {
     // ignore
   }
 
-  return mapUserRow(rows[0]) || { id, displayName: 'User', avatarUrl: null };
+  return mapUserRow(row) || { id, displayName: 'User', avatarUrl: null };
+}
+
+export async function getUser(userId) {
+  const db = requirePool();
+  const id = asString(userId);
+  if (!id) return null;
+  const { rows } = await db.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [id]);
+  return hydrateUserFromFirestoreIfNeeded(id, rows[0]);
+}
+
+/**
+ * One round-trip for inbox/list screens — replaces N individual getUser / Firestore listeners.
+ * Caps at 50 ids; hydrates thin rows the same way as getUser.
+ */
+export async function getUsersBatch(userIds = []) {
+  const db = requirePool();
+  const ids = [
+    ...new Set(
+      (Array.isArray(userIds) ? userIds : [])
+        .map((id) => asString(id))
+        .filter(Boolean)
+    ),
+  ].slice(0, 50);
+
+  if (ids.length === 0) return [];
+
+  const { rows } = await db.query(`SELECT * FROM users WHERE id = ANY($1::text[])`, [ids]);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  const users = await Promise.all(
+    ids.map(async (id) => hydrateUserFromFirestoreIfNeeded(id, byId.get(id)))
+  );
+  return users.filter(Boolean);
+}
+
+export async function getUserFcmTokens(userId) {
+  const db = requirePool();
+  const id = asString(userId);
+  if (!id) return [];
+  const { rows } = await db.query(`SELECT fcm_tokens FROM users WHERE id = $1 LIMIT 1`, [id]);
+  const tokens = rows[0]?.fcm_tokens;
+  return Array.isArray(tokens) ? tokens.map((t) => asString(t)).filter(Boolean) : [];
 }
 
 export async function updateUser(userId, patch = {}) {
-  return upsertUserFromAuth(userId, {
+  const user = await upsertUserFromAuth(userId, {
     displayName: patch.displayName,
     storeName: patch.storeName,
     avatarUrl: patch.avatarUrl || patch.photoURL,
@@ -118,6 +162,30 @@ export async function updateUser(userId, patch = {}) {
     role: patch.role,
     email: patch.email,
   });
+
+  // The COALESCE upsert ignores nulls, so an explicit clear (patch key present but
+  // empty/null) must be applied separately — otherwise a removed phone number would
+  // silently reappear at checkout.
+  const clearPhone =
+    Object.prototype.hasOwnProperty.call(patch, 'marketBuyerPhone') &&
+    !asString(patch.marketBuyerPhone);
+  const clearLocation =
+    Object.prototype.hasOwnProperty.call(patch, 'marketBuyerLocation') &&
+    patch.marketBuyerLocation === null;
+  if (clearPhone || clearLocation) {
+    const db = requirePool();
+    await db.query(
+      `UPDATE users SET
+         market_buyer_phone = CASE WHEN $2 THEN NULL ELSE market_buyer_phone END,
+         market_buyer_location = CASE WHEN $3 THEN NULL ELSE market_buyer_location END,
+         updated_at = now()
+       WHERE id = $1`,
+      [userId, clearPhone, clearLocation]
+    );
+    return getUser(userId);
+  }
+
+  return user;
 }
 
 export async function registerFcmToken(userId, token) {
@@ -137,6 +205,24 @@ export async function registerFcmToken(userId, token) {
        )
      ),
      updated_at = now()
+     WHERE id = $1`,
+    [userId, clean]
+  );
+  return { success: true };
+}
+
+export async function unregisterFcmToken(userId, token) {
+  const db = requirePool();
+  const clean = asString(token);
+  if (!clean) {
+    const err = new Error('token is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  await db.query(
+    `UPDATE users
+     SET fcm_tokens = array_remove(COALESCE(fcm_tokens, '{}'), $2),
+         updated_at = now()
      WHERE id = $1`,
     [userId, clean]
   );

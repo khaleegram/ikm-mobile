@@ -1,14 +1,13 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
   Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -19,18 +18,18 @@ import { SellerCardMediaViewer } from '@/components/market/seller-card-media-vie
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { showToast } from '@/components/toast';
-import { buildDirectConversationId } from '@/lib/api/market-messages';
-import { marketSocialApi } from '@/lib/api/market-social';
+import { buildDirectConversationId } from '@/lib/chat/conversation-ids';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserMarketPosts } from '@/lib/firebase/firestore/market-posts';
-import { useIsFollowing } from '@/lib/firebase/firestore/market-social';
+import { useUserMarketPosts } from '@/lib/hooks/use-market-post';
+import { toggleFollow, useIsFollowing } from '@/lib/hooks/use-social';
 import { usePublicUserProfile } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
-import { startAskPriceChat } from '@/lib/utils/market-ask-price-chat';
+import { startPostQuoteChat } from '@/lib/utils/market-ask-price-chat';
 import { buildSellerFeedItems, type SellerFeedItem } from '@/lib/utils/seller-feed';
 import { useTheme } from '@/lib/theme/theme-context';
 import type { MarketPost } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 const TAB_BAR_CLEARANCE = 110;
@@ -44,17 +43,13 @@ export default function SellerProfileScreen() {
   const { posts, loading: postsLoading } = useUserMarketPosts(sellerId ?? null);
   const { isFollowing, loading: followLoading } = useIsFollowing(user?.uid ?? null, sellerId ?? null);
   const [followPending, setFollowPending] = useState(false);
-  const [optimisticFollowing, setOptimisticFollowing] = useState<boolean | null>(null);
   const [infoVisible, setInfoVisible] = useState(false);
   const [viewingPost, setViewingPost] = useState<{ post: MarketPost; mediaIndex: number } | null>(null);
   const marketLoginRoute = getLoginRouteForVariant('market');
-  const isEffectivelyFollowing = optimisticFollowing ?? isFollowing;
-
-  React.useEffect(() => {
-    if (optimisticFollowing !== null && optimisticFollowing === isFollowing) {
-      setOptimisticFollowing(null);
-    }
-  }, [isFollowing, optimisticFollowing]);
+  // toggleFollow optimistically updates the shared following-list cache that useIsFollowing
+  // reads from, so `isFollowing` itself reflects the pending state instantly — no local
+  // optimistic override needed, and every other screen sharing that cache updates too.
+  const isEffectivelyFollowing = isFollowing;
 
   const isOwnProfile = user?.uid === sellerId;
 
@@ -115,13 +110,11 @@ export default function SellerProfileScreen() {
     if (followPending || followLoading) return;
     setFollowPending(true);
     const nextFollowing = !isEffectivelyFollowing;
-    setOptimisticFollowing(nextFollowing);
     haptics.medium();
     try {
-      await marketSocialApi.setFollowState(sellerId!, nextFollowing);
+      await toggleFollow(user.uid, sellerId!, isEffectivelyFollowing);
       showToast(nextFollowing ? 'Now following!' : 'Unfollowed.', 'success');
     } catch (e: any) {
-      setOptimisticFollowing(isFollowing);
       haptics.error();
       showToast(e?.message || 'Unable to update follow.', 'error');
     } finally {
@@ -141,14 +134,17 @@ export default function SellerProfileScreen() {
 
   const handleAskPrice = useCallback(
     (post: MarketPost) => {
-      void startAskPriceChat({
+      const hasPrice = typeof post.price === 'number' && post.price > 0;
+      void startPostQuoteChat({
         post,
         buyerId: user?.uid || '',
         sellerName,
+        sellerAvatar: seller?.storeLogoUrl,
+        mode: hasPrice ? 'dm' : 'ask-price',
         marketLoginRoute,
       });
     },
-    [marketLoginRoute, sellerName, user?.uid]
+    [marketLoginRoute, seller?.storeLogoUrl, sellerName, user?.uid]
   );
 
   const openPost = useCallback((post: MarketPost, mediaIndex = 0) => {
@@ -198,14 +194,8 @@ export default function SellerProfileScreen() {
     [avatarUri, cardColor, colors.border, colors.text, colors.textSecondary, handleAskPrice, isOwnProfile, mediaFallbackColor, openBuy, openPost]
   );
 
-  if (sellerLoading) {
-    return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
-        <ActivityIndicator color={lightBrown} size="large" />
-      </View>
-    );
-  }
-
+  // Never block the whole screen on profile — listings Query starts immediately and should
+  // paint from cache / Neon without waiting on a thin-user Firestore hydrate.
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Compact WhatsApp-style header */}
@@ -225,18 +215,22 @@ export default function SellerProfileScreen() {
             <Image source={{ uri: avatarUri }} style={styles.headerAvatar} contentFit="cover" />
           ) : (
             <View style={[styles.headerAvatar, styles.avatarFallback, { backgroundColor: `${lightBrown}33` }]}>
-              <Text style={[styles.avatarInitials, { color: lightBrown }]}>{initials}</Text>
+              {sellerLoading ? (
+                <ActivityIndicator size="small" color={lightBrown} />
+              ) : (
+                <Text style={[styles.avatarInitials, { color: lightBrown }]}>{initials}</Text>
+              )}
             </View>
           )}
           <View style={styles.headerTextBlock}>
             <View style={styles.headerNameRow}>
               <Text style={[styles.headerName, { color: colors.text }]} numberOfLines={1}>
-                {sellerName}
+                {sellerLoading && !seller ? 'Store' : sellerName}
               </Text>
               <VerifiedBadge size={14} />
             </View>
             <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
-              {headerSubtitle}
+              {sellerLoading && !seller ? 'Loading…' : headerSubtitle}
             </Text>
           </View>
         </TouchableOpacity>
@@ -319,11 +313,14 @@ export default function SellerProfileScreen() {
           !isOwnProfile && viewingPost
             ? () => {
                 const post = viewingPost.post;
+                const hasPrice = typeof post.price === 'number' && post.price > 0;
                 closeViewer();
-                void startAskPriceChat({
+                void startPostQuoteChat({
                   post,
                   buyerId: user?.uid || '',
                   sellerName,
+                  sellerAvatar: seller?.storeLogoUrl,
+                  mode: hasPrice ? 'dm' : 'ask-price',
                   marketLoginRoute,
                 });
               }

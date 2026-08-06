@@ -1,10 +1,11 @@
 import { Redirect } from 'expo-router';
-import { ActivityIndicator, Alert, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import { useEffect, useRef } from 'react';
 
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { hasAppAccess } from '@/lib/utils/auth-helpers';
 import { getAppVariant } from '@/lib/utils/app-variant';
+import { Alert } from '@/components/app-alert';
 
 export default function Index() {
   const { user, loading, signOut } = useUser();

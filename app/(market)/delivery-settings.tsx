@@ -3,7 +3,7 @@ import { showToast } from '@/components/toast';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
 import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
+import { useMyMarketProfile } from '@/lib/hooks/use-my-market-profile';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getDeviceCoordinates } from '@/lib/utils/device-location';
 import { haptics } from '@/lib/utils/haptics';
@@ -20,6 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const lightBrown = '#A67C52';
@@ -31,16 +32,16 @@ export default function MarketDeliverySettingsScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { user: profile, loading } = useUserProfile(user?.uid || null);
+  const { profile, loading } = useMyMarketProfile(user?.uid || null);
 
   const [saving, setSaving] = useState(false);
   const [capturingLocation, setCapturingLocation] = useState(false);
   const [locationPickerVisible, setLocationPickerVisible] = useState(false);
   const [locationSearch, setLocationSearch] = useState('');
 
-  const phone = String((profile as any)?.marketBuyerPhone || profile?.phone || '').trim();
+  const phone = String(profile?.marketBuyerPhone || '').trim();
   const savedLocation = useMemo(() => {
-    const raw = (profile as any)?.marketBuyerLocation || {};
+    const raw = (profile?.marketBuyerLocation as any) || {};
     return {
       state: String(raw.state || '').trim(),
       city: String(raw.city || '').trim(),
@@ -184,7 +185,12 @@ export default function MarketDeliverySettingsScreen() {
         <View style={{ width: 38 }} />
       </View>
 
-      <View style={[styles.content, { paddingBottom: insets.bottom + 20 }]}>
+      <KeyboardAwareScrollView
+        style={styles.content}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        bottomOffset={24}>
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <Text style={[styles.label, { color: colors.text }]}>Phone Number</Text>
           <View
@@ -200,7 +206,7 @@ export default function MarketDeliverySettingsScreen() {
             </Text>
           </View>
           <Text style={[styles.helper, { color: colors.textSecondary }]}>
-            Phone is locked here. Update it through phone verification.
+            Optional — update your phone in Settings when you want sellers to reach you.
           </Text>
         </View>
 
@@ -272,7 +278,7 @@ export default function MarketDeliverySettingsScreen() {
             <Text style={styles.saveActionText}>Save Delivery Settings</Text>
           )}
         </TouchableOpacity>
-      </View>
+      </KeyboardAwareScrollView>
 
       <Modal
         visible={locationPickerVisible}

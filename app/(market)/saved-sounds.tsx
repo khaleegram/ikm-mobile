@@ -6,9 +6,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { useAudioPlayer } from '@/hooks/use-audio-player';
-import { marketSoundsApi } from '@/lib/api/market-sounds';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useSavedMarketSounds } from '@/lib/firebase/firestore/market-sounds';
+import { toggleMarketSoundSave, useSavedMarketSounds } from '@/lib/hooks/use-market-sounds';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { haptics } from '@/lib/utils/haptics';
@@ -54,13 +53,13 @@ export default function SavedSoundsScreen() {
   }, [audioPlayer, previewingId]);
 
   const toggleUnsave = async (sound: MarketSound) => {
-    if (!sound.id) return;
+    if (!sound.id || !user?.uid) return;
     const soundId = sound.id;
     if (busyIds.includes(soundId)) return;
     setBusyIds((prev) => [...prev, soundId]);
     haptics.light();
     try {
-      await marketSoundsApi.unsaveSound(soundId);
+      await toggleMarketSoundSave(user.uid, soundId, true);
       if (previewingId === soundId) stopPreview();
     } catch (error: any) {
       showToast(error?.message || 'Unable to update saved sound.', 'error');

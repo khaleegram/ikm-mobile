@@ -3,6 +3,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import { mediaApi } from '@/lib/api/media-api';
+import { buildUserMediaPath, type MediaStoragePrefix } from './media-path';
 import { inferFileExtension } from './market-media';
 import {
   prepareAudioForUpload,
@@ -202,12 +203,12 @@ export async function uploadImage(
 
 export async function uploadImages(
   uris: string[],
-  basePath: string,
+  basePath: MediaStoragePrefix,
   userId: string
 ): Promise<string[]> {
   const uploadPromises = uris.map(async (uri, index) => {
     const filename = `image_${Date.now()}_${index}.jpg`;
-    const path = `${basePath}/${userId}/${filename}`;
+    const path = buildUserMediaPath(basePath, userId, filename);
     const result = await uploadImage(uri, path);
     return result.url;
   });

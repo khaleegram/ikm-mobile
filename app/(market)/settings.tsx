@@ -1,21 +1,21 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TouchableOpacity,
   TextInput,
-  Alert,
   ActivityIndicator,
   Switch,
   Linking,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { auth } from '@/lib/firebase/config';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
+import { invalidateMyMarketProfile, useMyMarketProfile } from '@/lib/hooks/use-my-market-profile';
+import { invalidateUserIdentity } from '@/lib/hooks/use-user-identity';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -25,6 +25,13 @@ import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { showToast } from '@/components/toast';
+import { Alert } from '@/components/app-alert';
+import { SmartPhoneField } from '@/components/ui/smart-phone-field';
+import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
+import { usersApi } from '@/lib/api/users-api';
+import { uploadImage } from '@/lib/utils/image-upload';
+import { buildUserMediaPath } from '@/lib/utils/media-path';
+import { isValidPhoneNumber, normalizePhoneInput } from '@/lib/utils/phone';
 
 const lightBrown = '#A67C52';
 
@@ -33,23 +40,56 @@ export default function SettingsScreen() {
   const { colors, colorScheme, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
   const { user, signOut: signOutUser } = useUser();
-  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid || null);
+  const { profile, loading: profileLoading } = useMyMarketProfile(user?.uid || null);
   const [editing, setEditing] = useState(false);
+  const [editingPhone, setEditingPhone] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [updatingPhoto, setUpdatingPhoto] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
+  const [phoneInput, setPhoneInput] = useState('');
 
   const normalizedPhone = React.useMemo(() => {
-    return String((profile as any)?.marketBuyerPhone || profile?.phone || '').trim();
+    return String(profile?.marketBuyerPhone || '').trim();
   }, [profile]);
 
   React.useEffect(() => {
     if (profile) {
       setDisplayName(profile.displayName || '');
+      setPhoneInput(normalizePhoneInput(String(profile.marketBuyerPhone || '').trim()));
     }
   }, [profile]);
 
+  const normalizedPhoneInput = useMemo(() => normalizePhoneInput(phoneInput), [phoneInput]);
+  const isValidPhoneInput = isValidPhoneNumber(normalizedPhoneInput);
+
+  const handleSavePhone = async () => {
+    if (!user?.uid) return;
+    if (phoneInput.trim() && !isValidPhoneInput) {
+      showToast('Enter a valid phone number, or clear the field', 'error');
+      return;
+    }
+
+    setSaving(true);
+    haptics.medium();
+    try {
+      await saveMarketBuyerProfile(user.uid, {
+        marketBuyerPhone: phoneInput.trim() ? normalizedPhoneInput : null,
+      });
+      haptics.success();
+      showToast('Phone updated', 'success');
+      setEditingPhone(false);
+    } catch (error: any) {
+      haptics.error();
+      showToast(error.message || 'Failed to update phone', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSave = async () => {
-    if (!displayName.trim()) {
+    if (!user?.uid) return;
+    const nextName = displayName.trim();
+    if (!nextName) {
       showToast('Display name is required', 'error');
       return;
     }
@@ -58,10 +98,11 @@ export default function SettingsScreen() {
     haptics.medium();
 
     try {
-      // TODO: Update user profile via API
-      // await userApi.updateProfile({ displayName });
+      await usersApi.updateMe({ displayName: nextName });
+      await invalidateMyMarketProfile();
+      invalidateUserIdentity(user.uid);
       haptics.success();
-      showToast('Profile updated successfully', 'success');
+      showToast('Profile updated', 'success');
       setEditing(false);
     } catch (error: any) {
       haptics.error();
@@ -99,6 +140,7 @@ export default function SettingsScreen() {
   };
 
   const handleProfilePicture = async () => {
+    if (!user?.uid || updatingPhoto) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission Required', 'We need access to your photos to update your profile picture.');
@@ -110,19 +152,27 @@ export default function SettingsScreen() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.8,
+        quality: 0.85,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        haptics.medium();
-        // TODO: Upload profile picture via API
-        // const base64 = await convertImageToBase64(result.assets[0].uri);
-        // await userApi.updateProfile({ profilePicture: base64 });
-        showToast('Profile picture updated', 'success');
-      }
-    } catch {
+      if (result.canceled || !result.assets[0]?.uri) return;
+
+      setUpdatingPhoto(true);
+      haptics.medium();
+      const up = await uploadImage(
+        result.assets[0].uri,
+        buildUserMediaPath('profile_pictures', user.uid, `avatar_${Date.now()}.jpg`)
+      );
+      await usersApi.updateMe({ avatarUrl: up.url, storeLogoUrl: up.url });
+      await invalidateMyMarketProfile();
+      invalidateUserIdentity(user.uid);
+      haptics.success();
+      showToast('Profile picture updated', 'success');
+    } catch (error: any) {
       haptics.error();
-      showToast('Failed to update profile picture', 'error');
+      showToast(error?.message || 'Failed to update profile picture', 'error');
+    } finally {
+      setUpdatingPhoto(false);
     }
   };
 
@@ -151,9 +201,10 @@ export default function SettingsScreen() {
     );
   };
 
-  const handleOpenLink = (url: string) => {
-    Linking.openURL(url).catch(() => {
-      showToast('Could not open link', 'error');
+  const openSystemNotificationSettings = () => {
+    haptics.light();
+    Linking.openSettings().catch(() => {
+      showToast('Could not open system settings', 'error');
     });
   };
 
@@ -168,9 +219,15 @@ export default function SettingsScreen() {
   }
 
   return (
-    <ScrollView
+    <KeyboardAwareScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={[styles.contentContainer, { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 100 }]}
+      contentContainerStyle={[
+        styles.contentContainer,
+        { paddingTop: insets.top + 10, paddingBottom: insets.bottom + 100 },
+      ]}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      bottomOffset={24}
       showsVerticalScrollIndicator={false}>
       {/* Floating Island Header */}
       <View style={styles.floatingHeaderContainer}>
@@ -186,6 +243,7 @@ export default function SettingsScreen() {
           <Text style={styles.islandLabel}>SETTINGS</Text>
           <Text style={styles.islandTitle}>Account</Text>
         </View>
+        <View style={styles.backButton} />
       </View>
 
       {/* Account Settings */}
@@ -194,12 +252,17 @@ export default function SettingsScreen() {
         {/* Profile Picture */}
         <TouchableOpacity
           style={[styles.settingRow, { borderBottomColor: colors.border }]}
-          onPress={handleProfilePicture}>
+          onPress={() => void handleProfilePicture()}
+          disabled={updatingPhoto}>
           <View style={styles.settingLeft}>
             <IconSymbol name="person.circle.fill" size={20} color={colors.text} />
             <Text style={[styles.settingLabel, { color: colors.text }]}>Profile Picture</Text>
           </View>
-          <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+          {updatingPhoto ? (
+            <ActivityIndicator size="small" color={lightBrown} />
+          ) : (
+            <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
+          )}
         </TouchableOpacity>
 
         {/* Display Name */}
@@ -251,28 +314,74 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Phone (contact) */}
-        <TouchableOpacity
-          style={styles.settingRow}
-          onPress={() => {
-            haptics.light();
-            router.push('/complete-phone?edit=1' as any);
-          }}>
-          <View style={styles.settingLeft}>
-            <IconSymbol name="phone.fill" size={20} color={colors.text} />
-            <View>
-              <Text style={[styles.settingLabel, { color: colors.text }]}>Phone</Text>
-              <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
-                {normalizedPhone || 'Not set'}
-              </Text>
+        {/* Phone (optional) */}
+        {editingPhone ? (
+          <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'stretch', gap: 12 }]}>
+            <View style={styles.settingLeft}>
+              <IconSymbol name="phone.fill" size={20} color={colors.text} />
+              <Text style={[styles.settingLabel, { color: colors.text }]}>Phone (optional)</Text>
+            </View>
+            <SmartPhoneField
+              value={phoneInput}
+              onChange={setPhoneInput}
+              colors={{
+                text: colors.text,
+                textSecondary: colors.textSecondary,
+                border: colors.border,
+                background: colors.background,
+                backgroundSecondary: colors.backgroundSecondary,
+                card: colors.card,
+              }}
+              accentColor={lightBrown}
+              borderColor={phoneInput.trim() && !isValidPhoneInput ? colors.error : lightBrown}
+              placeholder="801 234 5678"
+            />
+            <View style={styles.editActions}>
+              <TouchableOpacity
+                style={[styles.cancelButton, { borderColor: colors.border }]}
+                onPress={() => {
+                  haptics.light();
+                  setEditingPhone(false);
+                  setPhoneInput(normalizedPhone);
+                }}>
+                <Text style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <AnimatedPressable
+                style={[styles.saveButton, { backgroundColor: lightBrown }]}
+                onPress={() => void handleSavePhone()}
+                disabled={saving}
+                scaleValue={0.95}>
+                {saving ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save</Text>
+                )}
+              </AnimatedPressable>
             </View>
           </View>
-          {normalizedPhone ? (
-            <IconSymbol name="checkmark.circle.fill" size={18} color={colors.success} />
-          ) : (
-            <IconSymbol name="chevron.right" size={18} color={colors.textSecondary} />
-          )}
-        </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.settingRow}
+            onPress={() => {
+              haptics.light();
+              setEditingPhone(true);
+            }}>
+            <View style={styles.settingLeft}>
+              <IconSymbol name="phone.fill" size={20} color={colors.text} />
+              <View>
+                <Text style={[styles.settingLabel, { color: colors.text }]}>Phone</Text>
+                <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
+                  {normalizedPhone || 'Optional — tap to add'}
+                </Text>
+              </View>
+            </View>
+            {normalizedPhone ? (
+              <IconSymbol name="checkmark.circle.fill" size={18} color={colors.success} />
+            ) : (
+              <IconSymbol name="pencil" size={18} color={colors.textSecondary} />
+            )}
+          </TouchableOpacity>
+        )}
 
         {/* Save/Cancel Buttons */}
         {editing && (
@@ -334,21 +443,18 @@ export default function SettingsScreen() {
             thumbColor={colorScheme === 'dark' ? lightBrown : '#FFFFFF'}
           />
         </View>
-        <View style={styles.settingRow}>
+        <TouchableOpacity style={styles.settingRow} onPress={openSystemNotificationSettings}>
           <View style={styles.settingLeft}>
             <IconSymbol name="bell.fill" size={20} color={colors.text} />
-            <Text style={[styles.settingLabel, { color: colors.text }]}>Notifications</Text>
+            <View>
+              <Text style={[styles.settingLabel, { color: colors.text }]}>Notifications</Text>
+              <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
+                Manage in system settings
+              </Text>
+            </View>
           </View>
-          <Switch
-            value={true}
-            onValueChange={() => {
-              haptics.light();
-              showToast('Notification settings coming soon', 'info');
-            }}
-            trackColor={{ false: colors.border, true: lightBrown + '80' }}
-            thumbColor={lightBrown}
-          />
-        </View>
+          <IconSymbol name="arrow.up.right.square" size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
       </View>
 
       {/* Library */}
@@ -424,24 +530,12 @@ export default function SettingsScreen() {
       {/* About */}
       <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>About</Text>
       <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <View style={[styles.settingRow, { borderBottomColor: colors.border }]}>
+        <View style={styles.settingRow}>
           <Text style={[styles.settingLabel, { color: colors.text }]}>App Version</Text>
           <Text style={[styles.settingValue, { color: colors.textSecondary }]}>
             {Constants.expoConfig?.version || '1.0.0'}
           </Text>
         </View>
-        <TouchableOpacity
-          style={[styles.settingRow, { borderBottomColor: colors.border }]}
-          onPress={() => handleOpenLink('https://example.com/terms')}>
-          <Text style={[styles.settingLabel, { color: colors.text }]}>Terms of Service</Text>
-          <IconSymbol name="arrow.up.right.square" size={18} color={colors.textSecondary} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.settingRow}
-          onPress={() => handleOpenLink('https://example.com/privacy')}>
-          <Text style={[styles.settingLabel, { color: colors.text }]}>Privacy Policy</Text>
-          <IconSymbol name="arrow.up.right.square" size={18} color={colors.textSecondary} />
-        </TouchableOpacity>
       </View>
 
       {/* Logout */}
@@ -452,7 +546,7 @@ export default function SettingsScreen() {
         <IconSymbol name="arrow.left.square.fill" size={20} color="#FF4444" />
         <Text style={styles.logoutText}>Logout from Account</Text>
       </AnimatedPressable>
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 

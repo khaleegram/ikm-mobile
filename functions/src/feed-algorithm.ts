@@ -21,10 +21,14 @@ if (admin.apps.length === 0) {
 
 const corsHandler = cors({ origin: true });
 
-const FEED_TOTAL = 25;
-const BUCKET_A_SIZE = 13;
-const BUCKET_B_SIZE = 7;
-const BUCKET_C_SIZE = 5;
+const _FEED_TOTAL = 25;
+const _BUCKET_A_SIZE = 13;
+const _BUCKET_B_SIZE = 7;
+const _BUCKET_C_SIZE = 5;
+void _FEED_TOTAL;
+void _BUCKET_A_SIZE;
+void _BUCKET_B_SIZE;
+void _BUCKET_C_SIZE;
 const COLD_START_MAX_VIEWS = 100;
 const COLD_START_MAX_AGE_HOURS = 6;
 const TASTE_INTERACTION_LIMIT = 10;
@@ -43,15 +47,16 @@ type WatchSessionPayload = {
   mediaType?: string;
 };
 
-function shuffleInPlace<T>(items: T[]): T[] {
+function _shuffleInPlace<T>(items: T[]): T[] {
   for (let i = items.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
     [items[i], items[j]] = [items[j], items[i]];
   }
   return items;
 }
+void _shuffleInPlace;
 
-function interleaveBuckets<T>(buckets: T[][]): T[] {
+function _interleaveBuckets<T>(buckets: T[][]): T[] {
   const queues = buckets.map((bucket) => [...bucket]);
   const merged: T[] = [];
   while (queues.some((queue) => queue.length > 0)) {
@@ -61,6 +66,7 @@ function interleaveBuckets<T>(buckets: T[][]): T[] {
   }
   return merged;
 }
+void _interleaveBuckets;
 
 async function logInteractionRecord(
   userId: string,
@@ -238,7 +244,7 @@ export const logMarketPostInteraction = onRequest(async (request, response) => {
   });
 });
 
-async function getUserLikedPostIds(userId: string): Promise<string[]> {
+async function _getUserLikedPostIds(userId: string): Promise<string[]> {
   const firestore = admin.firestore();
   const snapshot = await firestore
     .collection('marketPosts')
@@ -249,8 +255,9 @@ async function getUserLikedPostIds(userId: string): Promise<string[]> {
 
   return snapshot.docs.map((docSnap) => docSnap.id).filter(Boolean);
 }
+void _getUserLikedPostIds;
 
-async function getUserTasteHashtags(userId: string): Promise<string[]> {
+async function _getUserTasteHashtags(userId: string): Promise<string[]> {
   const firestore = admin.firestore();
   const snapshot = await firestore
     .collection('marketPostInteractions')
@@ -267,8 +274,9 @@ async function getUserTasteHashtags(userId: string): Promise<string[]> {
 
   return Array.from(tags).slice(0, 10);
 }
+void _getUserTasteHashtags;
 
-async function fetchScorePostIds(
+async function _fetchScorePostIds(
   constraints: ((query: FirebaseFirestore.Query) => FirebaseFirestore.Query)[],
   limit: number,
   excludeIds: Set<string>
@@ -291,8 +299,9 @@ async function fetchScorePostIds(
   });
   return ids.slice(0, limit);
 }
+void _fetchScorePostIds;
 
-async function fetchColdStartPostIds(limit: number, excludeIds: Set<string>): Promise<string[]> {
+async function _fetchColdStartPostIds(limit: number, excludeIds: Set<string>): Promise<string[]> {
   const firestore = admin.firestore();
   const cutoff = Timestamp.fromDate(
     new Date(Date.now() - COLD_START_MAX_AGE_HOURS * 3_600_000)
@@ -316,8 +325,9 @@ async function fetchColdStartPostIds(limit: number, excludeIds: Set<string>): Pr
 
   return ids.slice(0, limit);
 }
+void _fetchColdStartPostIds;
 
-async function hydratePosts(postIds: string[]): Promise<Record<string, FirebaseFirestore.DocumentData>> {
+async function _hydratePosts(postIds: string[]): Promise<Record<string, FirebaseFirestore.DocumentData>> {
   const firestore = admin.firestore();
   const chunks: string[][] = [];
   for (let i = 0; i < postIds.length; i += 10) {
@@ -339,6 +349,7 @@ async function hydratePosts(postIds: string[]): Promise<Record<string, FirebaseF
 
   return postsById;
 }
+void _hydratePosts;
 
 /**
  * @deprecated Market feed is served by chatcart-api POST /v1/feed.

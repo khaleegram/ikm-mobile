@@ -27,9 +27,13 @@ export function VideoCoverImage({
     if (staticUri || !videoUri) return;
 
     let cancelled = false;
-    getVideoThumbnailUri(String(videoUri).trim()).then((uri) => {
-      if (!cancelled && uri) setGeneratedUri(uri);
-    });
+    getVideoThumbnailUri(String(videoUri).trim())
+      .then((uri) => {
+        if (!cancelled && uri) setGeneratedUri(uri);
+      })
+      .catch(() => {
+        // Thumbnail generation is best-effort — fall back to no cover image.
+      });
 
     return () => {
       cancelled = true;

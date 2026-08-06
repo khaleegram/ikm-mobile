@@ -8,6 +8,9 @@ import {
     sendError,
     sendResponse,
 } from './utils';
+import { paystackSecret, processOrderRefund } from './refunds';
+import { dualWriteOrderToPostgres, createSystemMessage, createOrderTimelineEvent } from './order-chat';
+import { notifyBuyer, notifySeller } from './notifications';
 
 const corsHandler = cors({ origin: true });
 
@@ -27,24 +30,104 @@ export const getAllOrders = onRequest(async (request, response) => {
 });
 
 /**
- * Resolve dispute
+ * Resolve dispute — refund triggers Paystack; release marks escrow released.
  */
-export const resolveDispute = onRequest(async (request, response) => {
+export const resolveDispute = onRequest(
+  { secrets: [paystackSecret], invoker: 'public' },
+  async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
       const auth = await requireAdmin(request.headers.authorization || null);
       const { orderId, resolution, refundAmount } = request.body;
-      await admin.firestore().collection('orders').doc(orderId).update({
-        status: resolution === 'refund' ? 'Cancelled' : 'Processing',
-        disputeResolution: resolution,
-        refundAmount: refundAmount || 0,
+      if (!orderId) return sendError(response, 'orderId is required', 400);
+      if (resolution !== 'refund' && resolution !== 'release') {
+        return sendError(response, 'resolution must be refund or release', 400);
+      }
+
+      const orderRef = admin.firestore().collection('orders').doc(orderId);
+      const orderSnap = await orderRef.get();
+      if (!orderSnap.exists) return sendError(response, 'Order not found', 404);
+      const order = orderSnap.data() || {};
+
+      if (resolution === 'refund') {
+        const amount =
+          refundAmount != null && Number(refundAmount) > 0
+            ? Number(refundAmount)
+            : undefined;
+
+        const refundResult = await processOrderRefund(
+          {
+            orderId,
+            reason: 'Admin dispute resolution — refund',
+            amountNgn: amount,
+            actorId: auth.uid,
+            actorRole: 'admin',
+            cancelOrder: true,
+          },
+          { secretKey: paystackSecret.value() }
+        );
+
+        await orderRef.update({
+          disputeResolution: 'refund',
+          refundAmount: amount ?? (Number(order.total) || 0),
+          disputeResolvedAt: FieldValue.serverTimestamp(),
+          disputeResolvedBy: auth.uid,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        await dualWriteOrderToPostgres(orderId);
+
+        const summary = `${order.items?.[0]?.name || 'item'} — NGN ${Number(order.total || 0).toLocaleString()}`;
+        notifyBuyer({
+          buyerId: String(order.customerId || ''),
+          event: 'dispute_resolved',
+          orderId,
+          orderSummary: summary,
+          extra: 'Refund is processing to your payment method.',
+          chatRoomId: order.dealThreadId || order.chatThreadId || null,
+        }).catch(() => undefined);
+        notifySeller({
+          sellerId: String(order.sellerId || ''),
+          event: 'refund_requested',
+          orderId,
+          orderSummary: summary,
+          chatRoomId: order.dealThreadId || order.chatThreadId || null,
+        }).catch(() => undefined);
+
+        return sendResponse(response, { success: true, refund: refundResult });
+      }
+
+      await orderRef.update({
+        status: 'Processing',
+        disputeResolution: 'release',
+        refundAmount: 0,
         disputeResolvedAt: FieldValue.serverTimestamp(),
         disputeResolvedBy: auth.uid,
-        escrowStatus: resolution === 'refund' ? 'refunded' : 'released',
+        escrowStatus: 'released',
+        fundsReleasedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
+
+      await createSystemMessage({
+        orderId,
+        event: 'dispute_resolved',
+        dealThreadId: order.dealThreadId || order.chatThreadId || null,
+        customText: 'Dispute resolved in favor of seller. Escrow released.',
+      });
+      await createOrderTimelineEvent({
+        orderId,
+        event: 'dispute_resolved',
+        status: 'Processing',
+        text: 'Dispute resolved — escrow released',
+        actorId: auth.uid,
+        actorRole: 'system',
+      });
+      await dualWriteOrderToPostgres(orderId);
+
       return sendResponse(response, { success: true });
     } catch (error: any) {
-      return sendError(response, error.message, 500);
+      const statusCode = error?.code === 'ESCROW_RELEASED' ? 400 : 500;
+      return sendError(response, error.message, statusCode);
     }
   });
 });

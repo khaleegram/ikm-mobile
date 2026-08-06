@@ -1,7 +1,8 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const SUPPORT_FUNCTIONS = {
-  contactSupport: 'https://contactsupport-q3rjv54uka-uc.a.run.app',
+  contactSupport: cloudFunctionUrl('contactSupport'),
 };
 
 export const supportApi = {

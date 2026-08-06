@@ -1,12 +1,11 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,21 +14,19 @@ import * as ImagePicker from 'expo-image-picker';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { OrderTimeline } from '@/components/orders/order-timeline';
-import { OrderChatTab } from '@/components/orders/order-chat-tab';
 import { orderApi } from '@/lib/api/orders';
-import { orderChatApi } from '@/lib/api/order-chat';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useOrder } from '@/lib/firebase/firestore/orders';
-import { useOrderMessages, useOrderTimeline } from '@/lib/firebase/firestore/order-chat';
+import { useInvalidateOrder, useOrder } from '@/lib/hooks/use-order';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { haptics } from '@/lib/utils/haptics';
 import { Order } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 
-type DetailTab = 'timeline' | 'chat' | 'details';
+type DetailTab = 'timeline' | 'details';
 
 function toDate(value: unknown): Date | null {
   if (!value) return null;
@@ -53,7 +50,10 @@ function getStatusColor(status?: string): string {
   return lightBrown;
 }
 
-function getStatusLabel(status?: string): string {
+function getStatusLabel(status?: string, escrowStatus?: string, refundStatus?: string): string {
+  if (refundStatus === 'failed') return 'Refund failed';
+  if (escrowStatus === 'refund_pending') return 'Refund pending';
+  if (escrowStatus === 'refunded' && status === 'Cancelled') return 'Refunded';
   const map: Record<string, string> = {
     Paid: 'Paid',
     Accepted: 'Accepted',
@@ -64,6 +64,7 @@ function getStatusLabel(status?: string): string {
     Cancelled: 'Cancelled',
     Disputed: 'Disputed',
     Processing: 'Processing',
+    AvailabilityCheck: 'Availability',
   };
   return map[String(status || '')] || status || 'Processing';
 }
@@ -86,9 +87,10 @@ export default function MarketOrderDetailScreen() {
   const { user } = useUser();
   const { id } = useLocalSearchParams<{ id: string }>();
   const orderId = typeof id === 'string' ? id : null;
-  const { order, loading: orderLoading } = useOrder(orderId);
-  const { messages, loading: messagesLoading } = useOrderMessages(orderId);
-  const { events } = useOrderTimeline(orderId);
+  // Order + timeline come from the same Neon read (single fetch, shared Query cache).
+  // Chat lives in the Postgres deal room — not Firestore orders/{id}/messages.
+  const { order, timeline: events, loading: orderLoading } = useOrder(orderId);
+  const invalidateOrder = useInvalidateOrder();
 
   const [updating, setUpdating] = useState(false);
   const [activeTab, setActiveTab] = useState<DetailTab>('timeline');
@@ -97,15 +99,16 @@ export default function MarketOrderDetailScreen() {
   const isBuyer = Boolean(order && user && order.customerId === user.uid);
   const canAccess = Boolean(user?.isAdmin || isSeller || isBuyer);
   const statusColor = getStatusColor(order?.status);
-  const statusLabel = getStatusLabel(order?.status);
+  const statusLabel = getStatusLabel(order?.status, order?.escrowStatus, order?.refundStatus);
   const dealThreadId = String(
     (order as any)?.dealThreadId || (order as any)?.chatThreadId || (order as any)?.marketMeta?.fromChatId || ''
   ).trim();
-  const useDealRoomChat = Boolean(dealThreadId);
-
-  React.useEffect(() => {
-    if (useDealRoomChat && activeTab === 'chat') setActiveTab('timeline');
-  }, [useDealRoomChat, activeTab]);
+  const peerId = useMemo(() => {
+    if (!user?.uid || !order) return '';
+    return order.sellerId === user.uid
+      ? String(order.customerId || '')
+      : String(order.sellerId || '');
+  }, [user?.uid, order]);
   const autoReleaseDate = useMemo(() => resolveAutoReleaseDate(order), [order]);
 
   const itemSummary = useMemo(() => {
@@ -140,6 +143,7 @@ export default function MarketOrderDetailScreen() {
       await orderApi.markAsSent(order.id, photoUrl);
       haptics.success();
       showToast('Order marked as shipped.', 'success');
+      await invalidateOrder(order.id);
     } catch (error: any) {
       haptics.error();
       showToast(error?.message || 'Unable to mark order as shipped.', 'error');
@@ -168,6 +172,7 @@ export default function MarketOrderDetailScreen() {
       await orderApi.updateStatus(order.id, 'Accepted');
       haptics.success();
       showToast('Order accepted.', 'success');
+      await invalidateOrder(order.id);
     } catch (error: any) {
       haptics.error();
       showToast(error?.message || 'Unable to accept order.', 'error');
@@ -184,6 +189,7 @@ export default function MarketOrderDetailScreen() {
       await orderApi.markAsReceived(order.id);
       haptics.success();
       showToast('Order confirmed. Thank you!', 'success');
+      await invalidateOrder(order.id);
     } catch (error: any) {
       haptics.error();
       showToast(error?.message || 'Unable to confirm receipt.', 'error');
@@ -199,7 +205,12 @@ export default function MarketOrderDetailScreen() {
       haptics.medium();
       await orderApi.updateStatus(order.id, status);
       haptics.success();
-      showToast(`Order ${status.toLowerCase()}.`, 'success');
+      if (status === 'Cancelled') {
+        showToast('Order cancelled. Refund to your payment method is processing.', 'success');
+      } else {
+        showToast('Dispute opened.', 'success');
+      }
+      await invalidateOrder(order.id);
     } catch (error: any) {
       haptics.error();
       showToast(error?.message || 'Unable to update order status.', 'error');
@@ -207,13 +218,6 @@ export default function MarketOrderDetailScreen() {
       setUpdating(false);
     }
   };
-
-  const handleMarkMessagesRead = useCallback(async () => {
-    if (!orderId) return;
-    try {
-      await orderChatApi.markMessagesRead(orderId);
-    } catch {}
-  }, [orderId]);
 
   if (orderLoading) {
     return (
@@ -239,7 +243,17 @@ export default function MarketOrderDetailScreen() {
   const escrowState = order.escrowStatus || 'held';
   const orderCreated = toDate(order.createdAt);
 
-  const unreadCount = isBuyer ? (order.buyerUnreadCount || 0) : (order.sellerUnreadCount || 0);
+  const openDealChat = () => {
+    haptics.light();
+    const qs = peerId ? `?peerId=${encodeURIComponent(peerId)}` : '';
+    if (dealThreadId) {
+      router.push(`/(market)/messages/${dealThreadId}${qs}` as any);
+      return;
+    }
+    if (peerId) {
+      router.push(`/(market)/messages/peer/${peerId}` as any);
+    }
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -261,11 +275,7 @@ export default function MarketOrderDetailScreen() {
 
       {/* Tab Bar */}
       <View style={[styles.tabBar, { borderBottomColor: colors.border }]}>
-        {((
-          useDealRoomChat
-            ? (['timeline' as DetailTab, 'details' as DetailTab] as DetailTab[])
-            : (['timeline' as DetailTab, 'chat' as DetailTab, 'details' as DetailTab] as DetailTab[])
-        )).map((tab) => (
+        {(['timeline', 'details'] as DetailTab[]).map((tab) => (
           <TouchableOpacity
             key={tab}
             style={[styles.tab, activeTab === tab && styles.tabActive]}
@@ -274,31 +284,23 @@ export default function MarketOrderDetailScreen() {
               setActiveTab(tab);
             }}>
             <Text style={[styles.tabText, { color: activeTab === tab ? colors.text : colors.textSecondary }]}>
-              {tab === 'timeline' ? 'Timeline' : tab === 'chat' ? `Chat${unreadCount > 0 ? ` (${unreadCount})` : ''}` : 'Details'}
+              {tab === 'timeline' ? 'Timeline' : 'Details'}
             </Text>
             {activeTab === tab && <View style={styles.tabIndicator} />}
           </TouchableOpacity>
         ))}
       </View>
 
-      {useDealRoomChat ? (
+      {(dealThreadId || peerId) ? (
         <TouchableOpacity
           style={[styles.dealRoomBanner, { backgroundColor: `${lightBrown}14`, borderColor: `${lightBrown}44` }]}
           activeOpacity={0.8}
-          onPress={() => {
-            haptics.light();
-            const peer =
-              user?.uid && order
-                ? order.sellerId === user.uid
-                  ? String(order.customerId || '')
-                  : String(order.sellerId || '')
-                : '';
-            const qs = peer ? `?peerId=${encodeURIComponent(peer)}` : '';
-            router.push(`/(market)/messages/${dealThreadId}${qs}` as any);
-          }}>
+          onPress={openDealChat}>
           <IconSymbol name="bubble.left.and.bubble.right.fill" size={18} color={lightBrown} />
           <View style={{ flex: 1 }}>
-            <Text style={[styles.dealRoomTitle, { color: colors.text }]}>Open deal room</Text>
+            <Text style={[styles.dealRoomTitle, { color: colors.text }]}>
+              {dealThreadId ? 'Open deal room' : 'Message about this order'}
+            </Text>
             <Text style={[styles.dealRoomSub, { color: colors.textSecondary }]}>
               Chat, offers, and order updates live in one thread
             </Text>
@@ -322,6 +324,23 @@ export default function MarketOrderDetailScreen() {
               <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Total</Text>
               <Text style={[styles.summaryValue, { color: colors.text }]}>{formatAmount(Number(order.total || 0))}</Text>
             </View>
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Escrow</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {escrowState === 'refund_pending'
+                  ? 'Refund processing'
+                  : escrowState === 'refunded'
+                    ? 'Refunded'
+                    : escrowState === 'released'
+                      ? 'Released to seller'
+                      : 'Held'}
+              </Text>
+            </View>
+            {order.refundStatus === 'failed' ? (
+              <Text style={[styles.summarySub, { color: colors.error || '#EF4444', marginTop: 8 }]}>
+                Refund failed — contact support. Admins can retry from the dashboard.
+              </Text>
+            ) : null}
           </View>
 
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -355,17 +374,6 @@ export default function MarketOrderDetailScreen() {
         </ScrollView>
       )}
 
-      {activeTab === 'chat' && !useDealRoomChat && (
-        <OrderChatTab
-          orderId={orderId!}
-          buyerId={order.customerId}
-          sellerId={order.sellerId}
-          messages={messages}
-          loading={messagesLoading}
-          onMessagesRead={handleMarkMessagesRead}
-        />
-      )}
-
       {activeTab === 'details' && (
         <ScrollView style={styles.tabContent} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: insets.bottom + 120 }}>
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -392,14 +400,29 @@ export default function MarketOrderDetailScreen() {
 
       {/* Bottom Dock */}
       <View style={[styles.bottomDock, { paddingBottom: insets.bottom + 10, borderTopColor: colors.border, backgroundColor: colors.card }]}>
-        {isSeller && (order.status === 'Paid' || order.status === 'Processing') && (
+        {isSeller && order.status === 'Paid' && (
           <TouchableOpacity style={[styles.actionBtn, { backgroundColor: lightBrown, opacity: updating ? 0.6 : 1 }]} disabled={updating} onPress={handleAcceptOrder}>
             {updating ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.actionBtnText}>Accept Order</Text>}
           </TouchableOpacity>
         )}
 
-        {isSeller && (order.status === 'Accepted' || order.status === 'Preparing') && (
+        {isSeller &&
+          (order.status === 'Accepted' ||
+            order.status === 'Preparing' ||
+            order.status === 'Processing' ||
+            (order.status === 'AvailabilityCheck' &&
+              String(order.availabilityStatus || '') !== 'not_available' &&
+              (String(order.availabilityStatus || '') === 'waiting_buyer_response' ||
+                String(order.availabilityStatus || '') === 'waiting_restock' ||
+                Number(order.waitTimeDays || 0) > 0))) && (
           <>
+            {order.status === 'AvailabilityCheck' ? (
+              <Text style={[styles.summaryMeta, { color: colors.textSecondary, marginBottom: 8, textAlign: 'center' }]}>
+                {Number(order.waitTimeDays || 0) > 0
+                  ? `You asked for ~${order.waitTimeDays} day(s) — ship as soon as it's ready.`
+                  : "Ship as soon as it's ready."}
+              </Text>
+            ) : null}
             <TouchableOpacity style={[styles.actionBtn, { backgroundColor: lightBrown, opacity: updating ? 0.6 : 1 }]} disabled={updating} onPress={askMarkSent}>
               {updating ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.actionBtnText}>Mark Shipped</Text>}
             </TouchableOpacity>
@@ -414,9 +437,12 @@ export default function MarketOrderDetailScreen() {
           </>
         )}
 
-        {(isBuyer || isSeller) && (order.status === 'Paid' || order.status === 'Accepted') && (
+        {(isBuyer || isSeller) &&
+          (order.status === 'Paid' ||
+            order.status === 'Processing' ||
+            order.status === 'Accepted') && (
           <TouchableOpacity style={[styles.actionBtnOutline, { borderColor: colors.border }]} disabled={updating} onPress={() => {
-            Alert.alert('Cancel purchase?', 'Cancel this order?', [
+            Alert.alert('Cancel purchase?', 'Cancel this order? A refund will be sent to the original payment method.', [
               { text: 'Keep', style: 'cancel' },
               { text: 'Cancel Purchase', style: 'destructive', onPress: () => { void handleUpdateStatus('Cancelled'); } },
             ]);

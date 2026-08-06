@@ -1,5 +1,11 @@
 import { Stack } from 'expo-router';
 
+import { AppErrorBoundary } from '@/components/app-error-boundary';
+
 export default function MessagesStackLayout() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return (
+    <AppErrorBoundary>
+      <Stack screenOptions={{ headerShown: false }} />
+    </AppErrorBoundary>
+  );
 }

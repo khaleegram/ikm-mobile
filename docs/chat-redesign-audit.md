@@ -1,3 +1,15 @@
+> **ARCHIVED / HISTORICAL** � This document no longer matches the running codebase.
+> Canonical migration status: `docs/firebase-market-core-exit.md` and `docs/architecture-boundaries.md`.
+> Do not implement from this file.
+
+---
+> **ARCHIVED — historical snapshot.** Several "Done" items here reference UI files
+> (`pinned-product-card`, `negotiation-timeline`, `deal-stage-bar`) that have since been
+> deleted and replaced by `components/chat/deal-room/*`. The migration script name
+> (`migrate:chat-firestore`) is current, but schema migrations overall now run via
+> `npm run migrate` (see `docs/firebase-market-core-exit.md`). Do not use this file to judge
+> current completion status — re-verify against code.
+
 # Chat Redesign — Audit (What's Done vs What's Left)
 
 > Last audit: after Phase 1–2 implementation + tightening pass.

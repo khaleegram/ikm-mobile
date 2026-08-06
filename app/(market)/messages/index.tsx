@@ -3,6 +3,7 @@ import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -20,20 +21,23 @@ import {
   groupInboxByPeer,
   type PeerDealGroup,
 } from '@/lib/chat/group-inbox-by-peer';
+import { dealProductLabel, enrichInboxRoomsWithPosts } from '@/lib/chat/enrich-inbox-snapshots';
+import { openDealRoom } from '@/lib/chat/prefetch-deal-room';
 import { isPostgresChatBackend } from '@/lib/config/chat-backend';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useBlockedUserIds } from '@/lib/firebase/firestore/market-social';
+import { useBlockedUserIds } from '@/lib/hooks/use-social';
 import { useChatInbox } from '@/lib/hooks/use-chat-inbox';
+import { useMarketPostsByIds } from '@/lib/hooks/use-market-post';
 import {
   useInboxPeerSummaries,
   type InboxPeerSummary,
 } from '@/lib/hooks/use-inbox-peer-summaries';
-import { useMarketChatMessageNotifications } from '@/lib/hooks/use-market-chat-notifications';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { formatRelativeTime } from '@/lib/utils/date-format';
 import { haptics } from '@/lib/utils/haptics';
 import type { ChatInboxItem } from '@/types/chat';
+import type { MarketPost } from '@/types';
 
 const lightBrown = '#A67C52';
 
@@ -46,27 +50,37 @@ function displayNameForPeer(
   peerSummaries: Record<string, InboxPeerSummary>,
   fallbackName?: string
 ): string {
-  if (!peerId) return fallbackName || 'User';
-  return peerSummaries[peerId]?.displayName || fallbackName || 'User';
+  if (!peerId) {
+    const fb = String(fallbackName || '').trim();
+    return fb && !fb.includes('@') ? fb : 'User';
+  }
+  const fromSummary = peerSummaries[peerId]?.displayName;
+  if (fromSummary && !fromSummary.includes('@')) return fromSummary;
+  const fb = String(fallbackName || '').trim();
+  if (fb && !fb.includes('@')) return fb;
+  return 'User';
 }
 
 function PeerRow({
   group,
   colors,
   peerSummary,
+  userId,
 }: {
   group: PeerDealGroup;
   colors: ReturnType<typeof useTheme>['colors'];
   peerSummary?: InboxPeerSummary;
+  userId?: string | null;
 }) {
-  const name = peerSummary?.displayName || group.peerName || 'User';
+  const name = displayNameForPeer(group.peerId, peerSummary ? { [group.peerId]: peerSummary } : {}, group.peerName);
   const avatarUri = peerSummary?.avatarUri || group.peerAvatar || undefined;
   const roomCount = group.rooms.length;
-  const roomLabel =
-    roomCount === 1
-      ? group.topProductTitle || '1 product'
-      : `${roomCount} products`;
+  const singleRoom = roomCount === 1 ? group.rooms[0] : null;
+  const roomLabel = singleRoom
+    ? dealProductLabel(singleRoom.postSnapshot) || '1 product'
+    : `${roomCount} products`;
   const latestStatus = group.rooms[0]?.statusBadge || group.rooms[0]?.status;
+  const isVerified = Boolean(peerSummary?.isVerified);
 
   return (
     <TouchableOpacity
@@ -80,6 +94,11 @@ function PeerRow({
       activeOpacity={0.85}
       onPress={() => {
         haptics.light();
+        // Skip the peer hub when there's only one product room.
+        if (singleRoom) {
+          void openDealRoom(singleRoom, userId);
+          return;
+        }
         router.push(`/(market)/messages/peer/${group.peerId}` as any);
       }}>
       <View style={styles.peerLeading}>
@@ -100,7 +119,7 @@ function PeerRow({
             <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>
               {name}
             </Text>
-            <VerifiedBadge size={13} />
+            {isVerified ? <VerifiedBadge size={13} /> : null}
           </View>
           <Text style={[styles.chatTime, { color: colors.textSecondary }]}>
             {formatRelativeTime(group.lastAt)}
@@ -134,7 +153,9 @@ function PeerRow({
 
         <View style={styles.dealFooter}>
           {latestStatus ? <InboxStatusBadge badge={latestStatus} /> : <View />}
-          <Text style={[styles.openRoomHint, { color: lightBrown }]}>View rooms →</Text>
+          <Text style={[styles.openRoomHint, { color: lightBrown }]}>
+            {singleRoom ? 'Open room →' : 'View rooms →'}
+          </Text>
         </View>
       </View>
     </TouchableOpacity>
@@ -177,15 +198,19 @@ export default function MessagesScreen() {
   const chats = postgresInbox.items as any[];
   const loading = postgresInbox.loading;
   const error = postgresInbox.error;
+  const refreshInbox = postgresInbox.refresh;
+  const refreshInboxIfStale = postgresInbox.refreshIfStale;
+  const refreshingInbox = postgresInbox.refreshing;
 
-  useMarketChatMessageNotifications(user?.uid || null);
+  // Chat notifications are mounted once for the whole market section in `(market)/_layout.tsx`.
+  // Mounting them here too would double-poll the inbox and fire duplicate notifications.
 
   useFocusEffect(
     useCallback(() => {
       if (isPostgresChatBackend()) {
-        void postgresInbox.refresh();
+        void refreshInboxIfStale();
       }
-    }, [postgresInbox])
+    }, [refreshInboxIfStale])
   );
 
   const visibleItems = useMemo(() => {
@@ -196,7 +221,23 @@ export default function MessagesScreen() {
     });
   }, [blockedIds, chats, user?.uid]);
 
-  const peerGroups = useMemo(() => groupInboxByPeer(visibleItems), [visibleItems]);
+  const inboxPostIds = useMemo(
+    () => [...new Set(visibleItems.map((item) => String(item.postId || '').trim()).filter(Boolean))],
+    [visibleItems]
+  );
+  const { posts: inboxPosts } = useMarketPostsByIds(inboxPostIds, 50);
+  const inboxPostsById = useMemo(() => {
+    const map: Record<string, MarketPost | undefined> = {};
+    inboxPosts.forEach((post) => {
+      if (post.id) map[post.id] = post;
+    });
+    return map;
+  }, [inboxPosts]);
+
+  const peerGroups = useMemo(
+    () => groupInboxByPeer(enrichInboxRoomsWithPosts(visibleItems, inboxPostsById)),
+    [inboxPostsById, visibleItems]
+  );
 
   const segmentedGroups = useMemo(
     () => filterPeerGroupsBySegment(peerGroups, activeFilter),
@@ -221,9 +262,14 @@ export default function MessagesScreen() {
 
   const renderPeerRow = useCallback(
     ({ item }: { item: PeerDealGroup }) => (
-      <PeerRow group={item} colors={colors} peerSummary={peerSummaries[item.peerId]} />
+      <PeerRow
+        group={item}
+        colors={colors}
+        peerSummary={peerSummaries[item.peerId]}
+        userId={user?.uid}
+      />
     ),
-    [colors, peerSummaries]
+    [colors, peerSummaries, user?.uid]
   );
 
   const renderInboxTabs = () => {
@@ -420,6 +466,16 @@ export default function MessagesScreen() {
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 96 }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshingInbox}
+              onRefresh={() => {
+                void refreshInbox();
+              }}
+              tintColor={lightBrown}
+              colors={[lightBrown]}
+            />
+          }
         />
       )}
     </View>

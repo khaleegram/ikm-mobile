@@ -4,7 +4,7 @@
     "slug": "chatcart",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/AppIcon.appiconset/Icon-App-1024x1024@1x.png",
+    "icon": "./assets/brand/market-street-icon.png",
     "scheme": "chatcart",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -17,8 +17,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#000000",
-        "foregroundImage": "./assets/AppIcon.appiconset/Icon-App-1024x1024@1x.png"
+        "backgroundColor": "#A67C52",
+        "foregroundImage": "./assets/brand/market-street-icon.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -43,20 +43,20 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/AppIcon.appiconset/Icon-App-1024x1024@1x.png",
+          "image": "./assets/brand/market-street-icon.png",
           "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#000000",
+          "backgroundColor": "#A67C52",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#A67C52"
           }
         }
       ],
       [
         "expo-notifications",
         {
-          "icon": "./assets/AppIcon.appiconset/Icon-App-1024x1024@1x.png",
-          "color": "#ffffff"
+          "icon": "./assets/brand/market-street-icon.png",
+          "color": "#A67C52"
         }
       ],
       [
@@ -84,7 +84,6 @@
         "genericItemTitle": "ChatCart Item",
         "signupJoinSubtitle": "Join ChatCart",
         "deletePostMessage": "This will permanently remove this post from ChatCart.",
-        "phoneGateLine": "Add a phone number so buyers and sellers can reach you. Use your country code (e.g. +234).",
         "shareFromLine": "Shared from ChatCart",
         "ordersNavLabel": "Orders"
       }

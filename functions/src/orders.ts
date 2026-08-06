@@ -1,6 +1,7 @@
 import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import cors = require('cors');
 import {
     requireAuth,
@@ -14,12 +15,16 @@ import {
 import {
     createSystemMessage,
     createOrderTimelineEvent,
+    // After FS mutation: push current FS doc to Neon (write primary). Throws on Neon failure.
+    dualWriteOrderToPostgres,
 } from './order-chat';
+import { paystackSecret, processOrderRefund } from './refunds';
 
 const corsHandler = cors({ origin: true });
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
   Paid: ['Accepted', 'Cancelled'],
+  Processing: ['Accepted', 'Cancelled'],
   Accepted: ['Preparing', 'Cancelled'],
   Preparing: ['Sent', 'Cancelled'],
   Sent: ['Received', 'Disputed'],
@@ -27,6 +32,8 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   Completed: [],
   Cancelled: [],
   Disputed: ['Cancelled', 'Completed'],
+  // Wait-time delays can still ship early; pure cancel stays available too.
+  AvailabilityCheck: ['Cancelled', 'Sent'],
 };
 
 function isValidTransition(current: string, next: string): boolean {
@@ -43,7 +50,9 @@ function buildOrderSummary(order: any): string {
   return `${item}${extra} — NGN ${total.toLocaleString()}`;
 }
 
-export const updateOrderStatus = onRequest(async (request, response) => {
+export const updateOrderStatus = onRequest(
+  { secrets: [paystackSecret], invoker: 'public' },
+  async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
       if (request.method !== 'POST') return sendError(response, 'Method not allowed', 405);
@@ -81,6 +90,59 @@ export const updateOrderStatus = onRequest(async (request, response) => {
         return sendError(response, 'Only the seller can perform this action', 403);
       }
 
+      // Cancel → real Paystack refund when escrow still held
+      if (status === 'Cancelled') {
+        if (order.escrowStatus === 'released') {
+          return sendError(
+            response,
+            'Cannot cancel for refund: escrow already released to the seller.',
+            400
+          );
+        }
+
+        const refundResult = await processOrderRefund(
+          {
+            orderId,
+            reason: isBuyer ? 'Buyer cancelled order' : isSeller ? 'Seller cancelled order' : 'Order cancelled',
+            actorId: auth.uid,
+            actorRole: isBuyer ? 'buyer' : isSeller ? 'seller' : 'admin',
+            cancelOrder: true,
+          },
+          { secretKey: paystackSecret.value() }
+        );
+
+        const summary = buildOrderSummary(order);
+        notifyBuyer({
+          buyerId: order.customerId,
+          event: 'order_cancelled',
+          orderId,
+          orderSummary: summary,
+          extra: 'Refund to your payment method is processing.',
+          chatRoomId: order.dealThreadId || order.chatThreadId || null,
+        }).catch((e) => console.error('Failed to notify buyer:', e));
+
+        notifySeller({
+          sellerId: order.sellerId,
+          event: 'refund_requested',
+          orderId,
+          orderSummary: summary,
+          chatRoomId: order.dealThreadId || order.chatThreadId || null,
+        }).catch((e) => console.error('Failed to notify seller:', e));
+
+        createOrderTimelineEvent({
+          orderId,
+          event: 'order_cancelled',
+          status: 'Cancelled',
+          text: 'Order cancelled',
+          actorId: auth.uid,
+          actorRole: isBuyer ? 'buyer' : isSeller ? 'seller' : 'system',
+        }).catch((e) => console.error('Failed to create timeline event:', e));
+
+        await dualWriteOrderToPostgres(orderId);
+
+        return sendResponse(response, { success: true, refund: refundResult });
+      }
+
       const updateData: Record<string, any> = {};
       const now = FieldValue.serverTimestamp();
 
@@ -106,12 +168,6 @@ export const updateOrderStatus = onRequest(async (request, response) => {
           updateData.escrowStatus = 'released';
           updateData.fundsReleasedAt = now;
           break;
-        case 'Cancelled':
-          updateData.status = 'Cancelled';
-          if (order.escrowStatus !== 'released') {
-            updateData.escrowStatus = 'refunded';
-          }
-          break;
         case 'Disputed':
           updateData.status = 'Disputed';
           updateData.escrowStatus = 'held';
@@ -123,6 +179,7 @@ export const updateOrderStatus = onRequest(async (request, response) => {
       updateData.updatedAt = now;
 
       await orderRef.update(updateData);
+      await dualWriteOrderToPostgres(orderId);
 
       const eventMap: Record<string, string> = {
         Accepted: 'seller_accepted',
@@ -130,7 +187,6 @@ export const updateOrderStatus = onRequest(async (request, response) => {
         Sent: 'order_shipped',
         Received: 'order_delivered',
         Completed: 'buyer_confirmed',
-        Cancelled: 'order_cancelled',
         Disputed: 'dispute_opened',
       };
 
@@ -191,22 +247,6 @@ export const updateOrderStatus = onRequest(async (request, response) => {
         }).catch((e) => console.error('Failed to notify seller:', e));
       }
 
-      if (status === 'Cancelled') {
-        notifyBuyer({
-          buyerId: order.customerId,
-          event: 'order_cancelled',
-          orderId,
-          orderSummary: summary,
-        }).catch((e) => console.error('Failed to notify buyer:', e));
-
-        notifySeller({
-          sellerId: order.sellerId,
-          event: 'refund_requested',
-          orderId,
-          orderSummary: summary,
-        }).catch((e) => console.error('Failed to notify seller:', e));
-      }
-
       if (status === 'Disputed') {
         notifySeller({
           sellerId: order.sellerId,
@@ -218,7 +258,8 @@ export const updateOrderStatus = onRequest(async (request, response) => {
 
       return sendResponse(response, { success: true });
     } catch (error: any) {
-      return sendError(response, error.message || 'Internal server error', 500);
+      const statusCode = error?.code === 'ESCROW_RELEASED' ? 400 : 500;
+      return sendError(response, error.message || 'Internal server error', statusCode);
     }
   });
 });
@@ -250,6 +291,7 @@ export const sellerAcceptOrder = onRequest(async (request, response) => {
         sellerAcceptedAt: now,
         updatedAt: now,
       });
+      await dualWriteOrderToPostgres(orderId);
 
       const event = 'seller_accepted';
       const summary = buildOrderSummary(order);
@@ -301,9 +343,20 @@ export const markOrderAsSent = onRequest(async (request, response) => {
 
       if (order.sellerId !== auth.uid) return sendError(response, 'Only the seller can mark as shipped', 403);
 
-      const allowedStatuses = ['Accepted', 'Preparing', 'Processing'];
-      if (!allowedStatuses.includes(order.status)) {
-        return sendError(response, `Cannot ship order in ${order.status} status`, 400);
+      const status = String(order.status || '');
+      const availabilityStatus = String(order.availabilityStatus || '');
+      const waitDays = Number(order.waitTimeDays);
+      // "Need more time" parks the order in AvailabilityCheck — seller must still be
+      // able to ship early once the item is ready. Pure "not available" cannot ship.
+      const canShipAvailabilityWait =
+        status === 'AvailabilityCheck' &&
+        availabilityStatus !== 'not_available' &&
+        (availabilityStatus === 'waiting_buyer_response' ||
+          availabilityStatus === 'waiting_restock' ||
+          (Number.isFinite(waitDays) && waitDays > 0));
+      const allowedStatuses = ['Accepted', 'Preparing', 'Processing', 'Paid'];
+      if (!allowedStatuses.includes(status) && !canShipAvailabilityWait) {
+        return sendError(response, `Cannot ship order in ${status} status`, 400);
       }
 
       const now = FieldValue.serverTimestamp();
@@ -314,6 +367,11 @@ export const markOrderAsSent = onRequest(async (request, response) => {
         sentAt: now,
         autoReleaseDate: admin.firestore.Timestamp.fromDate(autoReleaseDate),
         updatedAt: now,
+        // Clear wait/unavailable gate once the parcel is actually on the way.
+        availabilityStatus: 'available',
+        availabilityReason: null,
+        waitTimeDays: null,
+        waitTimeExpiresAt: null,
       };
 
       if (photoUrl) updateData.sentPhotoUrl = photoUrl;
@@ -321,6 +379,7 @@ export const markOrderAsSent = onRequest(async (request, response) => {
       if (waybillParkName) updateData.waybillParkName = waybillParkName;
 
       await orderRef.update(updateData);
+      await dualWriteOrderToPostgres(orderId);
 
       const event = 'order_shipped';
       const summary = buildOrderSummary(order);
@@ -408,6 +467,7 @@ export const markOrderAsReceived = onRequest(async (request, response) => {
         receivedAt: now,
         updatedAt: now,
       });
+      await dualWriteOrderToPostgres(orderId);
 
       const event = 'buyer_confirmed';
       const summary = buildOrderSummary(order);
@@ -519,66 +579,267 @@ export const calculateShippingOptions = onRequest(async (request, response) => {
 export const markOrderAsNotAvailable = onRequest(async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
-      await requireAuth(request.headers.authorization || null);
+      const auth = await requireAuth(request.headers.authorization || null);
       const { orderId, waitTimeDays, reason } = request.body;
-      const orderRef = admin.firestore().collection('orders').doc(orderId);
+      if (!orderId) {
+        return sendError(response, 'orderId is required', 400);
+      }
 
-      let waitTimeExpiresAt = null;
-      if (waitTimeDays) {
-        const expiresDate = new Date();
-        expiresDate.setDate(expiresDate.getDate() + waitTimeDays);
-        waitTimeExpiresAt = expiresDate;
+      const orderRef = admin.firestore().collection('orders').doc(orderId);
+      const orderSnap = await orderRef.get();
+      if (!orderSnap.exists) {
+        return sendError(response, 'Order not found', 404);
+      }
+
+      const order = orderSnap.data() || {};
+      if (String(order.sellerId || '') !== auth.uid && !auth.isAdmin) {
+        return sendError(response, 'Only the seller can update availability', 403);
+      }
+
+      const currentStatus = String(order.status || '');
+      if (!['Paid', 'Processing', 'Accepted', 'Preparing'].includes(currentStatus)) {
+        return sendError(response, `Cannot update availability from status ${currentStatus}`, 400);
+      }
+
+      const days = Number(waitTimeDays);
+      const hasWait = Number.isFinite(days) && days > 0;
+      let waitTimeExpiresAt: Date | null = null;
+      if (hasWait) {
+        waitTimeExpiresAt = new Date();
+        waitTimeExpiresAt.setDate(waitTimeExpiresAt.getDate() + Math.min(14, Math.floor(days)));
       }
 
       await orderRef.update({
         status: 'AvailabilityCheck',
-        availabilityStatus: waitTimeDays ? 'waiting_buyer_response' : 'not_available',
-        waitTimeDays: waitTimeDays || null,
+        availabilityStatus: hasWait ? 'waiting_buyer_response' : 'not_available',
+        waitTimeDays: hasWait ? Math.floor(days) : null,
         waitTimeExpiresAt: waitTimeExpiresAt
           ? admin.firestore.Timestamp.fromDate(waitTimeExpiresAt)
           : null,
-        availabilityReason: reason,
+        availabilityReason: String(reason || '').trim() || null,
         updatedAt: FieldValue.serverTimestamp(),
       });
 
-      return sendResponse(response, { success: true });
+      const dealThreadId = order.dealThreadId || order.chatThreadId || null;
+      const summary = buildOrderSummary(order);
+      const customText = hasWait
+        ? `Seller needs about ${Math.floor(days)} day(s) before shipping${reason ? `: ${reason}` : ''}. Reply in chat or respond on the order.`
+        : `Seller marked this item unavailable${reason ? `: ${reason}` : ''}. You can cancel for a refund or chat to resolve.`;
+
+      await createSystemMessage({
+        orderId,
+        event: hasWait ? 'seller_needs_time' : 'item_unavailable',
+        dealThreadId,
+        customText,
+      });
+
+      await createOrderTimelineEvent({
+        orderId,
+        event: hasWait ? 'seller_needs_time' : 'item_unavailable',
+        status: 'AvailabilityCheck',
+        text: customText,
+        actorId: auth.uid,
+        actorRole: 'seller',
+      });
+
+      await notifyBuyer({
+        buyerId: String(order.customerId || ''),
+        event: 'availability_update',
+        orderId,
+        orderSummary: summary,
+        extra: customText,
+        chatRoomId: dealThreadId,
+      });
+
+      return sendResponse(response, { success: true, status: 'AvailabilityCheck' });
     } catch (error: any) {
       return sendError(response, error.message || 'Internal server error', 500);
     }
   });
 });
 
-export const respondToAvailabilityCheck = onRequest(async (request, response) => {
-  return corsHandler(request, response, async () => {
-    try {
-      await requireAuth(request.headers.authorization || null);
-      const { orderId, response: buyerResponse } = request.body;
-      const orderRef = admin.firestore().collection('orders').doc(orderId);
+export const respondToAvailabilityCheck = onRequest(
+  // Firebase ID tokens are not Google IAM; Cloud Run must allow unauthenticated invoke.
+  { secrets: [paystackSecret], invoker: 'public' },
+  async (request, response) => {
+    return corsHandler(request, response, async () => {
+      try {
+        const auth = await requireAuth(request.headers.authorization || null);
+        const { orderId, response: buyerResponseRaw } = request.body;
+        if (!orderId) {
+          return sendError(response, 'orderId is required', 400);
+        }
 
-      if (buyerResponse === 'accepted') {
+        const buyerResponse = String(buyerResponseRaw || '').toLowerCase();
+        const accepted = buyerResponse === 'accepted' || buyerResponse === 'wait';
+        const cancelled = buyerResponse === 'cancelled' || buyerResponse === 'cancel';
+        if (!accepted && !cancelled) {
+          return sendError(response, 'response must be accepted/wait or cancelled/cancel', 400);
+        }
+
+        const orderRef = admin.firestore().collection('orders').doc(orderId);
+        const orderSnap = await orderRef.get();
+        if (!orderSnap.exists) {
+          return sendError(response, 'Order not found', 404);
+        }
+        const order = orderSnap.data() || {};
+        if (String(order.customerId || '') !== auth.uid && !auth.isAdmin) {
+          return sendError(response, 'Only the buyer can respond', 403);
+        }
+        if (String(order.status || '') !== 'AvailabilityCheck') {
+          return sendError(response, 'Order is not awaiting availability response', 400);
+        }
+
+        const dealThreadId = order.dealThreadId || order.chatThreadId || null;
+
+        if (accepted) {
+          await orderRef.update({
+            buyerWaitResponse: 'accepted',
+            availabilityStatus: 'waiting_restock',
+            status: 'Processing',
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          await dualWriteOrderToPostgres(orderId);
+          await createSystemMessage({
+            orderId,
+            event: 'buyer_accepted_wait',
+            dealThreadId,
+            customText: 'Buyer agreed to wait. Seller can ship when ready.',
+          });
+          await notifySeller({
+            sellerId: String(order.sellerId || ''),
+            event: 'new_message',
+            orderId,
+            orderSummary: buildOrderSummary(order),
+            extra: 'Buyer agreed to wait — ship when ready.',
+            chatRoomId: dealThreadId,
+          });
+          return sendResponse(response, { success: true, action: 'accepted' });
+        }
+
+        const refundResult = await processOrderRefund(
+          {
+            orderId,
+            reason: 'Buyer cancelled after availability update',
+            actorId: auth.uid,
+            actorRole: 'buyer',
+            cancelOrder: true,
+          },
+          { secretKey: paystackSecret.value() }
+        );
+
         await orderRef.update({
-          buyerWaitResponse: 'accepted',
-          availabilityStatus: 'waiting_restock',
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-        return sendResponse(response, { success: true, action: 'accepted' });
-      } else {
-        await orderRef.update({
-          status: 'Cancelled',
           buyerWaitResponse: 'cancelled',
           availabilityStatus: 'cancelled',
-          escrowStatus: 'refunded',
           updatedAt: FieldValue.serverTimestamp(),
         });
-        return sendResponse(response, { success: true, action: 'cancelled' });
-      }
-    } catch (error: any) {
-      return sendError(response, error.message || 'Internal server error', 500);
-    }
-  });
-});
 
-export const autoAcceptExpiredOrders = onRequest(async (request, response) => {
+        await dualWriteOrderToPostgres(orderId);
+
+        await notifyBuyer({
+          buyerId: String(order.customerId || ''),
+          event: 'order_cancelled',
+          orderId,
+          orderSummary: buildOrderSummary(order),
+          extra: 'Refund to your payment method is processing.',
+          chatRoomId: dealThreadId,
+        });
+        await notifySeller({
+          sellerId: String(order.sellerId || ''),
+          event: 'refund_requested',
+          orderId,
+          orderSummary: buildOrderSummary(order),
+          chatRoomId: dealThreadId,
+        });
+        return sendResponse(response, { success: true, action: 'cancelled', refund: refundResult });
+      } catch (error: any) {
+        const statusCode = error?.code === 'ESCROW_RELEASED' ? 400 : 500;
+        return sendError(response, error.message || 'Internal server error', statusCode);
+      }
+    });
+  }
+);
+
+/**
+ * Reminds sellers every ~5 hours for paid orders that still need shipping.
+ * Runs on a 5-hour schedule; each order is reminded at most once every 5 hours.
+ */
+export const remindUnshippedOrders = onSchedule(
+  {
+    schedule: 'every 5 hours',
+    timeZone: 'Africa/Lagos',
+  },
+  async () => {
+    const firestore = admin.firestore();
+    const nowMs = Date.now();
+    const minAgeMs = 5 * 60 * 60 * 1000;
+    const reminderCooldownMs = 5 * 60 * 60 * 1000;
+    const cutoff = admin.firestore.Timestamp.fromMillis(nowMs - minAgeMs);
+
+    const statuses = ['Processing', 'Accepted', 'Preparing', 'Paid'];
+    let reminded = 0;
+
+    for (const status of statuses) {
+      const snap = await firestore
+        .collection('orders')
+        .where('status', '==', status)
+        .where('createdAt', '<=', cutoff)
+        .limit(200)
+        .get();
+
+      for (const doc of snap.docs) {
+        const order = doc.data() || {};
+        const lastReminder = order.lastShipmentReminderAt?.toMillis?.()
+          ? Number(order.lastShipmentReminderAt.toMillis())
+          : 0;
+        if (lastReminder && nowMs - lastReminder < reminderCooldownMs) continue;
+
+        const sellerId = String(order.sellerId || '').trim();
+        if (!sellerId) continue;
+
+        const dealThreadId = order.dealThreadId || order.chatThreadId || null;
+        const summary = buildOrderSummary(order);
+        const hoursWaiting = Math.max(
+          5,
+          Math.floor((nowMs - (order.createdAt?.toMillis?.() || nowMs - minAgeMs)) / (60 * 60 * 1000))
+        );
+
+        try {
+          await notifySeller({
+            sellerId,
+            event: 'shipment_reminder',
+            orderId: doc.id,
+            orderSummary: summary,
+            extra: `${summary} still needs shipping (~${hoursWaiting}h since purchase). Mark shipped, tell the buyer you need time, or mark unavailable.`,
+            chatRoomId: dealThreadId,
+          });
+
+          await createSystemMessage({
+            orderId: doc.id,
+            event: 'shipment_reminder',
+            dealThreadId,
+            customText: `Reminder: order still awaiting shipment (${hoursWaiting}h). Seller — update the buyer in chat.`,
+          });
+
+          await doc.ref.update({
+            lastShipmentReminderAt: FieldValue.serverTimestamp(),
+            shipmentReminderCount: FieldValue.increment(1),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          reminded += 1;
+        } catch (err) {
+          console.warn('Shipment reminder failed for', doc.id, err);
+        }
+      }
+    }
+
+    console.log(`remindUnshippedOrders sent ${reminded} reminders`);
+  }
+);
+
+export const autoAcceptExpiredOrders = onRequest(
+  { secrets: [paystackSecret], invoker: 'public' },
+  async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
       if (request.method !== 'POST') {
@@ -594,37 +855,57 @@ export const autoAcceptExpiredOrders = onRequest(async (request, response) => {
         .where('createdAt', '<=', admin.firestore.Timestamp.fromDate(cutoff))
         .get();
 
+      // Also cover market orders that land in Processing without seller accept
+      const staleProcessing = await firestore
+        .collection('orders')
+        .where('status', '==', 'Processing')
+        .where('createdAt', '<=', admin.firestore.Timestamp.fromDate(cutoff))
+        .get();
+
+      const docs = [...staleSnap.docs, ...staleProcessing.docs];
       let cancelled = 0;
-      const batch = firestore.batch();
 
-      for (const doc of staleSnap.docs) {
-        const order = doc.data();
-        batch.update(doc.ref, {
-          status: 'Cancelled',
-          escrowStatus: 'refunded',
-          updatedAt: FieldValue.serverTimestamp(),
-        });
+      for (const doc of docs) {
+        const order = doc.data() || {};
+        // Skip if seller already accepted timestamps exist for Processing that moved on
+        if (order.sellerAcceptedAt) continue;
+        if (order.escrowStatus === 'released' || order.escrowStatus === 'refunded') continue;
 
-        const summary = buildOrderSummary(order);
-        notifyBuyer({
-          buyerId: order.customerId,
-          event: 'order_cancelled',
-          orderId: doc.id,
-          orderSummary: summary,
-        }).catch(() => {});
+        try {
+          await processOrderRefund(
+            {
+              orderId: doc.id,
+              reason: 'Auto-cancelled: seller did not accept within 24 hours',
+              actorId: 'system',
+              actorRole: 'system',
+              cancelOrder: true,
+            },
+            { secretKey: paystackSecret.value() }
+          );
 
-        createSystemMessage({
-          orderId: doc.id,
-          event: 'order_cancelled',
-          dealThreadId: order.dealThreadId || order.chatThreadId || null,
-          customText: 'Order auto-cancelled: Seller did not accept within 24 hours.',
-        }).catch(() => {});
+          const summary = buildOrderSummary(order);
+          notifyBuyer({
+            buyerId: order.customerId,
+            event: 'order_cancelled',
+            orderId: doc.id,
+            orderSummary: summary,
+            extra: 'Refund to your payment method is processing.',
+            chatRoomId: order.dealThreadId || order.chatThreadId || null,
+          }).catch(() => {});
 
-        cancelled++;
-      }
+          notifySeller({
+            sellerId: order.sellerId,
+            event: 'refund_requested',
+            orderId: doc.id,
+            orderSummary: summary,
+            chatRoomId: order.dealThreadId || order.chatThreadId || null,
+          }).catch(() => {});
 
-      if (cancelled > 0) {
-        await batch.commit();
+          await dualWriteOrderToPostgres(doc.id);
+          cancelled++;
+        } catch (err) {
+          console.warn('autoAcceptExpiredOrders refund failed for', doc.id, err);
+        }
       }
 
       return sendResponse(response, { success: true, cancelled });

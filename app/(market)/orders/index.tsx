@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   RefreshControl,
   StyleSheet,
   Text,
@@ -12,9 +11,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
+import { FlashListCompat } from '@/components/layout/flash-list-compat';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useUserOrders } from '@/lib/firebase/firestore/orders';
+import { useUserOrders } from '@/lib/hooks/use-order';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
@@ -226,9 +226,10 @@ export default function MarketOrdersScreen() {
           </Text>
         </View>
       ) : (
-        <FlatList
+        <FlashListCompat
           data={filteredOrders}
           keyExtractor={(item) => item.id || `${item.customerId}-${item.sellerId}-${item.createdAt}`}
+          estimatedItemSize={108}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={lightBrown} />
           }

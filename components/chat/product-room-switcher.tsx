@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 
 import { SafeImage } from '@/components/safe-image';
+import { dealProductLabel } from '@/lib/chat/enrich-inbox-snapshots';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import type { ChatInboxItem } from '@/types/chat';
@@ -31,13 +32,21 @@ export const ProductRoomSwitcher = memo(function ProductRoomSwitcher({
   const siblingRooms = useMemo(() => {
     const pid = String(peerId || '').trim();
     if (!pid) return [] as ChatInboxItem[];
-    return rooms
+    const filtered = rooms
       .filter((room) => room.peerId === pid)
       .sort((a, b) => {
         const aMs = a.lastAt ? new Date(a.lastAt).getTime() : 0;
         const bMs = b.lastAt ? new Date(b.lastAt).getTime() : 0;
         return bMs - aMs;
       });
+    // One chip per product
+    const byPost = new Map<string, ChatInboxItem>();
+    for (const room of filtered) {
+      const key = String(room.postId || room.threadId || '').trim();
+      if (!key || byPost.has(key)) continue;
+      byPost.set(key, room);
+    }
+    return Array.from(byPost.values());
   }, [peerId, rooms]);
 
   if (siblingRooms.length <= 1) return null;
@@ -52,7 +61,7 @@ export const ProductRoomSwitcher = memo(function ProductRoomSwitcher({
         {siblingRooms.map((room) => {
           const active = room.threadId === currentThreadId;
           const snap = room.postSnapshot || {};
-          const title = String(snap.title || '').trim() || 'Product';
+          const title = dealProductLabel(snap);
           const imageUri = String(snap.imageUrl || '').trim() || undefined;
           const unread = Number(room.unreadCount || 0);
 
@@ -68,6 +77,9 @@ export const ProductRoomSwitcher = memo(function ProductRoomSwitcher({
               ]}
               activeOpacity={0.85}
               disabled={active}
+              accessibilityRole="button"
+              accessibilityLabel={title}
+              accessibilityState={{ selected: active }}
               onPress={() => {
                 haptics.light();
                 router.replace(
@@ -77,13 +89,12 @@ export const ProductRoomSwitcher = memo(function ProductRoomSwitcher({
               {imageUri ? (
                 <SafeImage uri={imageUri} style={styles.thumb} />
               ) : (
-                <View style={[styles.thumb, { backgroundColor: colors.card }]} />
+                <View style={[styles.thumb, styles.thumbFallback, { backgroundColor: colors.card }]}>
+                  <Text style={[styles.thumbLetter, { color: colors.textSecondary }]}>
+                    {title.slice(0, 1).toUpperCase()}
+                  </Text>
+                </View>
               )}
-              <Text
-                style={[styles.title, { color: active ? lightBrown : colors.text }]}
-                numberOfLines={1}>
-                {title}
-              </Text>
               {unread > 0 && !active ? (
                 <View style={styles.dot}>
                   <Text style={styles.dotText}>{unread > 9 ? '9+' : unread}</Text>
@@ -100,37 +111,39 @@ export const ProductRoomSwitcher = memo(function ProductRoomSwitcher({
 const styles = StyleSheet.create({
   wrap: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 4,
+    paddingVertical: 6,
   },
   row: {
     paddingHorizontal: 10,
-    gap: 6,
+    gap: 8,
     alignItems: 'center',
   },
   chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    maxWidth: 130,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
+    position: 'relative',
+    padding: 3,
+    borderRadius: 12,
+    borderWidth: 1.5,
   },
   thumb: {
-    width: 20,
-    height: 20,
-    borderRadius: 6,
+    width: 36,
+    height: 36,
+    borderRadius: 9,
   },
-  title: {
-    flexShrink: 1,
-    fontSize: 11,
-    fontWeight: '700',
+  thumbFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  thumbLetter: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   dot: {
-    minWidth: 14,
-    height: 14,
-    borderRadius: 7,
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
     paddingHorizontal: 3,
     alignItems: 'center',
     justifyContent: 'center',

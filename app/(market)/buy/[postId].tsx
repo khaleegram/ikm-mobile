@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
   Pressable,
@@ -9,25 +8,35 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
+import { SmartPhoneField } from '@/components/ui/smart-phone-field';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { showToast } from '@/components/toast';
 import PaymentSheetModal from '@/components/market/payment-sheet-modal';
-import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
+import {
+  formatBuyerLocationLabel,
+  saveMarketBuyerProfile,
+  toBuyerLocationPayload,
+} from '@/lib/api/market-buyer-profile';
 import { NIGERIA_LOCATION_OPTIONS } from '@/lib/constants/nigeria-locations';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
-import { useUserProfile } from '@/lib/firebase/firestore/users';
+import { useMarketPost } from '@/lib/hooks/use-market-post';
+import { useMyMarketProfile } from '@/lib/hooks/use-my-market-profile';
+import { usePublicUserProfile } from '@/lib/hooks/use-user-identity';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
+import { isValidPhoneNumber, normalizePhoneInput } from '@/lib/utils/phone';
+import { readPendingEscrowCheckout } from '@/lib/utils/pending-escrow-checkout';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 
@@ -73,7 +82,7 @@ export default function MarketBuyScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { user: profile } = useUserProfile(user?.uid || null);
+  const { profile } = useMyMarketProfile(user?.uid || null);
 
   const params = useLocalSearchParams<{
     postId?: string;
@@ -89,39 +98,118 @@ export default function MarketBuyScreen() {
   );
 
   const { post, loading: postLoading } = useMarketPost(postId || null);
-  const { user: sellerProfile } = useUserProfile(post?.posterId || null);
+  const { user: sellerProfile } = usePublicUserProfile(post?.posterId || null);
   const [submitting, setSubmitting] = useState(false);
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [quantity, setQuantity] = useState('1');
   const [deliveryLocation, setDeliveryLocation] = useState('');
   const [locationPickerVisible, setLocationPickerVisible] = useState(false);
   const [locationSearch, setLocationSearch] = useState('');
+  const [checkoutPhone, setCheckoutPhone] = useState('');
+  const [locating, setLocating] = useState(false);
 
   const savedBuyerPhone = useMemo(
-    () =>
-      String((profile as any)?.marketBuyerPhone || profile?.phone || '')
-        .trim(),
+    () => String(profile?.marketBuyerPhone || '').trim(),
     [profile]
   );
-  const savedBuyerLocation = useMemo(() => {
-    const raw = (profile as any)?.marketBuyerLocation;
-    if (!raw) return '';
-    if (typeof raw === 'string') return raw.trim();
-    // Backward compat: old format was { address, city, state }
-    const obj = raw as Record<string, string>;
-    return [obj.address, obj.city, obj.state].filter(Boolean).join(', ').trim();
-  }, [profile]);
-  const buyerPhone = useMemo(() => String(savedBuyerPhone || '').trim(), [savedBuyerPhone]);
+  // Seed the field from the saved profile exactly once, when it first becomes available.
+  // Re-seeding on every empty checkoutPhone would fight the buyer's own attempt to clear
+  // the (optional) field, silently putting a stale number back after they blank it out.
+  const phoneAutoFilledRef = React.useRef(false);
+  useEffect(() => {
+    if (phoneAutoFilledRef.current) return;
+    if (!savedBuyerPhone) return;
+    phoneAutoFilledRef.current = true;
+    setCheckoutPhone(savedBuyerPhone);
+  }, [savedBuyerPhone]);
+  const normalizedCheckoutPhone = useMemo(
+    () => normalizePhoneInput(checkoutPhone),
+    [checkoutPhone]
+  );
+  // The field is the single source of truth for checkout — if the buyer clears it, the
+  // order goes out with no phone rather than silently reusing an old saved number.
+  const buyerPhone = useMemo(() => {
+    if (!checkoutPhone.trim()) return '';
+    return isValidPhoneNumber(normalizedCheckoutPhone) ? normalizedCheckoutPhone : '';
+  }, [checkoutPhone, normalizedCheckoutPhone]);
+  const savedBuyerLocation = useMemo(
+    () => formatBuyerLocationLabel(profile?.marketBuyerLocation),
+    [profile]
+  );
 
   useEffect(() => {
     if (!savedBuyerLocation.trim()) return;
     setDeliveryLocation((prev) => prev || savedBuyerLocation);
   }, [savedBuyerLocation]);
 
+  // Auto-detect approximate location when nothing is saved yet (editable after).
+  useEffect(() => {
+    if (!user?.uid) return;
+    if (deliveryLocation.trim() || savedBuyerLocation.trim()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setLocating(true);
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted' || cancelled) return;
+        const position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        if (cancelled) return;
+        const places = await Location.reverseGeocodeAsync({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+        if (cancelled) return;
+        const place = places?.[0];
+        if (!place) return;
+        const label = [place.district || place.subregion || place.name, place.city, place.region]
+          .map((part) => String(part || '').trim())
+          .filter(Boolean)
+          .filter((part, index, arr) => arr.indexOf(part) === index)
+          .join(', ');
+        if (label.length >= 5) {
+          setDeliveryLocation((prev) => prev || label);
+        }
+      } catch {
+        // Permission denied / GPS unavailable — user can type or pick.
+      } finally {
+        if (!cancelled) setLocating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, deliveryLocation, savedBuyerLocation]);
+
+  useEffect(() => {
+    if (!user?.uid || !postId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pending = await readPendingEscrowCheckout({
+          postId,
+          buyerId: user.uid,
+        });
+        if (cancelled) return;
+        if (pending?.reference) {
+          // Open sheet only for THIS product's unfinished payment.
+          setPaymentModalVisible(true);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid, postId]);
+
   const lockedPrice = useMemo(() => {
     const hasValidOffer = Number.isFinite(offeredPrice) && offeredPrice > 0;
     const offerMatchesSeller =
       !offerSellerId || (post?.posterId ? post.posterId === offerSellerId : true);
+    // Prefer accepted offer over listed price — list price caused ₦100 vs ₦10 checkout bugs.
     if (hasValidOffer && offerMatchesSeller) return offeredPrice;
     if (post?.price && post.price > 0) return post.price;
     return 0;
@@ -155,12 +243,10 @@ export default function MarketBuyScreen() {
     !submitting &&
     hasLockedPrice &&
     numericQuantity > 0 &&
-    trimmedLocation.length >= 5 &&
-    buyerPhone.length >= 10;
+    trimmedLocation.length >= 5;
 
   const missingChecks: string[] = [];
   if (!hasLockedPrice) missingChecks.push('seller final price');
-  if (!buyerPhone) missingChecks.push('phone');
   if (trimmedLocation.length < 5) missingChecks.push('delivery location');
   if (numericQuantity <= 0) missingChecks.push('quantity');
   const requirementsHint = missingChecks.length
@@ -206,7 +292,8 @@ export default function MarketBuyScreen() {
 
     try {
       await saveMarketBuyerProfile(user.uid, {
-        marketBuyerLocation: trimmedLocation as Record<string, unknown>,
+        marketBuyerLocation: toBuyerLocationPayload(trimmedLocation),
+        ...(buyerPhone ? { marketBuyerPhone: buyerPhone } : {}),
       });
     } catch (saveErr) {
       console.warn('Failed to save delivery location:', saveErr);
@@ -273,7 +360,7 @@ export default function MarketBuyScreen() {
           <Image source={{ uri: post.images?.[0] || '' }} style={styles.image} contentFit="cover" />
 
           <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
-            {post.description?.trim() || marketBrand.genericItemLower}
+            {post.title?.trim() || post.description?.trim() || marketBrand.genericItemLower}
           </Text>
           <View style={styles.sellerMetaRow}>
             <Text style={[styles.itemMeta, { color: colors.textSecondary }]}>Seller: {sellerName}</Text>
@@ -355,37 +442,45 @@ export default function MarketBuyScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Phone Number</Text>
-          {buyerPhone ? (
-            <View
-              style={[
-                styles.readonlyField,
-                {
-                  borderColor: colors.border,
-                  backgroundColor: colors.backgroundSecondary,
-                },
-              ]}>
-              <Text style={[styles.readonlyValue, { color: colors.text }]}>{buyerPhone}</Text>
-            </View>
+          <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>
+            Phone Number{' '}
+            <Text style={{ color: colors.textSecondary, fontWeight: '500' }}>(optional)</Text>
+          </Text>
+          <SmartPhoneField
+            value={checkoutPhone}
+            onChange={setCheckoutPhone}
+            colors={{
+              text: colors.text,
+              textSecondary: colors.textSecondary,
+              border: colors.border,
+              background: colors.background,
+              backgroundSecondary: colors.backgroundSecondary,
+              card: colors.card,
+            }}
+            accentColor={lightBrown}
+            borderColor={
+              checkoutPhone.trim() && !isValidPhoneNumber(normalizedCheckoutPhone)
+                ? colors.error
+                : colors.border
+            }
+            placeholder="801 234 5678"
+          />
+          {checkoutPhone.trim() && !isValidPhoneNumber(normalizedCheckoutPhone) ? (
+            <Text style={[styles.helperText, { color: colors.error }]}>
+              Enter a valid number or leave blank.
+            </Text>
           ) : (
-            <TouchableOpacity
-              style={[
-                styles.verifyPhoneAction,
-                {
-                  borderColor: lightBrown,
-                  backgroundColor: `${lightBrown}0A`,
-                },
-              ]}
-              onPress={() => {
-                haptics.light();
-                router.push('/complete-phone?edit=1' as any);
-              }}>
-              <IconSymbol name="plus.circle.fill" size={18} color={lightBrown} />
-              <Text style={[styles.verifyPhoneText, { color: lightBrown }]}>Add Phone (Optional)</Text>
-            </TouchableOpacity>
+            <Text style={[styles.helperText, { color: colors.textSecondary }]}>
+              Optional — helps sellers and delivery reach you.
+            </Text>
           )}
 
           <Text style={[styles.label, styles.spacingTop, { color: colors.text }]}>Delivery Location</Text>
+          <Text style={[styles.helperText, { color: colors.textSecondary }]}>
+            {locating
+              ? 'Detecting your area…'
+              : 'Auto-filled from your profile or device — edit anytime.'}
+          </Text>
           <View style={{ position: 'relative' }}>
             <TextInput
               value={deliveryLocation}
@@ -412,13 +507,15 @@ export default function MarketBuyScreen() {
               <IconSymbol name="location.fill" size={18} color={lightBrown} />
             </TouchableOpacity>
           </View>
-          {savedBuyerLocation && !deliveryLocation.trim() ? (
+          {savedBuyerLocation &&
+          deliveryLocation.trim() &&
+          savedBuyerLocation !== deliveryLocation.trim() ? (
             <TouchableOpacity
               style={styles.savedLocationRow}
               onPress={() => setDeliveryLocation(savedBuyerLocation)}>
               <IconSymbol name="clock.fill" size={14} color={colors.textSecondary} />
               <Text style={[styles.savedLocationText, { color: colors.textSecondary }]} numberOfLines={1}>
-                {savedBuyerLocation}
+                Use saved: {savedBuyerLocation}
               </Text>
             </TouchableOpacity>
           ) : null}
@@ -502,11 +599,11 @@ export default function MarketBuyScreen() {
               styles.payButton,
               {
                 backgroundColor: canSubmit ? lightBrown : colors.backgroundSecondary,
-                opacity: submitting ? 0.7 : 1,
+                opacity: submitting || !canSubmit ? 0.7 : 1,
               },
             ]}
             onPress={handleSubmit}
-            disabled={submitting}>
+            disabled={submitting || !canSubmit}>
             {submitting ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
@@ -593,12 +690,13 @@ export default function MarketBuyScreen() {
           visible={paymentModalVisible}
           onClose={() => setPaymentModalVisible(false)}
           post={post}
+          unitPrice={lockedPrice}
           quantity={numericQuantity}
           deliveryAddress={trimmedLocation}
           deliveryState={''}
           deliveryCity={''}
           addressLine={trimmedLocation}
-          buyerPhone={buyerPhone}
+          buyerPhone={buyerPhone || 'Not provided'}
           buyerEmail={buyerEmail}
           buyerName={profile?.displayName || user.displayName || user.email || 'Market Buyer'}
           buyerId={user.uid}
@@ -763,6 +861,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginBottom: 8,
+  },
+  helperText: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 8,
+    marginTop: -2,
   },
   spacingTop: {
     marginTop: 10,

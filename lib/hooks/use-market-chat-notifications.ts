@@ -1,11 +1,16 @@
-// Local (+ optional Firestore) notifications for new Market direct messages when the chat is not open.
+// Market chat notification tap handling + legacy Firestore path (non-postgres only).
+//
+// Postgres/Neon path: push is sent server-side from chat-notify.mjs on message insert,
+// reading tokens from Neon users.fcm_tokens. The previous 20s inbox poll that scheduled
+// local notifications is deleted — it duplicated (or substituted for) the broken FCM path
+// and made foreground delivery feel like "chat always lagging 20 seconds."
 import { useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { collection, limit, onSnapshot, query, where } from 'firebase/firestore';
 
-import { resolveDirectConversationPeerId } from '@/lib/api/market-messages';
+import { resolveDirectConversationPeerId } from '@/lib/chat/conversation-ids';
 import { isPostgresChatBackend } from '@/lib/config/chat-backend';
 import { firestore } from '@/lib/firebase/config';
 import { createNotification } from '@/lib/firebase/firestore/notifications';
@@ -32,6 +37,7 @@ async function ensureMessagesChannel(): Promise<void> {
 
 /**
  * Call from the Market tab layout once (logged-in users only).
+ * Postgres backend: no-op for delivery (server FCM handles it). Legacy Firestore only.
  */
 export function useMarketChatMessageNotifications(userId: string | null): void {
   const conversationsPrimed = useRef(false);

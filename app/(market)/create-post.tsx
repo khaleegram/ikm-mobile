@@ -1,14 +1,11 @@
 import { Image } from "expo-image";
 import { router } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
     ActivityIndicator,
-    Keyboard,
-    KeyboardEvent,
     Modal,
     ScrollView,
     StyleSheet,
-    Switch,
     Text,
     TextInput,
     TouchableOpacity,
@@ -17,6 +14,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import KeyboardScreen from "@/components/layout/KeyboardScreen";
+import { HashtagInput } from "@/components/market/hashtag-input";
 import { MarketVideoSurface } from "@/components/market/market-video-surface";
 import { showToast } from "@/components/toast";
 import { IconSymbol } from "@/components/ui/icon-symbol";
@@ -39,31 +37,6 @@ import {
 
 const LIGHT_BROWN = "#A67C52";
 const MAX_IMAGES = 20;
-const HASHTAG_REGEX = /(^|\s)#([a-zA-Z0-9_]+)/g;
-const FALLBACK_TRENDING_HASHTAGS = [
-  "fashion",
-  "lagos",
-  "abuja",
-  "sale",
-  "new",
-  "vintage",
-  "beauty",
-  "phones",
-];
-
-function extractHashtags(text: string): string[] {
-  const found: string[] = [];
-  HASHTAG_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null = null;
-  while ((match = HASHTAG_REGEX.exec(text)) !== null) {
-    const tag = String(match[2] || "")
-      .trim()
-      .toLowerCase();
-    if (tag && !found.includes(tag)) found.push(tag);
-    if (found.length >= 10) break;
-  }
-  return found;
-}
 
 function normalizeCreatePostError(error: unknown): string {
   const raw = (error as any)?.message || "Unable to publish post.";
@@ -87,122 +60,13 @@ export default function CreatePostScreen() {
   const [images, setImages] = useState<string[]>([]);
   const [videoUri, setVideoUri] = useState("");
   const [coverImageUri, setCoverImageUri] = useState("");
-  const [description, setDescription] = useState("");
   const [title, setTitle] = useState("");
+  const [hashtags, setHashtags] = useState<string[]>([]);
   const [price, setPrice] = useState("");
-  const [isNegotiable, setIsNegotiable] = useState(false);
   const [location, setLocation] = useState({ state: "", city: "" });
   const [locationSearch, setLocationSearch] = useState("");
   const [locationPickerVisible, setLocationPickerVisible] = useState(false);
   const [publishing, setPublishing] = useState(false);
-
-  const [captionFocused, setCaptionFocused] = useState(false);
-  const [trendingSuggestions, setTrendingSuggestions] = useState<string[]>([]);
-
-  const captionRef = useRef<TextInput>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const tags = await marketPostsApi.listTrendingHashtags(30);
-        const next = tags
-          .map((item) => String(item.tag || "").trim().toLowerCase())
-          .filter(Boolean);
-        if (!cancelled) {
-          setTrendingSuggestions(next.length > 0 ? next : FALLBACK_TRENDING_HASHTAGS);
-        }
-      } catch (error) {
-        console.warn("Trending hashtag suggestions unavailable:", error);
-        if (!cancelled) setTrendingSuggestions(FALLBACK_TRENDING_HASHTAGS);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Update description; activeSuggestions derives partial-tag live from description
-  const handleCaptionChange = useCallback((text: string) => {
-    setDescription(text);
-  }, []);
-
-  const hashtags = useMemo(() => extractHashtags(description), [description]);
-
-  const hashtagBar = useMemo(() => {
-    if (!captionFocused) {
-      return { visible: false, label: "TRENDING", chips: [] as string[] };
-    }
-
-    const pool = trendingSuggestions.length > 0
-      ? trendingSuggestions
-      : FALLBACK_TRENDING_HASHTAGS;
-    const usedTags = new Set(hashtags);
-    const unused = pool.filter((tag) => !usedTags.has(tag));
-    const lastWord = description.trimEnd().split(/\s/).pop() ?? "";
-
-    if (lastWord.startsWith("#")) {
-      const partial = lastWord.slice(1).toLowerCase();
-      const matches = unused
-        .filter((tag) => partial === "" || tag.startsWith(partial))
-        .slice(0, 12);
-
-      if (matches.length > 0) {
-        return { visible: true, label: "SUGGESTIONS", chips: matches };
-      }
-    }
-
-    return { visible: true, label: "TRENDING", chips: unused.slice(0, 12) };
-  }, [captionFocused, description, trendingSuggestions, hashtags]);
-
-  const applyHashtagSuggestion = useCallback((tag: string) => {
-    haptics.light();
-    setDescription((prev) => {
-      const trimmed = prev.trimEnd();
-      const lastWord = trimmed.split(/\s/).pop() ?? "";
-
-      if (lastWord.startsWith("#")) {
-        const words = prev.split(/(\s)/);
-        for (let i = words.length - 1; i >= 0; i--) {
-          if (words[i].startsWith("#")) {
-            words[i] = `#${tag}`;
-            break;
-          }
-        }
-        return `${words.join("")} `;
-      }
-
-      const spacer = trimmed.length > 0 && !trimmed.endsWith(" ") ? " " : "";
-      return `${trimmed}${spacer}#${tag} `;
-    });
-  }, []);
-
-  // Remove a confirmed tag by stripping it from the caption text
-  const removeHashtagFromCaption = useCallback((tag: string) => {
-    haptics.light();
-    setDescription((prev) =>
-      prev
-        .replace(new RegExp(`(^|\\s)#${tag}(?=\\s|$)`, "gi"), " ")
-        .replace(/\s{2,}/g, " ")
-        .trimStart(),
-    );
-  }, []);
-
-  // Keyboard event listeners — dismiss keyboard when tapping outside caption
-  useEffect(() => {
-    const onShow = (_e: KeyboardEvent) => {
-      // keyboard visible — no-op, KeyboardScreen handles scroll
-    };
-    const onHide = () => {
-      setCaptionFocused(false);
-    };
-    const showSub = Keyboard.addListener("keyboardDidShow", onShow);
-    const hideSub = Keyboard.addListener("keyboardDidHide", onHide);
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
 
   const locationLabel = useMemo(() => {
     if (!location.city && !location.state) return "";
@@ -261,9 +125,8 @@ export default function CreatePostScreen() {
     setVideoUri("");
     setCoverImageUri("");
     setTitle("");
-    setDescription("");
+    setHashtags([]);
     setPrice("");
-    setIsNegotiable(false);
     setLocation({ state: "", city: "" });
     setLocationSearch("");
   };
@@ -274,6 +137,7 @@ export default function CreatePostScreen() {
 
     // Capture form state before reset
     const parsedPrice = price ? Number(price.replace(/[^0-9.]/g, "")) : undefined;
+    const hasListedPrice = Number.isFinite(parsedPrice);
     const postData = {
       mediaType: postMode === "video" ? "video" as const : "image_gallery" as const,
       images: postMode === "photo" ? images : [],
@@ -281,9 +145,11 @@ export default function CreatePostScreen() {
       videoUri: postMode === "video" ? videoUri || undefined : undefined,
       hashtags,
       title: title.trim().slice(0, 80) || undefined,
-      description: description.trim() || undefined,
-      price: Number.isFinite(parsedPrice) ? parsedPrice : undefined,
-      isNegotiable: Number.isFinite(parsedPrice) ? isNegotiable : false,
+      // Caption is not collected — title + hashtags (algorithm only)
+      description: undefined,
+      price: hasListedPrice ? parsedPrice : undefined,
+      // Listed price is a starting point; buyers can always message to negotiate
+      isNegotiable: hasListedPrice,
       location: locationLabel ? location : undefined,
       contactMethod: "in-app" as const,
       soundSelection: postMode === "video" ? { mode: "original" as const } : undefined,
@@ -496,70 +362,16 @@ export default function CreatePostScreen() {
             </Text>
           </View>
 
-          {/* Caption section */}
-          <View style={[styles.captionSection, { backgroundColor: isDark ? `${LIGHT_BROWN}07` : `${LIGHT_BROWN}05` }]}>
-            <Text style={[styles.fieldLabel, { color: LIGHT_BROWN, paddingHorizontal: 14, paddingTop: 10 }]}>CAPTION</Text>
-            <TextInput
-              ref={captionRef}
-              value={description}
-              onChangeText={handleCaptionChange}
-              onFocus={() => setCaptionFocused(true)}
-              onBlur={() => setCaptionFocused(false)}
-              placeholder="Write a caption… add #hashtags inline"
-              placeholderTextColor={colors.textSecondary}
-              multiline
-              maxLength={500}
-              blurOnSubmit={false}
-              style={[styles.captionInput, { color: colors.text }, captionFocused && styles.captionInputFocused]}
-            />
-            <View style={styles.captionFooter}>
-              {/* Confirmed hashtag chips */}
-              {hashtags.length > 0 && (
-                <View style={styles.tagsWrap}>
-                  {hashtags.map((tag) => (
-                    <TouchableOpacity
-                      key={tag}
-                      style={[styles.tagChip, { backgroundColor: `${LIGHT_BROWN}18`, borderColor: `${LIGHT_BROWN}35` }]}
-                      onPress={() => removeHashtagFromCaption(tag)}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={[styles.tagChipText, { color: LIGHT_BROWN }]}>#{tag}</Text>
-                      <IconSymbol name="xmark" size={9} color={`${LIGHT_BROWN}BB`} />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-              <Text style={[styles.charCount, { color: colors.textSecondary }]}>{description.length}/500</Text>
-            </View>
+          {/* Hashtags for discovery/algorithm only — not shown on the feed */}
+          <View style={[styles.hashtagSection, { borderTopColor: colors.border }]}>
+            <Text style={[styles.fieldLabel, { color: LIGHT_BROWN, marginBottom: 8, paddingHorizontal: 0 }]}>
+              HASHTAGS
+            </Text>
+            <Text style={[styles.hashtagHint, { color: colors.textSecondary }]}>
+              Help people find this product. Tags stay behind the scenes — they won’t show on the feed.
+            </Text>
+            <HashtagInput hashtags={hashtags} onHashtagsChange={setHashtags} />
           </View>
-
-          {/* Trending while caption is focused; autocomplete replaces it while typing #tag */}
-          {hashtagBar.visible && (
-            <View style={[styles.suggestionsWrap, { borderTopColor: colors.border }]}>
-              <Text style={[styles.suggestionsLabel, { color: LIGHT_BROWN }]}>
-                {hashtagBar.label}
-              </Text>
-              {hashtagBar.chips.length > 0 ? (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.suggestionsRow}
-                  keyboardShouldPersistTaps="always"
-                >
-                  {hashtagBar.chips.map((tag) => (
-                    <TouchableOpacity
-                      key={tag}
-                      style={[styles.suggestionChip, { backgroundColor: `${LIGHT_BROWN}15`, borderColor: `${LIGHT_BROWN}40` }]}
-                      onPress={() => applyHashtagSuggestion(tag)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.suggestionChipText, { color: LIGHT_BROWN }]}>#{tag}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              ) : null}
-            </View>
-          )}
 
           {/* Pricing row */}
           <View style={[styles.sectionHeader, { borderTopColor: colors.border }]}>
@@ -573,21 +385,15 @@ export default function CreatePostScreen() {
             <TextInput
               value={price}
               onChangeText={setPrice}
-              placeholder="Set a price (optional)"
+              placeholder="Starting price (optional)"
               placeholderTextColor={colors.textSecondary}
               keyboardType="numeric"
               style={[styles.rowInput, { color: colors.text }]}
             />
-            <View style={styles.rowRight}>
-              <Text style={[styles.rowRightLabel, { color: colors.textSecondary }]}>Negotiable</Text>
-              <Switch
-                value={isNegotiable}
-                onValueChange={setIsNegotiable}
-                thumbColor="#FFF"
-                trackColor={{ false: colors.border, true: LIGHT_BROWN }}
-              />
-            </View>
           </View>
+          <Text style={[styles.priceHint, { color: colors.textSecondary }]}>
+            Buyers can always message you to negotiate.
+          </Text>
 
           {/* Location row */}
           <View style={[styles.sectionHeader, { borderTopColor: colors.border }]}>
@@ -749,26 +555,27 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-
-  captionSection: { paddingBottom: 4 },
-  captionInput: {
-    minHeight: 110, paddingHorizontal: 16, paddingTop: 16,
-    fontSize: 15, lineHeight: 22, textAlignVertical: "top",
-  },
-  captionInputFocused: { minHeight: 140 },
-  captionFooter: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 10, flexWrap: "wrap", gap: 4 },
   charCount: { fontSize: 11, alignSelf: "flex-end" },
 
-  tagsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 },
-  tagChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 12, borderWidth: 1 },
-  tagChipText: { fontSize: 12, fontWeight: "700" },
-
-  // Trending suggestions
-  suggestionsWrap: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, gap: 6, borderTopWidth: StyleSheet.hairlineWidth },
-  suggestionsLabel: { fontSize: 9, fontWeight: "800", letterSpacing: 1 },
-  suggestionsRow: { gap: 6, paddingVertical: 2 },
-  suggestionChip: { paddingHorizontal: 11, paddingVertical: 5, borderRadius: 14, borderWidth: 1 },
-  suggestionChipText: { fontSize: 12, fontWeight: "700" },
+  hashtagSection: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  hashtagHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 10,
+    paddingHorizontal: 0,
+  },
+  priceHint: {
+    fontSize: 12,
+    lineHeight: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    marginTop: -4,
+  },
 
   // Section labels
   sectionHeader: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4, borderTopWidth: StyleSheet.hairlineWidth },
@@ -779,8 +586,6 @@ const styles = StyleSheet.create({
   rowPrefix: { fontSize: 15, fontWeight: "700" },
   rowInput: { flex: 1, fontSize: 14, minHeight: 28 },
   rowValue: { fontSize: 14, fontWeight: "600" },
-  rowRight: { flexDirection: "row", alignItems: "center", gap: 6 },
-  rowRightLabel: { fontSize: 11, fontWeight: "600" },
 
   // Bottom sheets
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },

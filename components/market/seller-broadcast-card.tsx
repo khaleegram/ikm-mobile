@@ -10,7 +10,6 @@ import { Image } from 'expo-image';
 
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VideoCoverImage } from '@/components/market/video-cover-image';
-import { formatPostCaption } from '@/lib/utils/post-caption';
 import { getMarketPostVideoCover, isVideoMarketPost } from '@/lib/utils/market-media';
 import type { MarketPost } from '@/types';
 
@@ -61,11 +60,13 @@ export function SellerBroadcastCard({
 }: SellerBroadcastCardProps) {
   const isVideo = isVideoMarketPost(post);
   const imageUrls = useMemo(() => getCardImageUrls(post), [post]);
-  const caption = useMemo(() => formatPostCaption(post.description), [post.description]);
+  const productTitle = String(post.title || '').trim();
   const hasPrice = typeof post.price === 'number' && post.price > 0;
   const showAsk = !hasPrice && Boolean(onAskPress);
   const hasMedia = imageUrls.length > 0 || isVideo;
   const showActions = (hasPrice && onBuyPress) || (showAsk && onAskPress);
+  // When priced, buyers can always message to negotiate (reuse ask handler as DM)
+  const showMessage = hasPrice && Boolean(onAskPress);
 
   return (
     <View style={styles.wrapper}>
@@ -92,10 +93,10 @@ export function SellerBroadcastCard({
           {isLive ? <View style={styles.liveDot} /> : null}
         </View>
 
-        {caption ? (
+        {productTitle ? (
           <View style={styles.captionWrap}>
-            <Text style={[styles.caption, { color: textColor }]} numberOfLines={hasMedia ? 3 : undefined}>
-              {caption}
+            <Text style={[styles.caption, { color: textColor }]} numberOfLines={hasMedia ? 2 : undefined}>
+              {productTitle}
             </Text>
           </View>
         ) : null}
@@ -113,7 +114,7 @@ export function SellerBroadcastCard({
           </View>
         ) : null}
 
-        {showActions ? (
+        {showActions || showMessage ? (
           <View style={styles.cardBody}>
             <View style={styles.actionRow}>
               {hasPrice && onBuyPress ? (
@@ -123,6 +124,15 @@ export function SellerBroadcastCard({
                   activeOpacity={0.82}>
                   <IconSymbol name="cart.fill" size={10} color="#FFF" />
                   <Text style={styles.pillSolidText}>Buy</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {showMessage && onAskPress ? (
+                <TouchableOpacity
+                  style={[styles.pill, { borderColor: accentColor, borderWidth: 1.5 }]}
+                  onPress={onAskPress}
+                  activeOpacity={0.85}>
+                  <Text style={[styles.pillText, { color: accentColor }]}>Message</Text>
                 </TouchableOpacity>
               ) : null}
 

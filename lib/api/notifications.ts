@@ -1,12 +1,13 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const NOTIFICATION_FUNCTIONS = {
-  registerFcmToken: 'https://registerfcmtoken-q3rjv54uka-uc.a.run.app',
-  unregisterFcmToken: 'https://unregisterfcmtoken-q3rjv54uka-uc.a.run.app',
-  getNotifications: 'https://getnotifications-q3rjv54uka-uc.a.run.app',
-  getUnreadCount: 'https://getunreadnotificationcount-q3rjv54uka-uc.a.run.app',
-  markRead: 'https://marknotificationread-q3rjv54uka-uc.a.run.app',
-  markAllRead: 'https://markallnotificationsread-q3rjv54uka-uc.a.run.app',
+  registerFcmToken: cloudFunctionUrl('registerFcmToken'),
+  unregisterFcmToken: cloudFunctionUrl('unregisterFcmToken'),
+  getNotifications: cloudFunctionUrl('getNotifications'),
+  getUnreadCount: cloudFunctionUrl('getUnreadNotificationCount'),
+  markRead: cloudFunctionUrl('markNotificationRead'),
+  markAllRead: cloudFunctionUrl('markAllNotificationsRead'),
 };
 
 export const notificationsApi = {

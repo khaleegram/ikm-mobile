@@ -148,8 +148,10 @@ export const initializePaystackTransaction = onRequest(
             reference: normalizedReference,
             metadata: {
               ...(metadata || {}),
-              source: 'ikm-mobile',
+              // Preserve client market source/delivery fields; only fill gaps.
+              source: String((metadata as any)?.source || 'ikm-mobile'),
               firebaseUid: auth.uid,
+              buyerId: String((metadata as any)?.buyerId || auth.uid),
             },
           }),
           signal: AbortSignal.timeout(10000),
@@ -384,6 +386,18 @@ export const paystackWebhook = onRequest(
 
         const event = asNonEmptyString((request.body as any)?.event);
         const data = (request.body as any)?.data || {};
+
+        // Refund lifecycle webhooks
+        if (event.startsWith('refund.')) {
+          try {
+            const { handleRefundWebhookEvent } = await import('./refunds.js');
+            await handleRefundWebhookEvent(event, data);
+          } catch (refundErr) {
+            console.error('Refund webhook handling failed:', refundErr);
+          }
+          return sendResponse(response, { success: true, handled: event });
+        }
+
         const reference = asNonEmptyString(data?.reference);
         const status = asNonEmptyString(data?.status).toLowerCase() || 'unknown';
         const amountNgn = Number(data?.amount || 0) / 100;
@@ -406,6 +420,28 @@ export const paystackWebhook = onRequest(
           gatewayId: asNonEmptyString(data?.id || ''),
           source: 'paystack-webhook',
         });
+
+        // Money safety net: if charge succeeded, create the market order even when the
+        // client crashed before finalize. Uses payment_sessions + Paystack metadata.
+        if (
+          (event === 'charge.success' || status === 'success') &&
+          status === 'success'
+        ) {
+          try {
+            await tryAutoFinalizeMarketEscrowFromWebhook({
+              reference,
+              amountNgn,
+              customerEmail,
+              metadata: data?.metadata || {},
+            });
+          } catch (autoFinalizeError) {
+            console.error(
+              'Webhook market auto-finalize failed (truth saved; client can still recover):',
+              reference,
+              autoFinalizeError
+            );
+          }
+        }
 
         return sendResponse(response, { success: true });
       } catch (error: any) {
@@ -1072,10 +1108,296 @@ const finalizeMarketEscrowPaymentSchema = z.object({
   postId: z.string().min(1),
   quantity: z.number().int().positive(),
   deliveryAddress: z.string().min(5),
-  buyerPhone: z.string().min(10),
+  // Optional — never block order creation after Paystack has already charged the buyer.
+  buyerPhone: z.string().optional().nullable(),
   dealThreadId: z.string().min(1).optional().nullable(),
   chatId: z.string().min(1).optional().nullable(),
+  /** Accepted offer / checkout unit price — must match what Paystack charged. */
+  agreedUnitPrice: z.number().positive().optional(),
+  sellerId: z.string().min(1).optional().nullable(),
+  itemTitle: z.string().min(1).max(120).optional().nullable(),
 });
+
+/**
+ * Deterministic Firestore order id from Paystack reference.
+ * Concurrent finalize calls for the same payment collide on the same doc inside
+ * runTransaction — one creates, the other sees exists — instead of the old
+ * TOCTOU race (query outside txn → two order docs for one payment).
+ */
+function marketOrderIdFromPaystackReference(reference: string): string {
+  const clean = String(reference || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 680);
+  return `mkt_${clean || 'unknown'}`;
+}
+
+/**
+ * Server-side recovery when Paystack confirms charge.success but the mobile
+ * client never reached finalizeMarketEscrowPayment (crash, killed app, etc.).
+ * Idempotent: safe if client finalize races the webhook.
+ */
+async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
+  reference: string;
+  amountNgn: number;
+  customerEmail: string | null;
+  metadata: Record<string, any>;
+}): Promise<void> {
+  const reference = asNonEmptyString(input.reference);
+  if (!reference) return;
+
+  const firestore = admin.firestore();
+  const orderChat = await import('./order-chat.js');
+
+  const existingNeon = await orderChat.fetchNeonOrderByReference(reference);
+  if (existingNeon?.id) return;
+
+  const orderId = marketOrderIdFromPaystackReference(reference);
+  const orderRef = firestore.collection('orders').doc(orderId);
+  if ((await orderRef.get()).exists) return;
+
+  const sessionSnap = await firestore.collection('payment_sessions').doc(reference).get();
+  const sessionData = sessionSnap.exists ? sessionSnap.data() || {} : {};
+  const meta = {
+    ...(sessionData.metadata || {}),
+    ...(input.metadata || {}),
+  };
+
+  const source = asNonEmptyString(meta.source).toLowerCase();
+  const postId = asNonEmptyString(meta.postId);
+  const isMarketCheckout =
+    !!postId &&
+    (source.includes('market') ||
+      source.includes('chatcart') ||
+      meta.agreedUnitPrice != null ||
+      meta.agreed_unit_price != null);
+  if (!isMarketCheckout) return;
+
+  const buyerId = asNonEmptyString(
+    meta.firebaseUid || meta.firebase_uid || meta.buyerId || meta.userId || sessionData.uid
+  );
+  if (!buyerId) {
+    console.warn('Webhook auto-finalize skipped: missing buyerId', reference);
+    return;
+  }
+
+  let deliveryAddress = asNonEmptyString(meta.deliveryAddress);
+  const quantity = Math.max(1, Math.floor(Number(meta.quantity || 1)) || 1);
+  const bodyAgreedUnitPrice = Number(meta.agreedUnitPrice ?? meta.agreed_unit_price ?? 0);
+  const bodySellerId = asNonEmptyString(meta.sellerId);
+  const bodyItemTitle = asNonEmptyString(meta.itemTitle);
+  const requestedDealThreadId =
+    asNonEmptyString(meta.dealThreadId || meta.chatId) || null;
+  let buyerPhone = asNonEmptyString(meta.buyerPhone);
+
+  const neonProfile = await orderChat.fetchNeonUserProfile(buyerId);
+  const userDoc = neonProfile ? null : await firestore.collection('users').doc(buyerId).get();
+  const userData = neonProfile || (userDoc?.exists ? userDoc.data() : null);
+  const buyerName = asNonEmptyString(
+    meta.buyerName || userData?.displayName || input.customerEmail || 'Market Buyer'
+  );
+  buyerPhone =
+    buyerPhone ||
+    asNonEmptyString(userData?.marketBuyerPhone || userData?.phone) ||
+    'Not provided';
+
+  if (deliveryAddress.length < 5) {
+    const loc = userData?.marketBuyerLocation || {};
+    deliveryAddress = asNonEmptyString(
+      [loc.address, loc.city, loc.state].filter(Boolean).join(', ')
+    );
+  }
+  if (deliveryAddress.length < 5) {
+    console.warn(
+      'Webhook auto-finalize skipped: missing deliveryAddress (client must finalize)',
+      reference
+    );
+    return;
+  }
+
+  const paidAmount =
+    Number.isFinite(input.amountNgn) && input.amountNgn > 0
+      ? input.amountNgn
+      : Number(sessionData.amount || 0);
+  if (!(paidAmount > 0)) {
+    console.warn('Webhook auto-finalize skipped: missing paid amount', reference);
+    return;
+  }
+
+  const commissionRate = await getPlatformCommissionRate();
+  const postSnap = await firestore.collection('marketPosts').doc(postId).get();
+  const postData = postSnap.exists ? postSnap.data()! : null;
+  const postStatus = String(postData?.status || 'active').toLowerCase();
+  if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
+    console.warn('Webhook auto-finalize skipped: post unavailable', reference, postId);
+    return;
+  }
+
+  const listedPrice = Number(postData?.price || 0);
+  const unitPrice =
+    (Number.isFinite(bodyAgreedUnitPrice) && bodyAgreedUnitPrice > 0
+      ? bodyAgreedUnitPrice
+      : null) || (listedPrice > 0 ? listedPrice : null);
+  if (!unitPrice || !(unitPrice > 0)) {
+    console.warn('Webhook auto-finalize skipped: missing unit price', reference);
+    return;
+  }
+
+  const orderTotal = unitPrice * quantity;
+  if (Math.abs(orderTotal - paidAmount) > 0.01) {
+    console.warn(
+      'Webhook auto-finalize skipped: amount mismatch',
+      reference,
+      { paidAmount, orderTotal }
+    );
+    return;
+  }
+
+  const resolvedSellerId = asNonEmptyString(
+    postData?.posterId || bodySellerId || meta.sellerId
+  );
+  if (!resolvedSellerId || resolvedSellerId === buyerId) {
+    console.warn('Webhook auto-finalize skipped: invalid seller', reference);
+    return;
+  }
+
+  const itemName = String(
+    bodyItemTitle || postData?.title || postData?.description || 'Marketplace Item'
+  ).slice(0, 70);
+  const commission = orderTotal * commissionRate;
+  const sellerEarning = orderTotal - commission;
+
+  let dealThreadId: string | null = requestedDealThreadId;
+  try {
+    dealThreadId = await orderChat.ensureDealThreadForOrder({
+      buyerId,
+      postId,
+      sellerId: resolvedSellerId,
+      threadId: requestedDealThreadId,
+    });
+  } catch (linkError) {
+    console.error('Webhook auto-finalize deal thread failed', reference, linkError);
+  }
+
+  const nowIso = new Date().toISOString();
+  const orderPayload: Record<string, any> = {
+    id: orderId,
+    customerId: buyerId,
+    sellerId: resolvedSellerId,
+    postId,
+    idempotencyKey: reference,
+    items: [
+      {
+        productId: `market_post_${postId}`,
+        name: itemName,
+        price: unitPrice,
+        quantity,
+      },
+    ],
+    total: orderTotal,
+    shippingPrice: 0,
+    shippingType: 'pickup',
+    status: 'Processing',
+    deliveryAddress: deliveryAddress.trim(),
+    customerInfo: {
+      name: buyerName,
+      email: input.customerEmail || asNonEmptyString(meta.buyerEmail) || '',
+      phone: buyerPhone.trim(),
+    },
+    paymentMethod: 'Paystack Escrow',
+    paymentReference: reference,
+    paystackReference: reference,
+    escrowStatus: 'held',
+    commissionRate,
+    dealThreadId: dealThreadId || null,
+    chatThreadId: dealThreadId || null,
+    marketMeta: {
+      fromChatId: dealThreadId || requestedDealThreadId,
+      postId,
+      agreedUnitPrice: unitPrice,
+      listedPrice: listedPrice || null,
+      finalizedBy: 'paystack-webhook',
+    },
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    paymentVerifiedAt: nowIso,
+    sellerUnreadCount: 1,
+    buyerUnreadCount: 0,
+  };
+
+  try {
+    await orderChat.commitAndMirrorOrder(orderPayload, {
+      bumpPurchaseCount: true,
+      timeline: [
+        {
+          event: 'order_paid',
+          status: 'Processing',
+          text: 'Payment verified',
+          actorId: buyerId,
+          actorRole: 'buyer',
+          createdAt: nowIso,
+        },
+      ],
+    });
+  } catch (commitError) {
+    const raced = await orderChat.fetchNeonOrderByReference(reference);
+    if (raced?.id) return;
+    throw commitError;
+  }
+
+  try {
+    await firestore.collection('transactions').doc(`ledger_${reference}`).set(
+      {
+        id: `ledger_${reference}`,
+        type: 'sale',
+        amount: sellerEarning,
+        commission,
+        commissionRate,
+        orderId,
+        sellerId: resolvedSellerId,
+        customerId: buyerId,
+        description: `Sale from order #${orderId.slice(0, 7)}`,
+        status: 'completed',
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    if (postSnap.exists) {
+      await firestore.collection('marketPosts').doc(postId).set(
+        {
+          lastBuyerId: buyerId,
+          purchaseCount: FieldValue.increment(1),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    await firestore.collection('payment_sessions').doc(reference).set(
+      {
+        status: 'finalized',
+        orderId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (mirrorError) {
+    console.warn('Webhook auto-finalize mirror side-effects failed', orderId, mirrorError);
+  }
+
+  try {
+    await orderChat.createSystemMessage({
+      orderId,
+      event: 'order_paid',
+      dealThreadId,
+      customText: `Order confirmed. Payment of NGN ${Number(orderTotal).toLocaleString()} received.`,
+    });
+  } catch {
+    // non-fatal
+  }
+
+  console.log('Webhook auto-finalized market escrow order', { reference, orderId, buyerId });
+}
 
 /**
  * Finalize Marketplace Escrow Payment:
@@ -1096,29 +1418,75 @@ export const finalizeMarketEscrowPayment = onRequest(
           return sendError(response, `Invalid completion data: ${validation.error.message}`, 400);
         }
 
-        const { reference, postId, quantity, deliveryAddress, buyerPhone } = validation.data;
+        const { reference, deliveryAddress } = validation.data;
+        let postId = String(validation.data.postId || '').trim();
+        let quantity = validation.data.quantity;
         const requestedDealThreadId = String(
           validation.data.dealThreadId || validation.data.chatId || ''
         ).trim() || null;
+        const bodyAgreedUnitPrice =
+          typeof validation.data.agreedUnitPrice === 'number' && validation.data.agreedUnitPrice > 0
+            ? validation.data.agreedUnitPrice
+            : null;
+        const bodySellerId = String(validation.data.sellerId || '').trim() || null;
+        const bodyItemTitle = String(validation.data.itemTitle || '').trim() || null;
+        const bodyBuyerPhone = String(validation.data.buyerPhone || '').trim();
         const firestore = admin.firestore();
+        const orderId = marketOrderIdFromPaystackReference(reference);
+        const orderRef = firestore.collection('orders').doc(orderId);
+        const orderChat = await import('./order-chat.js');
 
-        // 1. Check if order already exists for this payment to ensure idempotency
-        const existingOrderQuery = await firestore
-          .collection('orders')
-          .where('paystackReference', '==', reference)
-          .limit(1)
-          .get();
-
-        if (!existingOrderQuery.empty) {
-          const existing = existingOrderQuery.docs[0];
-          const existingData = existing.data() || {};
+        // Idempotent short-circuit: Neon primary, then Firestore mirror.
+        const existingNeon = await orderChat.fetchNeonOrderByReference(reference);
+        if (existingNeon?.id) {
           return sendResponse(response, {
             success: true,
-            orderId: existing.id,
+            orderId: existingNeon.id,
+            dealThreadId: existingNeon.dealThreadId || existingNeon.chatThreadId || null,
+            alreadyExists: true,
+            message: 'Order already finalized for this payment',
+          });
+        }
+        const existingSnap = await orderRef.get();
+        if (existingSnap.exists) {
+          const existingData = existingSnap.data() || {};
+          try {
+            await orderChat.dualWriteOrderToPostgres(orderRef.id, { bumpPurchaseCount: true });
+          } catch (syncErr) {
+            console.warn('Legacy FS order Neon backfill failed', orderRef.id, syncErr);
+          }
+          return sendResponse(response, {
+            success: true,
+            orderId: orderRef.id,
             dealThreadId: existingData.dealThreadId || existingData.chatThreadId || null,
             alreadyExists: true,
             message: 'Order already finalized for this payment',
           });
+        }
+
+        // Bind finalize to the initialized payment session so a paid ref cannot be
+        // applied to a different product / qty / price than what was charged.
+        const sessionSnap = await firestore.collection('payment_sessions').doc(reference).get();
+        const sessionData = sessionSnap.exists ? sessionSnap.data() || {} : null;
+        const sessionMeta = (sessionData?.metadata || {}) as Record<string, any>;
+        if (sessionData) {
+          const sessionUid = String(sessionData.uid || '').trim();
+          if (sessionUid && sessionUid !== auth.uid && !auth.isAdmin) {
+            return sendError(response, 'Forbidden: Payment session belongs to another user', 403);
+          }
+          const sessionPostId = String(sessionMeta.postId || '').trim();
+          if (sessionPostId && postId && sessionPostId !== postId) {
+            return sendError(
+              response,
+              'This payment was initialized for a different product',
+              409
+            );
+          }
+          if (sessionPostId) postId = sessionPostId;
+          const sessionQty = Math.floor(Number(sessionMeta.quantity || 0));
+          if (Number.isFinite(sessionQty) && sessionQty > 0) {
+            quantity = sessionQty;
+          }
         }
 
         // 2. Query/Verify transaction truth cached or via Paystack
@@ -1127,7 +1495,6 @@ export const finalizeMarketEscrowPayment = onRequest(
         let customerEmail = '';
         let txMetadata: any = {};
 
-        // Try reading cache first
         const cachedTx = await firestore.collection('transactions').doc(reference).get();
         if (cachedTx.exists) {
           const txData = cachedTx.data() || {};
@@ -1137,7 +1504,6 @@ export const finalizeMarketEscrowPayment = onRequest(
           txMetadata = txData.metadata || {};
         }
 
-        // If not in cache or not successful, call Paystack verify
         if (txStatus !== 'success') {
           const paystackSecretKey = getPaystackSecretKey(paystackSecret.value());
           const paystackResponse = await fetch(
@@ -1167,7 +1533,6 @@ export const finalizeMarketEscrowPayment = onRequest(
           customerEmail = String(tx?.customer?.email || tx?.customer_email || '').trim().toLowerCase();
           txMetadata = tx?.metadata || {};
 
-          // Write verification status to transactions collection
           await writeTransactionTruth({
             reference,
             status: txStatus,
@@ -1183,11 +1548,32 @@ export const finalizeMarketEscrowPayment = onRequest(
           });
         }
 
-        // Verify Firebase UID in payment metadata matches calling user
+        // Merge gateway + session metadata; session wins product binding fields.
+        const gatewayMeta = txMetadata || {};
+        txMetadata = {
+          ...gatewayMeta,
+          ...sessionMeta,
+          postId: sessionMeta.postId || gatewayMeta.postId,
+          quantity: sessionMeta.quantity ?? gatewayMeta.quantity,
+          agreedUnitPrice:
+            sessionMeta.agreedUnitPrice ??
+            sessionMeta.agreed_unit_price ??
+            gatewayMeta.agreedUnitPrice ??
+            gatewayMeta.agreed_unit_price,
+          sellerId: sessionMeta.sellerId || gatewayMeta.sellerId,
+          firebaseUid:
+            sessionMeta.firebaseUid ||
+            sessionData?.uid ||
+            gatewayMeta.firebaseUid ||
+            gatewayMeta.firebase_uid ||
+            gatewayMeta.userId,
+        };
+
         const txMetadataUid = String(
           txMetadata?.firebaseUid ||
           txMetadata?.firebase_uid ||
           txMetadata?.userId ||
+          sessionData?.uid ||
           ''
         ).trim();
 
@@ -1195,181 +1581,260 @@ export const finalizeMarketEscrowPayment = onRequest(
           return sendError(response, 'Forbidden: Payment belongs to another user', 403);
         }
 
-        // 3. Process order creation in a database transaction to lock post and decrement stock/sold status
-        const orderRef = firestore.collection('orders').doc();
-        const userDoc = await firestore.collection('users').doc(auth.uid).get();
-        const userData = userDoc.exists ? userDoc.data() : null;
+        if (sessionData) {
+          const sessionAmount = Number(sessionData.amount || 0);
+          if (sessionAmount > 0 && Math.abs(sessionAmount - paidAmount) > 0.01) {
+            return sendError(
+              response,
+              `Payment session amount mismatch. Session: ₦${sessionAmount}, Paid: ₦${paidAmount}`,
+              400
+            );
+          }
+        }
+
+        const metaPostId = String(txMetadata?.postId || '').trim();
+        if (metaPostId && postId && metaPostId !== postId) {
+          return sendError(
+            response,
+            'This payment was initialized for a different product',
+            409
+          );
+        }
+        if (metaPostId) postId = metaPostId;
+        if (!postId) {
+          return sendError(response, 'Missing product for this payment', 400);
+        }
+
+        const neonProfile = await orderChat.fetchNeonUserProfile(auth.uid);
+        const userDoc = neonProfile ? null : await firestore.collection('users').doc(auth.uid).get();
+        const userData = neonProfile || (userDoc?.exists ? userDoc.data() : null);
         const buyerName = String(userData?.displayName || auth.email || 'Market Buyer').trim();
+        const buyerPhone =
+          bodyBuyerPhone ||
+          String(sessionMeta.buyerPhone || userData?.marketBuyerPhone || userData?.phone || '').trim() ||
+          'Not provided';
 
         const commissionRate = await getPlatformCommissionRate();
-        let resolvedSellerId = '';
-        let orderTotal = 0;
-        let itemName = 'Marketplace Item';
 
-        await firestore.runTransaction(async (transaction) => {
-          const postRef = firestore.collection('marketPosts').doc(postId);
-          const postSnap = await transaction.get(postRef);
+        const postSnap = await firestore.collection('marketPosts').doc(postId).get();
+        const postData = postSnap.exists ? postSnap.data()! : null;
+        const postStatus = String(postData?.status || 'active').toLowerCase();
+        if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
+          return sendError(response, 'This item is no longer available', 409);
+        }
 
-          if (!postSnap.exists) {
-            throw new Error('Post not found');
-          }
+        const listedPrice = Number(postData?.price || 0);
+        const sessionAgreed = Number(
+          sessionMeta.agreedUnitPrice ?? sessionMeta.agreed_unit_price ?? 0
+        );
+        const metaAgreed = Number(
+          txMetadata?.agreedUnitPrice ?? txMetadata?.agreed_unit_price ?? 0
+        );
+        // Session/unit locked at initialize wins over client body (anti-tamper).
+        const unitPrice =
+          (Number.isFinite(sessionAgreed) && sessionAgreed > 0 ? sessionAgreed : null) ||
+          (Number.isFinite(metaAgreed) && metaAgreed > 0 ? metaAgreed : null) ||
+          (bodyAgreedUnitPrice && bodyAgreedUnitPrice > 0 ? bodyAgreedUnitPrice : null) ||
+          (listedPrice > 0 ? listedPrice : null);
 
-          const postData = postSnap.data()!;
-          const postStatus = String(postData.status || 'active').toLowerCase();
-          // Market posts stay listable after a sale (active/hidden/deleted only).
-          // 'sold' was a legacy lock that blocked legitimate rebuys / retries.
-          if (postStatus === 'hidden' || postStatus === 'deleted') {
-            throw new Error('This item is no longer available');
-          }
+        if (!unitPrice || !(unitPrice > 0)) {
+          return sendError(
+            response,
+            'Checkout price missing. Reopen Complete purchase from the deal.',
+            400
+          );
+        }
 
-          const postPrice = Number(postData.price || 0);
-          const calculatedTotal = postPrice * quantity;
-          orderTotal = calculatedTotal;
-          itemName = String(postData.description || 'Marketplace Item').slice(0, 70);
+        const orderTotal = unitPrice * quantity;
+        const itemName = String(
+          bodyItemTitle ||
+            sessionMeta.itemTitle ||
+            postData?.title ||
+            postData?.description ||
+            'Marketplace Item'
+        ).slice(0, 70);
 
-          // Double check amount matches paid amount
-          if (Math.abs(calculatedTotal - paidAmount) > 0.01) {
-            throw new Error(`Amount mismatch. Paid: ₦${paidAmount}, Order cost: ₦${calculatedTotal}`);
-          }
+        if (Math.abs(orderTotal - paidAmount) > 0.01) {
+          return sendError(
+            response,
+            `Amount mismatch. Paid: ₦${paidAmount}, Order cost: ₦${orderTotal}`,
+            400
+          );
+        }
 
-          const sellerId = postData.posterId;
-          if (!sellerId) {
-            throw new Error('Seller ID missing from post');
-          }
-          if (sellerId === auth.uid) {
-            throw new Error('You cannot purchase your own item');
-          }
-          resolvedSellerId = String(sellerId);
+        const resolvedSellerId = String(
+          postData?.posterId || bodySellerId || sessionMeta.sellerId || txMetadata?.sellerId || ''
+        ).trim();
+        if (!resolvedSellerId) {
+          return sendError(response, 'Seller ID missing from post', 400);
+        }
+        if (resolvedSellerId === auth.uid) {
+          return sendError(response, 'You cannot purchase your own item', 403);
+        }
 
-          // Keep listing active; record latest buyer for reference only.
-          transaction.update(postRef, {
-            status: postStatus === 'sold' ? 'active' : postData.status || 'active',
-            lastBuyerId: auth.uid,
-            purchaseCount: FieldValue.increment(1),
-            updatedAt: FieldValue.serverTimestamp(),
-          });
+        const commission = orderTotal * commissionRate;
+        const sellerEarning = orderTotal - commission;
 
-          // Compute commissions
-          const commission = calculatedTotal * commissionRate;
-          const sellerEarning = calculatedTotal - commission;
-
-          // Write Transaction Ledger directly in transaction
-          const ledgerRef = firestore.collection('transactions').doc(`ledger_${reference}`);
-          transaction.set(ledgerRef, {
-            id: `ledger_${reference}`,
-            type: 'sale',
-            amount: sellerEarning,
-            commission: commission,
-            commissionRate,
-            orderId: orderRef.id,
-            sellerId,
-            customerId: auth.uid,
-            description: `Sale from order #${orderRef.id.slice(0, 7)}`,
-            status: 'completed',
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-
-          // Create order document (dealThreadId attached after ensure below)
-          transaction.set(orderRef, {
-            customerId: auth.uid,
-            sellerId,
-            postId,
-            items: [
-              {
-                productId: `market_post_${postId}`,
-                name: itemName,
-                price: postPrice,
-                quantity,
-              },
-            ],
-            total: calculatedTotal,
-            shippingPrice: 0,
-            shippingType: 'pickup',
-            status: 'Processing',
-            deliveryAddress: deliveryAddress.trim(),
-            customerInfo: {
-              name: buyerName,
-              email: auth.email || customerEmail,
-              phone: buyerPhone.trim(),
-            },
-            paymentMethod: 'Paystack Escrow',
-            paymentReference: reference,
-            paystackReference: reference,
-            escrowStatus: 'held',
-            commissionRate,
-            marketMeta: {
-              fromChatId: requestedDealThreadId,
-              postId,
-            },
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-            paymentVerifiedAt: FieldValue.serverTimestamp(),
-            sellerUnreadCount: 0,
-            buyerUnreadCount: 0,
-          });
-        });
-
-        // Attach / create Postgres Deal Room and emit order_paid into it.
         let dealThreadId: string | null = requestedDealThreadId;
         try {
-          const orderChat = await import('./order-chat.js');
           dealThreadId = await orderChat.ensureDealThreadForOrder({
             buyerId: auth.uid,
             postId,
             sellerId: resolvedSellerId,
             threadId: requestedDealThreadId,
           });
+        } catch (linkError: any) {
+          console.error('Failed to ensure deal thread before order commit:', linkError);
+        }
 
-          if (dealThreadId) {
-            await orderRef.update({
-              dealThreadId,
-              chatThreadId: dealThreadId,
-              'marketMeta.fromChatId': dealThreadId,
-              updatedAt: FieldValue.serverTimestamp(),
+        const nowIso = new Date().toISOString();
+        const orderPayload: Record<string, any> = {
+          id: orderId,
+          customerId: auth.uid,
+          sellerId: resolvedSellerId,
+          postId,
+          idempotencyKey: reference,
+          items: [
+            {
+              productId: `market_post_${postId}`,
+              name: itemName,
+              price: unitPrice,
+              quantity,
+            },
+          ],
+          total: orderTotal,
+          shippingPrice: 0,
+          shippingType: 'pickup',
+          status: 'Processing',
+          deliveryAddress: deliveryAddress.trim(),
+          customerInfo: {
+            name: buyerName,
+            email: auth.email || customerEmail,
+            phone: buyerPhone.trim(),
+          },
+          paymentMethod: 'Paystack Escrow',
+          paymentReference: reference,
+          paystackReference: reference,
+          escrowStatus: 'held',
+          commissionRate,
+          dealThreadId: dealThreadId || null,
+          chatThreadId: dealThreadId || null,
+          marketMeta: {
+            fromChatId: dealThreadId || requestedDealThreadId,
+            postId,
+            agreedUnitPrice: unitPrice,
+            listedPrice: listedPrice || null,
+          },
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          paymentVerifiedAt: nowIso,
+          sellerUnreadCount: 1,
+          buyerUnreadCount: 0,
+        };
+
+        try {
+          await orderChat.commitAndMirrorOrder(orderPayload, {
+            bumpPurchaseCount: true,
+            timeline: [
+              {
+                event: 'order_paid',
+                status: 'Processing',
+                text: 'Payment verified',
+                actorId: auth.uid,
+                actorRole: 'buyer',
+                createdAt: nowIso,
+              },
+            ],
+          });
+        } catch (commitError: any) {
+          const raced = await orderChat.fetchNeonOrderByReference(reference);
+          if (raced?.id) {
+            return sendResponse(response, {
+              success: true,
+              orderId: raced.id,
+              dealThreadId: raced.dealThreadId || raced.chatThreadId || dealThreadId,
+              alreadyExists: true,
+              message: 'Order already finalized for this payment',
             });
           }
+          throw commitError;
+        }
 
+        try {
+          await firestore.collection('transactions').doc(`ledger_${reference}`).set(
+            {
+              id: `ledger_${reference}`,
+              type: 'sale',
+              amount: sellerEarning,
+              commission: commission,
+              commissionRate,
+              orderId,
+              sellerId: resolvedSellerId,
+              customerId: auth.uid,
+              description: `Sale from order #${orderId.slice(0, 7)}`,
+              status: 'completed',
+              createdAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+          if (postSnap.exists) {
+            await firestore.collection('marketPosts').doc(postId).set(
+              {
+                status: postStatus === 'sold' ? 'active' : postData?.status || 'active',
+                lastBuyerId: auth.uid,
+                purchaseCount: FieldValue.increment(1),
+                updatedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+          await firestore.collection('payment_sessions').doc(reference).set(
+            {
+              status: 'finalized',
+              orderId,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (ledgerError) {
+          console.warn('Ledger/post mirror after Neon commit failed', orderId, ledgerError);
+        }
+
+        try {
           await orderChat.createSystemMessage({
-            orderId: orderRef.id,
+            orderId,
             event: 'order_paid',
             dealThreadId,
             customText: `Order confirmed. Payment of NGN ${Number(orderTotal).toLocaleString()} received.`,
           });
-
-          await orderChat.createOrderTimelineEvent({
-            orderId: orderRef.id,
-            event: 'order_paid',
-            status: 'Processing',
-            text: 'Payment verified',
-            actorId: auth.uid,
-            actorRole: 'buyer',
-          });
-        } catch (linkError: any) {
-          console.error('Failed to link market order to deal thread:', linkError);
+        } catch (sysErr) {
+          console.warn('System message after Neon commit failed', orderId, sysErr);
         }
 
         import('./notifications.js').then((mod) => {
           mod.notifyBuyer({
             buyerId: auth.uid,
             event: 'payment_success',
-            orderId: orderRef.id,
+            orderId,
             orderSummary: `${itemName} — NGN ${Number(orderTotal).toLocaleString()}`,
+            chatRoomId: dealThreadId,
           }).catch((e: any) => console.error('Failed to notify buyer:', e));
 
           if (resolvedSellerId) {
             mod.notifySeller({
               sellerId: resolvedSellerId,
               event: 'new_order',
-              orderId: orderRef.id,
+              orderId,
               orderSummary: `${itemName} — NGN ${Number(orderTotal).toLocaleString()}`,
+              chatRoomId: dealThreadId,
             }).catch((e: any) => console.error('Failed to notify seller:', e));
           }
         }).catch(() => {});
 
         return sendResponse(response, {
           success: true,
-          orderId: orderRef.id,
+          orderId,
           dealThreadId,
           message: 'Order created successfully',
         });
@@ -1385,7 +1850,9 @@ export const finalizeMarketEscrowPayment = onRequest(
                 ? 400
                 : message === 'You cannot purchase your own item'
                   ? 403
-                  : 500;
+                  : message.includes('Neon') || message.includes('commit')
+                    ? 503
+                    : 500;
         return sendError(response, message, statusCode);
       }
     });
@@ -1423,18 +1890,33 @@ export const calculateSellerEarnings = onRequest(
         const transactionsSnapshot = await firestore.collection('transactions')
           .where('sellerId', '==', sellerId)
           .where('type', '==', 'sale')
-          .where('status', '==', 'completed')
           .get();
 
         if (!transactionsSnapshot.empty) {
           transactionsSnapshot.forEach(doc => {
             const transaction = doc.data();
-            totalEarnings += transaction.amount || 0;
-            commissionPaid += transaction.commission || 0;
+            const status = String(transaction.status || '');
+            const refundStatus = String(transaction.refundStatus || '');
+            // Exclude fully refunded or refund-in-flight sales from payoutable earnings
+            if (status === 'refunded' || refundStatus === 'refunded' || refundStatus === 'pending') {
+              return;
+            }
+            if (status !== 'completed') return;
+
+            const gross = Number(transaction.amount) || 0;
+            const refundedSeller = Number(transaction.refundedSellerAmount) || 0;
+            const net = Math.max(0, gross - refundedSeller);
+            if (net <= 0) return;
+
+            totalEarnings += net;
+            const commissionGross = Number(transaction.commission) || 0;
+            const commissionShare =
+              gross > 0 ? commissionGross * (net / gross) : commissionGross;
+            commissionPaid += commissionShare;
             totalOrders++;
           });
         } else {
-          // Fallback: Calculate from orders
+          // Fallback: Calculate from completed orders only (exclude cancelled / refunded escrow)
           const ordersSnapshot = await firestore.collection('orders')
             .where('sellerId', '==', sellerId)
             .where('status', '==', 'Completed')
@@ -1442,6 +1924,9 @@ export const calculateSellerEarnings = onRequest(
 
           ordersSnapshot.forEach(doc => {
             const order = doc.data();
+            if (order.escrowStatus === 'refunded' || order.escrowStatus === 'refund_pending') {
+              return;
+            }
             const orderTotal = order.total || 0;
             const orderCommissionRate = order.commissionRate || commissionRate;
             const commission = orderTotal * orderCommissionRate;

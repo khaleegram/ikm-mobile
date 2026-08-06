@@ -1,10 +1,13 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React,
+  { useCallback,
+  useMemo,
+  useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Dimensions,
   FlatList,
   StatusBar,
@@ -12,7 +15,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -25,19 +28,21 @@ import { showToast } from '@/components/toast';
 import { marketPostsApi } from '@/lib/api/market-posts';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { firestore } from '@/lib/firebase/config';
-import { useUserMarketPosts } from '@/lib/firebase/firestore/market-posts';
-import { useSellerOrders, useUserOrders } from '@/lib/firebase/firestore/orders';
+import { useUserMarketPosts } from '@/lib/hooks/use-market-post';
+import { useUserOrders } from '@/lib/hooks/use-order';
 import { useSellerPayouts } from '@/lib/firebase/firestore/payouts';
 import { updateUserProfile, useUserProfile } from '@/lib/firebase/firestore/users';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant, getSignupRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
+import { buildUserMediaPath } from '@/lib/utils/media-path';
 import { uploadImage } from '@/lib/utils/image-upload';
 import { toNameCase } from '@/lib/utils/name-case';
 import { shareMarketPost } from '@/lib/utils/market-post-share';
 import { getMarketBranding } from '@/lib/market-branding';
 import { getMarketPostPrimaryImage } from '@/lib/utils/market-media';
 import type { MarketPost } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const ACCENT = '#A67C52';
 const ACCENT_DARK = '#6b4a2e';
@@ -65,11 +70,19 @@ export default function ProfileScreen() {
   const { colors, colorScheme, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { user: profile, loading: profileLoading } = useUserProfile(user?.uid ?? null);
-  const { posts, loading: postsLoading } = useUserMarketPosts(user?.uid ?? null);
+  const { user: profile } = useUserProfile(user?.uid ?? null);
+  const { posts, loading: postsLoading, error: postsError, refetch: refetchPosts } = useUserMarketPosts(
+    user?.uid ?? null
+  );
   const { orders: allOrders, loading: ordersLoading } = useUserOrders(user?.uid ?? null);
-  const { orders: sellerOrders, loading: sellerOrdersLoading } = useSellerOrders(user?.uid ?? null);
+  const { orders: sellerOrders, loading: sellerOrdersLoading } = useUserOrders(user?.uid ?? null, 'seller');
   const { payouts, loading: payoutsLoading } = useSellerPayouts(user?.uid ?? null);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refetchPosts();
+    }, [refetchPosts])
+  );
 
   const [managedPost, setManagedPost] = useState<MarketPost | null>(null);
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
@@ -117,6 +130,15 @@ export default function ProfileScreen() {
     return Math.max(0, released - committed);
   }, [payouts, sellerOrders]);
 
+  const openSellerOrders = useMemo(() => {
+    return sellerOrders.filter((o) => {
+      const st = String(o.status || '').toLowerCase();
+      return !['completed', 'cancelled', 'canceled'].includes(st);
+    }).length;
+  }, [sellerOrders]);
+
+  const followerCount = Number(profile?.followerCount || 0);
+
   // Must be above early returns to keep hook order stable
   const paddedPosts: (MarketPost | null)[] = useMemo(() => {
     if (posts.length === 0) return posts;
@@ -159,7 +181,7 @@ export default function ProfileScreen() {
       haptics.medium();
       const up = await uploadImage(
         result.assets[0].uri,
-        `profile_pictures/${user.uid}/avatar_${Date.now()}.jpg`
+        buildUserMediaPath('profile_pictures', user.uid, `avatar_${Date.now()}.jpg`)
       );
       await persistPhoto(up.url);
       haptics.success();
@@ -349,7 +371,8 @@ export default function ProfileScreen() {
   }
 
   // ── Loading ────────────────────────────────────────────────────────────────
-  if (profileLoading) {
+  // Never block the whole profile on Firestore profile hydrate — posts come from API.
+  if (!user) {
     return (
       <View style={[styles.flex, styles.center, { backgroundColor: colors.background }]}>
         <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
@@ -427,6 +450,15 @@ export default function ProfileScreen() {
           <View style={[styles.roleChip, { backgroundColor: `${ACCENT}18` }]}>
             <Text style={[styles.roleText, { color: ACCENT }]}>{roleLabel}</Text>
           </View>
+          <View style={[styles.followersPill, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <IconSymbol name="person.2.fill" size={12} color={ACCENT} />
+            <Text style={[styles.followersPillText, { color: colors.text }]}>
+              {followerCount.toLocaleString()}
+            </Text>
+            <Text style={[styles.followersPillLabel, { color: colors.textSecondary }]}>
+              {followerCount === 1 ? 'follower' : 'followers'}
+            </Text>
+          </View>
         </View>
 
         {editingBio ? (
@@ -436,7 +468,7 @@ export default function ProfileScreen() {
               multiline maxLength={150} autoFocus
               value={bioInput}
               onChangeText={setBioInput}
-              placeholder="Write something about yourself..."
+              placeholder="Write something about your store..."
               placeholderTextColor={colors.textSecondary}
               editable={!savingBio}
               textAlignVertical="top"
@@ -462,76 +494,82 @@ export default function ProfileScreen() {
             ) : (
               <View style={styles.bioEmptyRow}>
                 <IconSymbol name="plus.circle" size={14} color={ACCENT} />
-                <Text style={[styles.bioEmpty, { color: ACCENT }]}>Add a bio</Text>
+                <Text style={[styles.bioEmpty, { color: ACCENT }]}>Add a store bio</Text>
               </View>
             )}
           </TouchableOpacity>
         )}
-
-        {/* Stats row */}
-        <View style={[styles.statsRow, { borderColor: colors.border, backgroundColor: colors.card }]}>
-          <View style={styles.statItem}>
-            <Text style={[styles.statVal, { color: colors.text }]}>{postsLoading ? '—' : posts.length}</Text>
-            <Text style={[styles.statLbl, { color: colors.textSecondary }]}>Posts</Text>
-          </View>
-          <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-          <View style={styles.statItem}>
-            <Text style={[styles.statVal, { color: colors.text }]}>{profile?.followerCount ?? 0}</Text>
-            <Text style={[styles.statLbl, { color: colors.textSecondary }]}>Followers</Text>
-          </View>
-          <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-          <TouchableOpacity style={styles.statItem} activeOpacity={0.7} onPress={() => { haptics.light(); router.push({ pathname: '/(market)/index', params: { mode: 'following' } } as any); }}>
-            <Text style={[styles.statVal, { color: colors.text }]}>{profile?.followingCount ?? 0}</Text>
-            <Text style={[styles.statLbl, { color: ACCENT }]}>Following ›</Text>
-          </TouchableOpacity>
-        </View>
       </View>
 
-      {/* CTA + balance card */}
+      {/* One slim seller strip — orders + money */}
       <View style={[styles.ctaWrapper, { paddingHorizontal: H_PAD }]}>
-        <View style={styles.ctaRow}>
+        <View style={[styles.sellerStrip, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <TouchableOpacity
-            style={[styles.ctaPrimary, { backgroundColor: ACCENT }]}
-            activeOpacity={0.85}
-            onPress={() => { haptics.light(); router.push('/(market)/create-post' as any); }}>
-            <IconSymbol name="plus" size={15} color="#FFF" />
-            <Text style={styles.ctaPrimaryText}>New Post</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.ctaSecondary, { borderColor: colors.border, backgroundColor: colors.card }]}
-            activeOpacity={0.85}
+            style={styles.sellerStripRow}
+            activeOpacity={0.75}
             onPress={() => { haptics.light(); router.push('/(market)/orders' as any); }}>
-            <IconSymbol name="shippingbox.fill" size={15} color={colors.text} />
-            <Text style={[styles.ctaSecondaryText, { color: colors.text }]}>
-              {ordersLoading ? brand.ordersNavLabel : `Orders${allOrders.length > 0 ? ` (${allOrders.length})` : ''}`}
-            </Text>
+            <View style={[styles.sellerStripIcon, { backgroundColor: `${ACCENT}18` }]}>
+              <IconSymbol name="shippingbox.fill" size={14} color={ACCENT} />
+            </View>
+            <View style={styles.sellerStripCopy}>
+              <Text style={[styles.sellerStripTitle, { color: colors.text }]}>
+                {ordersLoading || sellerOrdersLoading ? brand.ordersNavLabel : 'Orders'}
+              </Text>
+              <Text style={[styles.sellerStripMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+                {sellerOrdersLoading
+                  ? 'Loading…'
+                  : openSellerOrders > 0
+                    ? `${openSellerOrders} open`
+                    : 'All clear'}
+              </Text>
+            </View>
+            {openSellerOrders > 0 && !sellerOrdersLoading ? (
+              <View style={[styles.sellerStripCount, { backgroundColor: ACCENT }]}>
+                <Text style={styles.sellerStripCountText}>{openSellerOrders}</Text>
+              </View>
+            ) : null}
+            <IconSymbol name="chevron.right" size={13} color={colors.textSecondary} />
           </TouchableOpacity>
-        </View>
-        <View style={[styles.balanceCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <View style={styles.balanceLeft}>
-            <Text style={[styles.balanceLabel, { color: ACCENT }]}>Available balance</Text>
-            <Text style={[styles.balanceAmount, { color: colors.text }]}>
-              {sellerOrdersLoading || payoutsLoading ? '···' : formatNgn(balance)}
-            </Text>
-            <Text style={[styles.balanceSub, { color: colors.textSecondary }]}>Released escrow earnings</Text>
+
+          <View style={[styles.sellerStripDivider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.sellerStripRow}>
+            <View style={[styles.sellerStripIcon, { backgroundColor: `${ACCENT}18` }]}>
+              <IconSymbol name="dollarsign.circle.fill" size={14} color={ACCENT} />
+            </View>
+            <View style={styles.sellerStripCopy}>
+              <Text style={[styles.sellerStripMeta, { color: colors.textSecondary }]}>Available</Text>
+              <Text style={[styles.sellerStripBalance, { color: colors.text }]} numberOfLines={1}>
+                {sellerOrdersLoading || payoutsLoading ? '···' : formatNgn(balance)}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.sellerStripWithdraw, { backgroundColor: ACCENT }]}
+              activeOpacity={0.85}
+              onPress={() => { haptics.light(); router.push('/(market)/payouts' as any); }}>
+              <Text style={styles.sellerStripWithdrawText}>Withdraw</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.withdrawBtn, { backgroundColor: ACCENT }]}
-            activeOpacity={0.85}
-            onPress={() => { haptics.light(); router.push('/(market)/payouts' as any); }}>
-            <IconSymbol name="arrow.up.circle.fill" size={15} color="#FFF" />
-            <Text style={styles.withdrawBtnText}>Withdraw</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
-      {/* Posts heading */}
+      {/* Catalog */}
       <View style={[styles.postsTitleRow, { paddingHorizontal: H_PAD, marginTop: 14, marginBottom: 10 }]}>
         <IconSymbol name="square.grid.2x2.fill" size={16} color={ACCENT} />
-        <Text style={[styles.postsTitleText, { color: colors.text }]}>My Posts</Text>
-        <Text style={[styles.postsCountText, { color: colors.textSecondary }]}>
-          {postsLoading ? '' : `${posts.length} listed`}
-        </Text>
+        <Text style={[styles.postsTitleText, { color: colors.text }]}>Items listed</Text>
+        <View style={[styles.itemsCountChip, { backgroundColor: `${ACCENT}18` }]}>
+          <Text style={[styles.itemsCountChipText, { color: ACCENT }]}>
+            {postsLoading ? '—' : posts.length}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.listItemBtn, { borderColor: colors.border, backgroundColor: colors.card }]}
+          activeOpacity={0.85}
+          onPress={() => { haptics.light(); router.push('/(market)/create-post' as any); }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <IconSymbol name="plus" size={14} color={ACCENT} />
+          <Text style={[styles.listItemBtnText, { color: colors.text }]}>List</Text>
+        </TouchableOpacity>
       </View>
       <View style={[styles.divider, { backgroundColor: colors.border, marginHorizontal: H_PAD }]} />
     </View>
@@ -646,20 +684,35 @@ export default function ProfileScreen() {
             <View style={styles.emptyState}>
               <ActivityIndicator size="small" color={ACCENT} />
             </View>
+          ) : postsError ? (
+            <View style={styles.emptyState}>
+              <Text style={[styles.emptyTitle, { color: colors.text }]}>Couldn&apos;t load posts</Text>
+              <Text style={[styles.emptySub, { color: colors.textSecondary }]}>
+                {postsError.message || 'Pull to try again.'}
+              </Text>
+              <TouchableOpacity
+                style={[styles.emptyBtn, { backgroundColor: ACCENT }]}
+                onPress={() => {
+                  haptics.light();
+                  void refetchPosts();
+                }}>
+                <Text style={styles.emptyBtnText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
           ) : (
             <View style={styles.emptyState}>
               <View style={[styles.emptyIconWrap, { backgroundColor: `${ACCENT}18` }]}>
                 <IconSymbol name="camera.fill" size={30} color={ACCENT} />
               </View>
-              <Text style={[styles.emptyTitle, { color: colors.text }]}>Nothing listed yet</Text>
+              <Text style={[styles.emptyTitle, { color: colors.text }]}>No items listed yet</Text>
               <Text style={[styles.emptySub, { color: colors.textSecondary }]}>
-                Tap &quot;New Post&quot; above to list your first item.
+                List a product so buyers can find you and order with escrow.
               </Text>
               <TouchableOpacity
                 style={[styles.emptyBtn, { backgroundColor: ACCENT }]}
                 onPress={() => { haptics.light(); router.push('/(market)/create-post' as any); }}>
                 <IconSymbol name="plus" size={14} color="#FFF" />
-                <Text style={styles.emptyBtnText}>Create First Post</Text>
+                <Text style={styles.emptyBtnText}>List an item</Text>
               </TouchableOpacity>
             </View>
           )
@@ -911,115 +964,92 @@ const styles = StyleSheet.create({
     gap: 10,
   },
 
-  // ── Stats row ──────────────────────────────────────────────────────────────
-  statsRow: {
+  followersPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    width: '100%',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  followersPillText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  followersPillLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+
+  // ── Slim seller strip ──────────────────────────────────────────────────────
+  sellerStrip: {
     borderRadius: 16,
     borderWidth: 1,
     overflow: 'hidden',
-    marginBottom: 10,
   },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 10,  // was 14
-  },
-  statVal: {
-    fontSize: 19,   // was 22
-    fontWeight: '800',
-  },
-  statLbl: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  statDivider: {
-    width: 1,
-    height: 30,
-    opacity: 0.6,
-  },
-
-  // ── CTA row ────────────────────────────────────────────────────────────────
-  ctaRow: {
+  sellerStripRow: {
     flexDirection: 'row',
-    width: '100%',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
     gap: 10,
-    marginBottom: 6,
+    minHeight: 52,
   },
-  ctaPrimary: {
-    flex: 1,
-    flexDirection: 'row',
+  sellerStripIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
-    paddingVertical: 14,
-    borderRadius: 16,
   },
-  ctaPrimaryText: {
-    color: '#FFF',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  ctaSecondary: {
+  sellerStripCopy: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    paddingVertical: 14,
-    borderRadius: 16,
-    borderWidth: 1,
+    minWidth: 0,
   },
-  ctaSecondaryText: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-
-  // ── Balance card ───────────────────────────────────────────────────────────
-  balanceCard: {
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  balanceLeft: {
-    flex: 1,
-    marginRight: 12,
-  },
-  balanceLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  balanceAmount: {
-    fontSize: 26,
-    fontWeight: '800',
-    marginTop: 3,
-    marginBottom: 2,
-  },
-  balanceSub: {
-    fontSize: 11,
-  },
-  withdrawBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 14,
-  },
-  withdrawBtnText: {
-    color: '#FFF',
+  sellerStripTitle: {
     fontSize: 14,
     fontWeight: '800',
   },
+  sellerStripMeta: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  sellerStripBalance: {
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 1,
+  },
+  sellerStripCount: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sellerStripCountText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  sellerStripWithdraw: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  sellerStripWithdrawText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  sellerStripDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 54,
+  },
 
-  // ── Posts heading ──────────────────────────────────────────────────────────
+  // ── Items heading ──────────────────────────────────────────────────────────
   postsTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1028,17 +1058,38 @@ const styles = StyleSheet.create({
   postsTitleText: {
     fontSize: 17,
     fontWeight: '800',
-    flex: 1,
   },
-  postsCountText: {
+  itemsCountChip: {
+    minWidth: 28,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    alignItems: 'center',
+  },
+  itemsCountChipText: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '800',
+  },
+  listItemBtn: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  listItemBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   divider: {
     height: 1,
     marginBottom: 10,
     opacity: 0.5,
   },
+
 
   // ── Grid cell ──────────────────────────────────────────────────────────────
   cell: {

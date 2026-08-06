@@ -1,12 +1,13 @@
 // Shipping API endpoints
 // Cloud-Functions-first (no standalone REST backend configured).
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { ShippingZone } from '@/types';
 
 const SHIPPING_FUNCTIONS = {
-  createShippingZone: 'https://createshippingzone-q3rjv54uka-uc.a.run.app',
-  updateShippingZone: 'https://updateshippingzone-q3rjv54uka-uc.a.run.app',
-  deleteShippingZone: 'https://deleteshippingzone-q3rjv54uka-uc.a.run.app',
+  createShippingZone: cloudFunctionUrl('createShippingZone'),
+  updateShippingZone: cloudFunctionUrl('updateShippingZone'),
+  deleteShippingZone: cloudFunctionUrl('deleteShippingZone'),
 };
 
 export interface CreateShippingZoneData {

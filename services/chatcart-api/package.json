@@ -7,12 +7,12 @@
   "scripts": {
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
-    "migrate": "node scripts/run-migration.mjs",
-    "migrate:posts": "node scripts/run-posts-migration.mjs",
-    "migrate:chat": "node scripts/run-chat-migration.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "migrate:dry-run": "node scripts/migrate.mjs --dry-run",
     "migrate:chat-firestore": "node scripts/migrate-firestore-chat-to-neon.mjs",
     "migrate:firestore": "node scripts/migrate-firestore-to-neon.mjs",
     "migrate:market-posts": "node scripts/migrate-market-posts-to-neon.mjs",
+    "migrate:orders-firestore": "node scripts/migrate-firestore-orders-to-neon.mjs",
     "migrate:storage": "node scripts/migrate-firebase-storage-to-r2.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

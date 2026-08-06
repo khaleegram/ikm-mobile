@@ -1,5 +1,6 @@
 // Storefront customization screen
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState, useEffect } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -9,8 +10,10 @@ import { useStore } from '@/lib/firebase/firestore/stores';
 import { userApi } from '@/lib/api/user';
 import { router } from 'expo-router';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import { Alert } from '@/components/app-alert';
 
 export default function StorefrontScreen() {
+  const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { user } = useUser();
   const { store, loading: storeLoading } = useStore(user?.uid || null);
@@ -86,7 +89,7 @@ export default function StorefrontScreen() {
       extraScrollHeight={32}
       contentContainerStyle={styles.screenContent}
       showsVerticalScrollIndicator={false}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <TouchableOpacity onPress={() => router.back()}>
           <IconSymbol name="chevron.left" size={24} color={colors.text} />
         </TouchableOpacity>
@@ -268,7 +271,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       justifyContent: 'space-between',
       alignItems: 'center',
       padding: 16,
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       borderBottomWidth: 1,
       borderBottomColor: colors.cardBorder,
       ...premiumShadow,

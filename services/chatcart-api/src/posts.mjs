@@ -12,6 +12,7 @@ export {
   getPostById,
   getPostsBatch,
   hydratePosts,
+  listPostsBySound,
   listTrendingHashtags,
   searchPosts,
 } from './posts-repo.mjs';

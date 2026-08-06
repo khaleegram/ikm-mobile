@@ -245,7 +245,7 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
     const bucket = admin.storage().bucket(event.data.bucket);
     const firestore = admin.firestore();
 
-    const postRef = firestore.collection('marketPosts').doc(postId);
+    const postRef = firestore.collection('marketPosts').doc(String(postId));
     const postSnap = await postRef.get();
     if (!postSnap.exists) return;
     const postData = postSnap.data() || {};
@@ -254,21 +254,22 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
     if (!soundId) return;
     if (soundType !== 'original') return;
 
-    const ffmpegPath = require('ffmpeg-static') as string | null;
-    if (!ffmpegPath) {
+    const ffmpegPathRaw = require('ffmpeg-static') as string | null;
+    if (!ffmpegPathRaw) {
       console.error('ffmpeg-static not available; cannot extract audio');
       return;
     }
+    const ffmpegBin = ffmpegPathRaw as string;
 
     const tmpDir = path.join(os.tmpdir(), `ikm_sound_${postId}`);
     await ensureDirExists(tmpDir);
-    const tmpVideoPath = safeTmpFile(`market_post_${postId}.mp4`);
-    const tmpAudioPath = safeTmpFile(`market_sound_${postId}.m4a`);
+    const tmpVideoPath = safeTmpFile(`market_post_${String(postId)}.mp4`);
+    const tmpAudioPath = safeTmpFile(`market_sound_${String(postId)}.m4a`);
 
     try {
       await bucket.file(objectName).download({ destination: tmpVideoPath });
 
-      await execFileAsync(ffmpegPath, [
+      await execFileAsync(ffmpegBin, [
         '-y',
         '-i',
         tmpVideoPath,
@@ -280,7 +281,7 @@ export const extractMarketSoundFromMarketVideo = onObjectFinalized(
         tmpAudioPath,
       ]);
 
-      const destPath = `marketSounds/${ownerId}/sound_${postId}.m4a`;
+      const destPath = `marketSounds/${String(ownerId)}/sound_${String(postId)}.m4a`;
       await bucket.upload(tmpAudioPath, {
         destination: destPath,
         metadata: {

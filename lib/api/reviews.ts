@@ -1,9 +1,10 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const REVIEW_FUNCTIONS = {
-  submitReview: 'https://submitreview-q3rjv54uka-uc.a.run.app',
-  getSellerReviews: 'https://getsellerreviews-q3rjv54uka-uc.a.run.app',
-  getReviewForOrder: 'https://getreviewfororder-q3rjv54uka-uc.a.run.app',
+  submitReview: cloudFunctionUrl('submitReview'),
+  getSellerReviews: cloudFunctionUrl('getSellerReviews'),
+  getReviewForOrder: cloudFunctionUrl('getReviewForOrder'),
 };
 
 export const reviewsApi = {

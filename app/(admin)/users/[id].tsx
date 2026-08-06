@@ -1,5 +1,5 @@
 // Admin user detail screen
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
@@ -10,6 +10,7 @@ import { premiumShadow } from '@/lib/theme/styles';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { Alert } from '@/components/app-alert';
 
 function normalizeUserRole(role: unknown, isAdmin: boolean, hasStore: boolean): 'user' | 'seller' | 'admin' {
   if (isAdmin) return 'admin';

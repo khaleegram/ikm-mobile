@@ -18,8 +18,8 @@ import { FeedSegmentSwitch } from '@/components/market/feed-segment-switch';
 import { VerticalClipFeed } from '@/components/market/vertical-clip-feed';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostsByIds, useUserLikedPostIds } from '@/lib/firebase/firestore/market-posts';
-import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/firebase/firestore/market-social';
+import { useMarketPostsByIds, useUserLikedPostIds } from '@/lib/hooks/use-market-post';
+import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/hooks/use-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
 import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -49,12 +49,25 @@ export default function SavedScreen() {
     if (mode === 'saved') setCollectionMode('saved');
   }, [mode]);
 
-  const { ids: savedIds, idSet: savedIdSet, loading: savesLoading } = useUserSavedPostIds(user?.uid || null);
-  const { likedPostIds, loading: likesLoading } = useUserLikedPostIds(user?.uid || null);
+  const {
+    ids: savedIds,
+    idSet: savedIdSet,
+    loading: savesLoading,
+    error: savesError,
+    refetch: refetchSaved,
+  } = useUserSavedPostIds(user?.uid || null);
+  const {
+    likedPostIds,
+    loading: likesLoading,
+    error: likesError,
+    refetch: refetchLiked,
+  } = useUserLikedPostIds(user?.uid || null);
   const { idSet: followingIdSet } = useFollowingUserIds(user?.uid || null);
 
   const activeIds = collectionMode === 'liked' ? likedPostIds : savedIds;
   const idsLoading = collectionMode === 'liked' ? likesLoading : savesLoading;
+  const idsError = collectionMode === 'liked' ? likesError : savesError;
+  const refetchIds = collectionMode === 'liked' ? refetchLiked : refetchSaved;
   const { posts, loading: postsLoading, error } = useMarketPostsByIds(activeIds, 50);
 
   const visiblePosts = useMemo(() => posts.filter((post) => post !== undefined), [posts]);
@@ -94,11 +107,15 @@ export default function SavedScreen() {
     };
   }, [navigation, scrollToTop]);
 
-  const onRefresh = useCallback(() => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
     haptics.light();
-    setTimeout(() => setRefreshing(false), 800);
-  }, []);
+    try {
+      await Promise.all([refetchIds(), refetchSaved(), refetchLiked()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchIds, refetchSaved, refetchLiked]);
 
   useFeedMediaPrefetch(visiblePosts);
 
@@ -217,14 +234,24 @@ export default function SavedScreen() {
     );
   }
 
-  if (error) {
+  if (idsError || error) {
+    const displayError = idsError || error;
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />
         {renderHeader()}
         <IconSymbol name="exclamationmark.triangle.fill" size={44} color={colors.error} />
-        <Text style={styles.emptyTitle}>Could not load feed</Text>
-        <Text style={styles.emptyHint}>{error.message}</Text>
+        <Text style={styles.emptyTitle}>Could not load {collectionMode === 'liked' ? 'liked' : 'saved'} posts</Text>
+        <Text style={styles.emptyHint}>{displayError?.message || 'Please try again'}</Text>
+        <TouchableOpacity
+          style={[styles.btn, { backgroundColor: lightBrown }]}
+          onPress={() => {
+            haptics.medium();
+            void onRefresh();
+          }}>
+          <IconSymbol name="arrow.clockwise" size={18} color="#FFFFFF" />
+          <Text style={styles.btnText}>Retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }

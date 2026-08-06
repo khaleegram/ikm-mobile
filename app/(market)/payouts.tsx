@@ -1,16 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
@@ -25,6 +24,7 @@ import { useTheme } from '@/lib/theme/theme-context';
 import { getMarketBranding } from '@/lib/market-branding';
 import { NIGERIAN_BANKS, searchBanks } from '@/lib/utils/banks';
 import { haptics } from '@/lib/utils/haptics';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 
@@ -213,13 +213,16 @@ export default function MarketPayoutsScreen() {
         </View>
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollView
         contentContainerStyle={{
           paddingHorizontal: 16,
           paddingTop: 10,
           paddingBottom: insets.bottom + 90,
           gap: 10,
         }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        bottomOffset={24}
         showsVerticalScrollIndicator={false}>
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={styles.sectionHeader}>
@@ -301,10 +304,14 @@ export default function MarketPayoutsScreen() {
             })
           )}
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <Modal visible={bankModalVisible} transparent animationType="slide" onRequestClose={() => setBankModalVisible(false)}>
         <View style={styles.modalOverlay}>
+          <KeyboardAwareScrollView
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+            keyboardShouldPersistTaps="handled"
+            bottomOffset={16}>
           <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>Bank Details</Text>
@@ -417,11 +424,16 @@ export default function MarketPayoutsScreen() {
               )}
             </TouchableOpacity>
           </View>
+          </KeyboardAwareScrollView>
         </View>
       </Modal>
 
       <Modal visible={payoutModalVisible} transparent animationType="slide" onRequestClose={() => setPayoutModalVisible(false)}>
         <View style={styles.modalOverlay}>
+          <KeyboardAwareScrollView
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+            keyboardShouldPersistTaps="handled"
+            bottomOffset={16}>
           <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>Request Payout</Text>
@@ -461,6 +473,7 @@ export default function MarketPayoutsScreen() {
               )}
             </TouchableOpacity>
           </View>
+          </KeyboardAwareScrollView>
         </View>
       </Modal>
     </View>

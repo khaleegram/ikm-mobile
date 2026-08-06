@@ -1,11 +1,12 @@
 // Parks API client
 // Handles fetching parks for waybill deliveries
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { Park } from '@/types';
 
 const PARK_FUNCTIONS = {
-  getAllParks: 'https://getallparks-q3rjv54uka-uc.a.run.app',
-  getParksByState: 'https://getparksbystate-q3rjv54uka-uc.a.run.app',
+  getAllParks: cloudFunctionUrl('getAllParks'),
+  getParksByState: cloudFunctionUrl('getParksByState'),
 };
 
 export const parksApi = {

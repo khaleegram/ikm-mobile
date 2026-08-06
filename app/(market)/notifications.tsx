@@ -2,7 +2,6 @@ import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
-  FlatList,
   TouchableOpacity,
   StyleSheet,
   RefreshControl,
@@ -11,11 +10,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useNotifications } from '@/lib/firebase/firestore/notifications';
-import { notificationsApi } from '@/lib/api/notifications';
+import { useNotifications } from '@/lib/hooks/use-in-app-notifications';
+import { FlashListCompat } from '@/components/layout/flash-list-compat';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { haptics } from '@/lib/utils/haptics';
-import { AppNotification } from '@/types';
+import type { InAppNotification } from '@/lib/hooks/use-in-app-notifications';
+
 
 const lightBrown = '#A67C52';
 
@@ -46,36 +46,44 @@ function getTimeAgo(date: any): string {
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { notifications, unreadCount, loading } = useNotifications(user?.uid || null);
+  const { notifications, unreadCount, loading, refresh, markRead, markAllRead } = useNotifications(
+    user?.uid || null
+  );
   const [refreshing, setRefreshing] = useState(false);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await new Promise((r) => setTimeout(r, 600));
-    setRefreshing(false);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const handleMarkAllRead = async () => {
     haptics.light();
     try {
-      await notificationsApi.markAllRead();
+      await markAllRead();
     } catch {}
   };
 
-  const handlePress = useCallback(async (item: AppNotification) => {
-    haptics.light();
-    if (!item.read) {
-      try {
-        await notificationsApi.markRead(item.id!);
-      } catch {}
-    }
-    if (item.actionUrl) {
-      router.push(item.actionUrl as any);
-    }
-  }, []);
+  const handlePress = useCallback(
+    async (item: InAppNotification) => {
+      haptics.light();
+      if (!item.read) {
+        try {
+          await markRead(item.id!);
+        } catch {}
+      }
+      if (item.actionUrl) {
+        router.push(item.actionUrl as any);
+      }
+    },
+    [markRead]
+  );
 
   const renderItem = useCallback(
-    ({ item }: { item: AppNotification }) => (
+    ({ item }: { item: InAppNotification }) => (
       <TouchableOpacity
         style={[styles.notifItem, !item.read && styles.notifUnread]}
         onPress={() => handlePress(item)}
@@ -92,7 +100,7 @@ export default function NotificationsScreen() {
             {item.title}
           </Text>
           <Text style={[styles.notifBodyText, { color: 'rgba(255,255,255,0.4)' }]} numberOfLines={2}>
-            {item.body}
+            {item.body || item.message}
           </Text>
         </View>
         <Text style={[styles.notifTime, { color: 'rgba(255,255,255,0.3)' }]}>
@@ -130,10 +138,11 @@ export default function NotificationsScreen() {
           <Text style={[styles.emptyText, { color: 'rgba(255,255,255,0.3)' }]}>No notifications yet</Text>
         </View>
       ) : (
-        <FlatList
+        <FlashListCompat
           data={notifications}
           renderItem={renderItem}
           keyExtractor={(item) => item.id || Math.random().toString()}
+          estimatedItemSize={88}
           contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#FFFFFF" />

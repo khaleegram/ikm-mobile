@@ -5,15 +5,16 @@
 // Client-side code uses 'price' for consistency with TypeScript types.
 //
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { Product } from '@/types';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 
 const PRODUCT_FUNCTIONS = {
-  getSellerProducts: 'https://getsellerproducts-q3rjv54uka-uc.a.run.app',
-  getProduct: 'https://getproduct-q3rjv54uka-uc.a.run.app',
-  createProduct: 'https://createproduct-q3rjv54uka-uc.a.run.app',
-  updateProduct: 'https://updateproduct-q3rjv54uka-uc.a.run.app',
-  deleteProduct: 'https://deleteproduct-q3rjv54uka-uc.a.run.app',
+  getSellerProducts: cloudFunctionUrl('getSellerProducts'),
+  getProduct: cloudFunctionUrl('getProduct'),
+  createProduct: cloudFunctionUrl('createProduct'),
+  updateProduct: cloudFunctionUrl('updateProduct'),
+  deleteProduct: cloudFunctionUrl('deleteProduct'),
 };
 
 export interface CreateProductData {

@@ -1,3 +1,6 @@
+import { assertUserMediaPath } from '@/lib/utils/media-path';
+import { auth } from '@/lib/firebase/config';
+
 import { apiUrl } from './api-base';
 import { coreCloudClient } from './core-cloud-client';
 
@@ -15,6 +18,12 @@ export const mediaApi = {
     contentType: string;
     contentLength?: number;
   }): Promise<PresignUploadResponse> {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      throw new Error('Authentication required. Please log in.');
+    }
+    assertUserMediaPath(input.path, uid);
+
     return coreCloudClient.request<PresignUploadResponse>(apiUrl('/media/presign'), {
       method: 'POST',
       body: input,

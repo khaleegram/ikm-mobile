@@ -3,10 +3,10 @@ import { useCallback, useEffect, useState, useRef } from 'react';
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { syncQueuedWrites, getWriteQueue, QueuedWrite } from '../utils/offline';
+import { chatApi } from '../api/chat';
 import { productApi } from '../api/products';
 import { orderApi } from '../api/orders';
 import { userApi } from '../api/user';
-import { marketMessagesApi } from '../api/market-messages';
 
 export function useOfflineSync() {
   const [isOnline, setIsOnline] = useState(true);
@@ -89,7 +89,16 @@ export function useOfflineSync() {
             break;
           case 'marketMessage':
             if (write.action === 'create') {
-              await marketMessagesApi.sendQueuedMessage(write.data);
+              const data = write.data || {};
+              const threadId = String(data.threadId || data.chatId || '').trim();
+              if (threadId && !threadId.startsWith('direct_') && !threadId.startsWith('pending:')) {
+                await chatApi.sendMessage(threadId, {
+                  type: data.type || 'text',
+                  body: data.body || data.text || '',
+                  clientMsgId: data.clientMsgId || data.clientMessageId,
+                  quote: data.quote || data.quoteCard,
+                });
+              }
             }
             break;
         }

@@ -1,5 +1,6 @@
 // Shipping zones management screen
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Modal } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -8,8 +9,10 @@ import { useSellerShippingZones } from '@/lib/firebase/firestore/shipping';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { shippingApi } from '@/lib/api/shipping';
 import { ShippingZone } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 export default function ShippingScreen() {
+  const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { user } = useUser();
   const { zones, loading } = useSellerShippingZones(user?.uid || null);
@@ -121,7 +124,7 @@ export default function ShippingScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <Text style={[styles.title, { color: colors.text }]}>Shipping Zones</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Configure shipping rates by location
@@ -294,7 +297,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       backgroundColor: colors.background,
     },
     header: {
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       paddingBottom: 24,
       paddingHorizontal: 20,
       ...premiumShadow,

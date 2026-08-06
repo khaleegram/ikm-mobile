@@ -1,12 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Platform,
   StyleSheet,
   Text,
-  View,
+  View
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
@@ -20,6 +19,7 @@ import {
   VOICE_MIN_DURATION_MS,
   type VoiceRecordingResult,
 } from '@/lib/hooks/use-voice-recorder';
+import { Alert } from '@/components/app-alert';
 
 const CANCEL_SLIDE_PX = 72;
 const BRAND = '#A67C52';
@@ -40,6 +40,13 @@ type ChatVoiceRecorderProps = {
   onRecordingChange?: (recording: boolean) => void;
 };
 
+/**
+ * WhatsApp-style hold-to-record:
+ * - UI expands immediately on press
+ * - Slide left to arm cancel
+ * - Release sends (or cancels); short takes are discarded
+ * - Finger-up during native start is queued and applied after start settles
+ */
 export function ChatVoiceRecorder({
   disabled = false,
   busy = false,
@@ -66,12 +73,13 @@ export function ChatVoiceRecorder({
   stopRef.current = recorder.stopRecording;
   cancelRef.current = recorder.cancelRecording;
 
-  // UI recording flips immediately on press so the bar expands without waiting on native start.
   const [uiRecording, setUiRecording] = useState(false);
   const [cancelArmed, setCancelArmed] = useState(false);
   const cancelArmedRef = useRef(false);
   const startingRef = useRef(false);
+  const finishingRef = useRef(false);
   const activeSessionRef = useRef(false);
+  const sessionGenRef = useRef(0);
   const pendingReleaseRef = useRef<'send' | 'cancel' | null>(null);
   const pulse = useRef(new Animated.Value(1)).current;
 
@@ -81,7 +89,6 @@ export function ChatVoiceRecorder({
   }, []);
 
   useEffect(() => {
-    // Warm mic permission so the first hold isn't blocked by a dialog mid-gesture.
     if (!native || disabled) return;
     void (async () => {
       try {
@@ -108,33 +115,46 @@ export function ChatVoiceRecorder({
     return () => loop.stop();
   }, [pulse, uiRecording]);
 
-  const finishSession = useCallback(async (mode: 'send' | 'cancel') => {
-    activeSessionRef.current = false;
-    startingRef.current = false;
-    pendingReleaseRef.current = null;
-    cancelArmedRef.current = false;
-    setCancelArmed(false);
-    setRecordingUi(false);
+  const finishSession = useCallback(
+    async (mode: 'send' | 'cancel', gen: number) => {
+      if (finishingRef.current) return;
+      if (gen !== sessionGenRef.current) return;
 
-    if (mode === 'cancel') {
-      await cancelRef.current();
-      haptics.warning();
-      return;
-    }
+      finishingRef.current = true;
+      activeSessionRef.current = false;
+      startingRef.current = false;
+      pendingReleaseRef.current = null;
+      cancelArmedRef.current = false;
+      setCancelArmed(false);
+      setRecordingUi(false);
 
-    const result = await stopRef.current();
-    if (!result) return;
-    if (result.durationMs < VOICE_MIN_DURATION_MS) {
-      haptics.warning();
-      showToast('Hold a bit longer to record a voice note.', 'info');
-      return;
-    }
-    haptics.success();
-    onRecordedRef.current(result);
-  }, [setRecordingUi]);
+      try {
+        if (mode === 'cancel') {
+          await cancelRef.current();
+          haptics.warning();
+          return;
+        }
+
+        const result = await stopRef.current();
+        if (!result) return;
+        if (result.durationMs < VOICE_MIN_DURATION_MS) {
+          haptics.warning();
+          showToast('Hold a bit longer to record a voice note.', 'info');
+          return;
+        }
+        haptics.success();
+        onRecordedRef.current(result);
+      } finally {
+        finishingRef.current = false;
+      }
+    },
+    [setRecordingUi]
+  );
 
   const beginSession = useCallback(async () => {
-    if (disabled || busy || startingRef.current || activeSessionRef.current) return;
+    if (disabled || busy || startingRef.current || activeSessionRef.current || finishingRef.current) {
+      return;
+    }
     if (!native) {
       Alert.alert(
         'Voice notes',
@@ -143,6 +163,7 @@ export function ChatVoiceRecorder({
       return;
     }
 
+    const gen = ++sessionGenRef.current;
     startingRef.current = true;
     activeSessionRef.current = true;
     pendingReleaseRef.current = null;
@@ -152,18 +173,25 @@ export function ChatVoiceRecorder({
 
     try {
       await startRef.current();
-      haptics.medium();
+      if (gen !== sessionGenRef.current) {
+        await cancelRef.current();
+        return;
+      }
       const pending = pendingReleaseRef.current;
       if (pending) {
-        await finishSession(pending);
+        await finishSession(pending, gen);
       }
     } catch (error: any) {
-      activeSessionRef.current = false;
-      pendingReleaseRef.current = null;
-      setRecordingUi(false);
-      showToast(error?.message || 'Unable to record', 'error');
+      if (gen === sessionGenRef.current) {
+        activeSessionRef.current = false;
+        pendingReleaseRef.current = null;
+        setRecordingUi(false);
+        showToast(error?.message || 'Unable to record', 'error');
+      }
     } finally {
-      startingRef.current = false;
+      if (gen === sessionGenRef.current) {
+        startingRef.current = false;
+      }
     }
   }, [busy, disabled, finishSession, native, setRecordingUi]);
 
@@ -184,7 +212,7 @@ export function ChatVoiceRecorder({
       pendingReleaseRef.current = mode;
       return;
     }
-    void finishSession(mode);
+    void finishSession(mode, sessionGenRef.current);
   }, [finishSession]);
 
   const pan = Gesture.Pan()
@@ -214,7 +242,6 @@ export function ChatVoiceRecorder({
           showingBar ? styles.recordingBar : styles.idleMic,
           showingBar ? { backgroundColor: cancelArmed ? ERROR_RED : BRAND } : null,
           !showingBar && (disabled || busy) ? styles.disabled : null,
-          // Keep a stable flex host on Android so the bar can expand without remounting the row.
           showingBar || Platform.OS === 'android' ? styles.flexHost : null,
         ]}>
         {showingBar ? (

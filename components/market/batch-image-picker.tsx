@@ -6,14 +6,14 @@ import {
   TouchableOpacity,
   Image,
   ScrollView,
-  Alert,
-  Dimensions,
+  Dimensions
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { haptics } from '@/lib/utils/haptics';
+import { Alert } from '@/components/app-alert';
 
 const { width } = Dimensions.get('window');
 const IMAGE_SIZE = (width - 60) / 3; // 3 columns with padding

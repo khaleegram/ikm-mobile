@@ -1,20 +1,25 @@
 import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { FlashListCompat } from '@/components/layout/flash-list-compat';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { useAudioPlayer } from '@/hooks/use-audio-player';
-import { marketSoundsApi } from '@/lib/api/market-sounds';
 import { marketSocialApi } from '@/lib/api/market-social';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostsBySound } from '@/lib/firebase/firestore/market-posts';
-import { useIsMarketSoundSaved, useMarketSound } from '@/lib/firebase/firestore/market-sounds';
+import { useMarketPostsBySound } from '@/lib/hooks/use-market-post';
+import {
+  toggleMarketSoundSave,
+  useIsMarketSoundSaved,
+  useMarketSound,
+} from '@/lib/hooks/use-market-sounds';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
 import { buildMarketPostStableKey, getMarketPostPrimaryImage } from '@/lib/utils/market-media';
 import type { MarketPost } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 
@@ -70,7 +75,7 @@ export default function MarketSoundDetailScreen() {
     setSaving(true);
     haptics.light();
     try {
-      await marketSoundsApi.toggleSaveSound(soundId, Boolean(isSaved));
+      await toggleMarketSoundSave(user.uid, soundId, Boolean(isSaved));
     } catch (error: any) {
       showToast(error?.message || 'Unable to update saved sound.', 'error');
     } finally {
@@ -270,9 +275,10 @@ export default function MarketSoundDetailScreen() {
           <Text style={[styles.emptyHint, { color: colors.textSecondary }]}>No posts found for this sound yet.</Text>
         </View>
       ) : (
-        <FlatList
+        <FlashListCompat
           data={posts}
           keyExtractor={(item) => buildMarketPostStableKey(item)}
+          estimatedItemSize={96}
           renderItem={renderPost}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 120 }}
           ItemSeparatorComponent={() => <View style={{ height: 10 }} />}

@@ -1,8 +1,9 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const REPORT_FUNCTIONS = {
-  generateSalesReport: 'https://generatesalesreport-q3rjv54uka-uc.a.run.app',
-  generateCustomerReport: 'https://generatecustomerreport-q3rjv54uka-uc.a.run.app',
+  generateSalesReport: cloudFunctionUrl('generateSalesReport'),
+  generateCustomerReport: cloudFunctionUrl('generateCustomerReport'),
 };
 
 export interface SalesReport {

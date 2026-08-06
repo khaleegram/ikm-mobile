@@ -1,14 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -18,13 +17,16 @@ import { CommentItem } from '@/components/market/comment-item';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
-import { marketCommentsApi } from '@/lib/api/market-comments';
+import {
+  createMarketCommentOptimistic,
+  useMarketPostComments,
+} from '@/lib/hooks/use-market-comments';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostComments } from '@/lib/firebase/firestore/market-comments';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import type { MarketComment } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 
@@ -88,7 +90,7 @@ export default function PostDetailScreen() {
     haptics.medium();
 
     try {
-      await marketCommentsApi.create(id, commentText);
+      await createMarketCommentOptimistic(id, commentText);
       setCommentText('');
       haptics.success();
       showToast('Comment added', 'success');

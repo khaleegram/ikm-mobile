@@ -35,7 +35,6 @@ module.exports = ({ config }) => {
         genericItemTitle: 'ChatCart Item',
         signupJoinSubtitle: 'Join ChatCart',
         deletePostMessage: 'This will permanently remove this post from ChatCart.',
-        phoneGateLine: 'Add a phone number so buyers and sellers can reach you. Use your country code (e.g. +234).',
         shareFromLine: 'Shared from ChatCart',
         ordersNavLabel: 'Orders',
       }
@@ -46,7 +45,6 @@ module.exports = ({ config }) => {
         genericItemTitle: 'Item',
         signupJoinSubtitle: 'Join and start selling',
         deletePostMessage: 'This will permanently remove this post.',
-        phoneGateLine: 'Add a phone number for your store. Buyers may use it to reach you. Include your country code (e.g. +234).',
         shareFromLine: 'Shared from ChatCart Seller',
         ordersNavLabel: 'Orders',
       };
@@ -81,6 +79,7 @@ module.exports = ({ config }) => {
     ]),
   );
 
+  // react-native-keyboard-controller autolinks; it is not an Expo config plugin.
   const plugins = Array.from(
     new Set([
       ...((Array.isArray(config.plugins) ? config.plugins : []) || []),

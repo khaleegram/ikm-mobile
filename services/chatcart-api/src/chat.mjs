@@ -1,6 +1,6 @@
 import { pool, ensureUser } from './db.mjs';
-import { firestore } from './firebase.mjs';
 import { recordAction } from './social.mjs';
+import { isBlockedEither } from './social-graph.mjs';
 import { getPresenceStatus, getPresenceLastSeen } from './chat-presence.mjs';
 import { broadcastToThread } from './chat-ws.mjs';
 import { notifyChatMessage } from './chat-notify.mjs';
@@ -34,18 +34,9 @@ function isUuid(value) {
   );
 }
 
-async function isBlocked(blockerId, blockedId) {
-  const snap = await firestore
-    .collection('marketBlocks')
-    .where('blockerId', '==', blockerId)
-    .where('blockedId', '==', blockedId)
-    .limit(1)
-    .get();
-  return !snap.empty;
-}
-
 async function assertNotBlocked(userId, peerId) {
-  if (await isBlocked(userId, peerId) || await isBlocked(peerId, userId)) {
+  // Same Neon `user_blocks` table the client writes via /v1/social/block — not Firestore.
+  if (await isBlockedEither(userId, peerId)) {
     throw httpError('Messaging is blocked between these users', 403);
   }
 }
@@ -68,14 +59,26 @@ async function loadUserProfile(userId) {
   try {
     const { getUser } = await import('./users.mjs');
     const user = await getUser(userId);
+    const storeName = asString(user?.storeName);
+    const displayNameRaw = asString(user?.displayName);
+    const safePerson =
+      displayNameRaw && !displayNameRaw.includes('@') && displayNameRaw !== 'User'
+        ? displayNameRaw
+        : '';
+    // Store identity wins everywhere in marketplace chat.
+    const label = storeName || safePerson || 'Store';
     return {
       id: userId,
-      displayName: asString(user?.displayName) || 'User',
-      avatarUrl: asString(user?.avatarUrl || user?.photoURL) || null,
+      displayName: label,
+      storeName: storeName || null,
+      avatarUrl:
+        asString(user?.storeLogoUrl) ||
+        asString(user?.avatarUrl || user?.photoURL) ||
+        null,
       isVerified: false,
     };
   } catch {
-    return { id: userId, displayName: 'User', avatarUrl: null, isVerified: false };
+    return { id: userId, displayName: 'Store', storeName: null, avatarUrl: null, isVerified: false };
   }
 }
 
@@ -94,15 +97,17 @@ function snapshotLooksEmpty(snapshot) {
 
 async function ensureThreadPostSnapshot(row) {
   const existing = row?.post_snapshot;
-  if (!snapshotLooksEmpty(existing)) return existing || {};
   const postId = asString(row?.post_id);
   if (!postId) return existing || {};
   try {
     const { snapshot } = await loadPostContext(postId);
     if (snapshotLooksEmpty(snapshot)) return existing || {};
-    const db = pool;
-    if (db && row?.id) {
-      void db
+    const unchanged =
+      asString(existing?.title) === asString(snapshot.title) &&
+      asString(existing?.imageUrl) === asString(snapshot.imageUrl) &&
+      Number(existing?.price || 0) === Number(snapshot.price || 0);
+    if (!unchanged && pool && row?.id) {
+      void pool
         .query(`UPDATE chat_threads SET post_snapshot = $2::jsonb WHERE id = $1`, [
           row.id,
           JSON.stringify(snapshot),
@@ -335,7 +340,7 @@ export async function getInbox(userId) {
       return {
         threadId: row.thread_id,
         peerId: row.peer_id,
-        peerName: peer?.displayName || 'User',
+        peerName: peer?.displayName || 'Store',
         peerAvatar: peer?.avatarUrl || null,
         peerPresence: presence,
         peerLastSeenAt: lastSeenAt,
@@ -370,14 +375,29 @@ export async function getOrCreateThread(userId, { postId, sellerId }) {
 
   const existing = await db.query(
     `SELECT * FROM chat_threads
-     WHERE post_id = $1 AND buyer_id = $2 AND status NOT IN ('closed', 'completed')
-     ORDER BY created_at DESC
+     WHERE post_id = $1 AND buyer_id = $2
+     ORDER BY COALESCE(last_at, updated_at, created_at) DESC
      LIMIT 1`,
     [cleanPostId, buyerId]
   );
 
   if (existing.rows[0]) {
-    return { thread: mapThreadRow(existing.rows[0]), isNew: false };
+    let row = existing.rows[0];
+    // Reuse the same product room forever — reopen if previously closed
+    if (row.status === 'closed' || row.status === 'completed') {
+      const reopened = await db.query(
+        `UPDATE chat_threads
+         SET status = 'browsing', updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [row.id]
+      );
+      row = reopened.rows[0] || { ...row, status: 'browsing' };
+    }
+    // Refresh cover/title from the live post so inbox/direct opens match feed opens.
+    const postSnapshot = await ensureThreadPostSnapshot(row);
+    const merged = snapshotLooksEmpty(postSnapshot) ? snapshot : postSnapshot;
+    return { thread: mapThreadRow(row, merged), isNew: false };
   }
 
   const client = await db.connect();
@@ -685,7 +705,10 @@ export async function createOffer(userId, threadId, payload = {}) {
   const listPrice = Number(row.post_snapshot?.price);
   const lowball =
     Number.isFinite(listPrice) && listPrice > 0 && amount < listPrice * 0.5;
-  const preview = `Offer: ${currency} ${amount.toLocaleString()}`;
+  const preview =
+    userId === row.buyer_id
+      ? `Buying offer: ${currency} ${amount.toLocaleString()}`
+      : `Offer: ${currency} ${amount.toLocaleString()}`;
 
   const db = requirePool();
   const client = await db.connect();
@@ -766,6 +789,7 @@ const SYSTEM_EVENT_TEXT = {
   dispute_opened: 'A dispute has been opened.',
   dispute_resolved: 'Dispute resolved.',
   escrow_released: 'Payment released to seller.',
+  refund_requested: 'Refund is processing to the original payment method.',
   refund_processed: 'Refund processed.',
 };
 

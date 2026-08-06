@@ -42,8 +42,30 @@ export const usersApi = {
     return response.user;
   },
 
+  /** One request for up to 50 user ids — use for inbox / list screens. */
+  async getBatch(userIds: string[]): Promise<ApiUserProfile[]> {
+    const ids = [...new Set(userIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(
+      0,
+      50
+    );
+    if (ids.length === 0) return [];
+    const response = await coreCloudClient.request<{ success: boolean; users: ApiUserProfile[] }>(
+      apiUrl(`/users/batch?ids=${ids.map(encodeURIComponent).join(',')}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.users) ? response.users : [];
+  },
+
   async registerFcmToken(token: string): Promise<void> {
     await coreCloudClient.request(apiUrl('/users/me/fcm-token'), {
+      method: 'POST',
+      body: { token },
+      requiresAuth: true,
+    });
+  },
+
+  async unregisterFcmToken(token: string): Promise<void> {
+    await coreCloudClient.request(apiUrl('/users/me/fcm-token/unregister'), {
       method: 'POST',
       body: { token },
       requiresAuth: true,

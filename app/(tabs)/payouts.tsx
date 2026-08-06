@@ -1,5 +1,6 @@
 // Modern Payouts management screen with bank account auto-detection
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Alert, Modal, FlatList } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Modal, FlatList } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState, useEffect, useMemo } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -12,8 +13,10 @@ import { payoutsApi } from '@/lib/api/payouts';
 import { Payout } from '@/types';
 import { usePlatformSettings } from '@/lib/firebase/firestore/platform-settings';
 import { NIGERIAN_BANKS, searchBanks, getBankByCode, Bank } from '@/lib/utils/banks';
+import { Alert } from '@/components/app-alert';
 
 export default function PayoutsScreen() {
+  const insets = useSafeAreaInsets();
   const { colors, colorScheme } = useTheme();
   const { user } = useUser();
   const { payouts, loading } = useSellerPayouts(user?.uid || null);
@@ -214,7 +217,7 @@ export default function PayoutsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <Text style={[styles.title, { color: colors.text }]}>Payouts</Text>
       </View>
 
@@ -552,7 +555,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       backgroundColor: colors.background,
     },
     header: {
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       paddingBottom: 20,
       paddingHorizontal: 20,
       ...premiumShadow,

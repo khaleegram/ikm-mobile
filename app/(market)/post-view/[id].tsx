@@ -6,7 +6,7 @@ import { StatusBar } from 'expo-status-bar';
 
 import { FeedCard } from '@/components/market/feed-card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useMarketPost } from '@/lib/firebase/firestore/market-posts';
+import { useMarketPost } from '@/lib/hooks/use-market-post';
 
 const lightBrown = '#A67C52';
 

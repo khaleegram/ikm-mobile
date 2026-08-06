@@ -105,6 +105,7 @@ export interface ChatMessage {
 export interface ChatPeerProfile {
   id: string;
   displayName: string;
+  storeName?: string | null;
   avatarUrl?: string | null;
   isVerified?: boolean;
   presence?: 'online' | 'last_seen' | 'offline';

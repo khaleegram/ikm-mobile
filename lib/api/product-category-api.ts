@@ -1,10 +1,11 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { Product, ProductCategory } from '@/types';
 
 const PRODUCT_CATEGORY_FUNCTIONS = {
-  createProductWithCategory: 'https://createnorthernproduct-q3rjv54uka-uc.a.run.app',
-  updateProductWithCategory: 'https://updatenorthernproduct-q3rjv54uka-uc.a.run.app',
+  createProductWithCategory: cloudFunctionUrl('createNorthernProduct'),
+  updateProductWithCategory: cloudFunctionUrl('updateNorthernProduct'),
 };
 
 export interface CreateProductData {

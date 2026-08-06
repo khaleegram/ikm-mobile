@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Keyboard,
   Modal,
@@ -11,7 +10,7 @@ import {
   TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
-  View,
+  View
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Image } from 'expo-image';
@@ -21,13 +20,16 @@ import { router } from 'expo-router';
 import { CommentItem } from '@/components/market/comment-item';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
-import { marketCommentsApi } from '@/lib/api/market-comments';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostComments } from '@/lib/firebase/firestore/market-comments';
+import {
+  createMarketCommentOptimistic,
+  useMarketPostComments,
+} from '@/lib/hooks/use-market-comments';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import type { MarketComment } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 
@@ -42,9 +44,10 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
   const insets = useSafeAreaInsets();
   const { user } = useUser();
   const { user: profile } = useUserProfile(user?.uid ?? null);
-  const { comments, loading } = useMarketPostComments(postId);
+  const { comments, loading, hasMore, loadingMore, loadMore } = useMarketPostComments(
+    visible ? postId : null
+  );
   const [commentText, setCommentText] = useState('');
-  const [pendingComments, setPendingComments] = useState<MarketComment[]>([]);
   const listRef = useRef<FlashList<MarketComment>>(null);
   const translateY = useRef(new Animated.Value(700)).current;
   const keyboardLift = useRef(new Animated.Value(0)).current;
@@ -55,26 +58,8 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
     [profile?.storeLogoUrl]
   );
 
-  const orderedComments = useMemo(() => {
-    const serverIds = new Set(comments.map((c) => c.id).filter(Boolean));
-    const stillPending = pendingComments.filter((p) => !serverIds.has(p.id));
-    return [...comments, ...stillPending].reverse();
-  }, [comments, pendingComments]);
-
-  useEffect(() => {
-    if (!comments.length) return;
-    setPendingComments((prev) =>
-      prev.filter((pending) => {
-        const match = comments.find(
-          (c) =>
-            c.userId === pending.userId &&
-            c.comment === pending.comment &&
-            Math.abs(c.createdAt.getTime() - pending.createdAt.getTime()) < 15000
-        );
-        return !match;
-      })
-    );
-  }, [comments]);
+  // API returns newest-first; reverse for chronological chat-style list.
+  const orderedComments = useMemo(() => [...comments].reverse(), [comments]);
 
   useEffect(() => {
     Animated.timing(translateY, {
@@ -129,27 +114,14 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
     const text = commentText.trim();
     if (!text) return;
 
-    const optimistic: MarketComment = {
-      id: `temp-${Date.now()}`,
-      postId,
-      userId: user.uid,
-      comment: text,
-      createdAt: new Date(),
-    };
-
     setCommentText('');
-    setPendingComments((prev) => [...prev, optimistic]);
     haptics.light();
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
 
     try {
-      const result = await marketCommentsApi.create(postId, text);
-      setPendingComments((prev) =>
-        prev.map((p) => (p.id === optimistic.id ? { ...p, id: result.id || p.id } : p))
-      );
+      await createMarketCommentOptimistic(postId, text);
       haptics.success();
     } catch (e: any) {
-      setPendingComments((prev) => prev.filter((p) => p.id !== optimistic.id));
       haptics.error();
       showToast(e?.message || 'Failed to add comment', 'error');
     }
@@ -205,9 +177,27 @@ export function CommentsSheet({ postId, visible, onClose, totalComments }: Comme
                   <CommentItem
                     comment={item}
                     darkMode
-                    pending={String(item.id || '').startsWith('temp-')}
+                    pending={String(item.id || '').startsWith('temp_')}
                   />
                 )}
+                ListHeaderComponent={
+                  hasMore ? (
+                    <TouchableOpacity
+                      style={{ paddingVertical: 12, alignItems: 'center' }}
+                      onPress={() => {
+                        if (!loadingMore) void loadMore();
+                      }}
+                      disabled={loadingMore}>
+                      {loadingMore ? (
+                        <ActivityIndicator color={lightBrown} size="small" />
+                      ) : (
+                        <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 13, fontWeight: '600' }}>
+                          Load earlier comments
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  ) : null
+                }
                 estimatedItemSize={56}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="none"

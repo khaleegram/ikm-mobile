@@ -11,15 +11,16 @@ admin.initializeApp();
 // Export modules
 export * from './admin';
 export * from './dashboard';
-export * from './feed-algorithm';
-// Follow counts are updated client-side in batch with marketFollows and Firestore rules.
-// Do not re-enable ./market-social triggers here; they would double-increment counts.
-export * from './market';
+// feed-algorithm + market CF modules retired — market feed/posts/likes/comments/chat
+// live on chatcart-api (Neon). Do not re-export them; deployed leftovers should be
+// deleted on the next functions deploy (`firebase functions:delete …`).
+// Follow counts: do not re-enable ./market-social triggers (double-increment risk).
 export * from './notifications';
 export * from './order-chat';
 export * from './orders';
 export * from './payments';
 export * from './products';
+export * from './refunds';
 export * from './reports';
 export * from './reviews';
 export * from './settings';

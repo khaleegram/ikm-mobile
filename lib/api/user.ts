@@ -1,16 +1,55 @@
 // User API endpoints
 // Cloud-Functions-first: reads come from Firestore, writes go through Cloud Functions.
+import { apiUrl } from './api-base';
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 import { convertImageToBase64 } from '@/lib/utils/image-to-base64';
 import { User, StoreSettings } from '@/types';
 import { doc, getDoc } from 'firebase/firestore';
 import { firestore } from '@/lib/firebase/config';
 
+/**
+ * Push so the seller's new name/logo shows up everywhere that reads the shared identity
+ * cache (inbox, deal-room header, feed overlay) — not just Neon for chat hydration.
+ */
+function syncChatProfile(
+  userId: string | undefined,
+  profile: { displayName?: string; storeName?: string; storeLogoUrl?: string }
+) {
+  const body: Record<string, string> = {};
+  if (profile.displayName) body.displayName = profile.displayName;
+  if (profile.storeName) body.storeName = profile.storeName;
+  if (profile.storeLogoUrl && /^https?:\/\//.test(profile.storeLogoUrl)) {
+    body.storeLogoUrl = profile.storeLogoUrl;
+    body.avatarUrl = profile.storeLogoUrl;
+  }
+  if (!Object.keys(body).length) return;
+  coreCloudClient
+    .request(apiUrl('/users/me'), { method: 'PATCH', body, requiresAuth: true })
+    .then(async (response: any) => {
+      const { setUserIdentityCache, invalidateUserIdentity } = await import(
+        '@/lib/hooks/use-user-identity'
+      );
+      if (response?.user) {
+        setUserIdentityCache(response.user);
+      } else if (userId) {
+        invalidateUserIdentity(userId);
+      }
+    })
+    .catch(() => {
+      if (userId) {
+        void import('@/lib/hooks/use-user-identity').then(({ invalidateUserIdentity }) =>
+          invalidateUserIdentity(userId)
+        );
+      }
+    });
+}
+
 const USER_FUNCTIONS = {
-  getStoreSettings: 'https://getstoresettings-q3rjv54uka-uc.a.run.app',
-  updateStoreSettings: 'https://updatestoresettings-q3rjv54uka-uc.a.run.app',
-  getCustomers: 'https://getcustomers-q3rjv54uka-uc.a.run.app',
-  linkGuestOrdersToAccount: 'https://linkguestorderstoaccount-q3rjv54uka-uc.a.run.app',
+  getStoreSettings: cloudFunctionUrl('getStoreSettings'),
+  updateStoreSettings: cloudFunctionUrl('updateStoreSettings'),
+  getCustomers: cloudFunctionUrl('getCustomers'),
+  linkGuestOrdersToAccount: cloudFunctionUrl('linkGuestOrdersToAccount'),
 };
 
 export interface UpdateUserProfileData {
@@ -145,7 +184,12 @@ export const userApi = {
       requiresAuth: true,
     });
 
-    return userApi.getProfile(userId);
+    const profile = await userApi.getProfile(userId);
+    syncChatProfile(userId, {
+      displayName: profile.displayName,
+      storeLogoUrl: profile.storeLogoUrl,
+    });
+    return profile;
   },
 
   // Update store settings
@@ -200,8 +244,13 @@ export const userApi = {
       requiresAuth: true,
     });
 
-
-    return userApi.getProfile(userId);
+    const profile = await userApi.getProfile(userId);
+    syncChatProfile(userId, {
+      displayName: profile.displayName,
+      storeName: profile.storeName,
+      storeLogoUrl: profile.storeLogoUrl,
+    });
+    return profile;
   },
 
   // Get customers

@@ -1,13 +1,14 @@
 import { coreCloudClient } from './core-cloud-client';
+import { cloudFunctionUrl } from './cloud-functions-base';
 
 const PAYMENT_FUNCTIONS = {
-  initializePaystackTransaction: 'https://initializepaystacktransaction-q3rjv54uka-uc.a.run.app',
-  verifyPaystackTransaction: 'https://verifypaystacktransaction-q3rjv54uka-uc.a.run.app',
-  getTransactionTruth: 'https://gettransactiontruth-q3rjv54uka-uc.a.run.app',
-  paystackWebhook: 'https://paystackwebhook-q3rjv54uka-uc.a.run.app',
-  verifyPaymentAndCreateOrder: 'https://verifypaymentandcreateorder-q3rjv54uka-uc.a.run.app',
-  findRecentTransactionByEmail: 'https://findrecenttransactionbyemail-q3rjv54uka-uc.a.run.app',
-  finalizeMarketEscrowPayment: 'https://finalizemarketescrowpayment-q3rjv54uka-uc.a.run.app',
+  initializePaystackTransaction: cloudFunctionUrl('initializePaystackTransaction'),
+  verifyPaystackTransaction: cloudFunctionUrl('verifyPaystackTransaction'),
+  getTransactionTruth: cloudFunctionUrl('getTransactionTruth'),
+  paystackWebhook: cloudFunctionUrl('paystackWebhook'),
+  verifyPaymentAndCreateOrder: cloudFunctionUrl('verifyPaymentAndCreateOrder'),
+  findRecentTransactionByEmail: cloudFunctionUrl('findRecentTransactionByEmail'),
+  finalizeMarketEscrowPayment: cloudFunctionUrl('finalizeMarketEscrowPayment'),
 };
 
 type InitializePaymentInput = {
@@ -41,6 +42,155 @@ type VerifyPaymentResult = {
   currency?: string;
   channel?: string;
 };
+
+export type EscrowPaymentInspectStatus =
+  | 'success'
+  | 'abandoned'
+  | 'failed'
+  | 'reversed'
+  | 'declined'
+  | 'pending'
+  | 'ongoing'
+  | 'not_found'
+  | 'unknown';
+
+export type EscrowPaymentInspectResult = {
+  reference: string;
+  paid: boolean;
+  /** True when Paystack/truth says this reference will never succeed. */
+  terminalUnpaid: boolean;
+  /**
+   * True when there is no evidence of a charge for this reference
+   * (abandoned/failed OR Paystack has no transaction yet for an unopened checkout).
+   */
+  safeToStartNewPayment: boolean;
+  status: EscrowPaymentInspectStatus;
+  amount?: number;
+  message?: string;
+};
+
+/** Bank/USSD can stay pending a while — after this, buyer may start a new pay if still unpaid. */
+export const ESCROW_PENDING_NEW_PAYMENT_GRACE_MS = 10 * 60 * 1000;
+
+function normalizeEscrowInspectStatus(raw: unknown): EscrowPaymentInspectStatus {
+  const status = asNonEmptyString(raw).toLowerCase();
+  if (status === 'success' || status === 'successful') return 'success';
+  if (status === 'abandoned') return 'abandoned';
+  if (status === 'failed') return 'failed';
+  if (status === 'reversed') return 'reversed';
+  if (status === 'declined') return 'declined';
+  if (status === 'ongoing') return 'ongoing';
+  if (status === 'pending' || status === 'processing') return 'pending';
+  return status ? 'unknown' : 'unknown';
+}
+
+function statusFromPaymentErrorMessage(message: string): EscrowPaymentInspectStatus {
+  const normalized = String(message || '').toLowerCase();
+  const matched = normalized.match(/status:\s*([a-z_]+)/i);
+  if (matched?.[1]) return normalizeEscrowInspectStatus(matched[1]);
+  if (normalized.includes('abandoned')) return 'abandoned';
+  if (normalized.includes('reversed')) return 'reversed';
+  if (normalized.includes('declined')) return 'declined';
+  if (normalized.includes('failed')) return 'failed';
+  // Initialized session that never became a Paystack charge — not "still processing forever".
+  if (
+    normalized.includes('transaction reference not found') ||
+    normalized.includes('reference not found')
+  ) {
+    return 'not_found';
+  }
+  if (normalized.includes('pending') || normalized.includes('not confirmed')) return 'pending';
+  return 'unknown';
+}
+
+function isTerminalUnpaidStatus(status: EscrowPaymentInspectStatus): boolean {
+  return (
+    status === 'abandoned' ||
+    status === 'failed' ||
+    status === 'reversed' ||
+    status === 'declined'
+  );
+}
+
+function isSafeToStartNewPaymentStatus(status: EscrowPaymentInspectStatus): boolean {
+  return isTerminalUnpaidStatus(status) || status === 'not_found';
+}
+
+/**
+ * Decide if a buyer can open a fresh Paystack session for the same product.
+ * - paid / submitted → never
+ * - abandoned / failed / not_found → yes
+ * - pending/ongoing → only after grace window (default 10 minutes)
+ */
+export function canStartNewEscrowPayment(input: {
+  inspected: EscrowPaymentInspectResult;
+  phase?: 'initialized' | 'submitted' | null;
+  createdAtMs?: number;
+  nowMs?: number;
+  graceMs?: number;
+}): { allow: boolean; waitMsRemaining: number; label: string } {
+  const inspected = input.inspected;
+  const phase = input.phase || 'initialized';
+  const graceMs = Math.max(0, Number(input.graceMs ?? ESCROW_PENDING_NEW_PAYMENT_GRACE_MS));
+  const createdAtMs = Number(input.createdAtMs || 0);
+  const nowMs = Number(input.nowMs || Date.now());
+  const ageMs = createdAtMs > 0 ? Math.max(0, nowMs - createdAtMs) : graceMs;
+
+  if (inspected.paid) {
+    return { allow: false, waitMsRemaining: 0, label: 'Payment already succeeded — complete the order.' };
+  }
+  if (phase === 'submitted') {
+    return {
+      allow: false,
+      waitMsRemaining: 0,
+      label: 'Checkout already reported success — tap Complete order. Do not pay again.',
+    };
+  }
+  if (inspected.safeToStartNewPayment || isSafeToStartNewPaymentStatus(inspected.status)) {
+    return { allow: true, waitMsRemaining: 0, label: 'No charge found for this checkout — safe to pay again.' };
+  }
+
+  const waiting =
+    inspected.status === 'pending' ||
+    inspected.status === 'ongoing' ||
+    inspected.status === 'unknown';
+  if (waiting) {
+    const waitMsRemaining = Math.max(0, graceMs - ageMs);
+    if (waitMsRemaining <= 0) {
+      return {
+        allow: true,
+        waitMsRemaining: 0,
+        label: 'Still unconfirmed after waiting — you may start a new payment if no money left your account.',
+      };
+    }
+    const mins = Math.max(1, Math.ceil(waitMsRemaining / 60000));
+    return {
+      allow: false,
+      waitMsRemaining,
+      label: `Paystack is still processing. Wait about ${mins} min, or tap Complete order if you already paid.`,
+    };
+  }
+
+  return { allow: true, waitMsRemaining: 0, label: 'You can start a new payment.' };
+}
+
+function formatInspectResult(
+  reference: string,
+  status: EscrowPaymentInspectStatus,
+  paid: boolean,
+  amount?: number,
+  message?: string
+): EscrowPaymentInspectResult {
+  return {
+    reference,
+    paid,
+    terminalUnpaid: !paid && isTerminalUnpaidStatus(status),
+    safeToStartNewPayment: !paid && isSafeToStartNewPaymentStatus(status),
+    status: paid ? 'success' : status,
+    amount,
+    message,
+  };
+}
 
 function asNonEmptyString(value: unknown): string {
   return String(value ?? '').trim();
@@ -221,9 +371,17 @@ export const paymentsApi = {
 
         if (attempt === maxAttempts - 1) {
           const finalMessage = String((verifyError as any)?.message || '').toLowerCase();
+          // Abandoned/failed are terminal — do not rewrite as "try again" or clients keep retrying forever.
+          if (
+            finalMessage.includes('abandoned') ||
+            finalMessage.includes('failed') ||
+            finalMessage.includes('reversed') ||
+            finalMessage.includes('declined')
+          ) {
+            throw verifyError;
+          }
           if (
             finalMessage.includes('payment not successful') ||
-            finalMessage.includes('abandoned') ||
             finalMessage.includes('pending')
           ) {
             throw new Error(
@@ -240,14 +398,106 @@ export const paymentsApi = {
     throw new Error('Payment could not be verified yet. Please try again in a moment.');
   },
 
+  /**
+   * Non-destructive payment status check. Used before clearing local pending
+   * checkout or starting a second charge — never invents "safe to delete".
+   */
+  async inspectEscrowPaymentStatus(input: {
+    reference: string;
+    amount?: number;
+    email?: string;
+  }): Promise<EscrowPaymentInspectResult> {
+    const normalizedReference = asNonEmptyString(input.reference);
+    if (!normalizedReference) {
+      throw new Error('Missing payment reference.');
+    }
+
+    const normalizedAmount =
+      Number.isFinite(Number(input.amount)) && Number(input.amount) > 0
+        ? Number(input.amount)
+        : undefined;
+    const normalizedEmail = asNonEmptyString(input.email) || undefined;
+
+    try {
+      const cachedResult = await coreCloudClient.request<any>(
+        PAYMENT_FUNCTIONS.getTransactionTruth,
+        {
+          method: 'POST',
+          body: { reference: normalizedReference },
+          requiresAuth: true,
+        }
+      );
+
+      if (cachedResult?.found) {
+        const status = normalizeEscrowInspectStatus(cachedResult.status);
+        // Success from truth store is authoritative for "paid".
+        if (status === 'success' || cachedResult.paid === true) {
+          return formatInspectResult(
+            asNonEmptyString(cachedResult.reference) || normalizedReference,
+            'success',
+            true,
+            Number.isFinite(Number(cachedResult.amount)) && Number(cachedResult.amount) > 0
+              ? Number(cachedResult.amount)
+              : normalizedAmount
+          );
+        }
+        // Cached abandoned/failed can be stale vs a later success — always confirm live
+        // before callers clear local recovery data.
+      }
+    } catch (cacheError) {
+      if (!isMissingTransactionTruthEndpoint(cacheError)) {
+        console.warn('inspectEscrowPaymentStatus truth read failed:', cacheError);
+      }
+    }
+
+    try {
+      const verification = await coreCloudClient.request<any>(
+        PAYMENT_FUNCTIONS.verifyPaystackTransaction,
+        {
+          method: 'POST',
+          body: {
+            reference: normalizedReference,
+            ...(normalizedAmount != null ? { expectedAmount: normalizedAmount } : {}),
+            ...(normalizedEmail ? { expectedEmail: normalizedEmail } : {}),
+          },
+          requiresAuth: true,
+        }
+      );
+
+      const status = normalizeEscrowInspectStatus(verification?.status);
+      const paid = verification?.paid === true || status === 'success';
+      return formatInspectResult(
+        asNonEmptyString(verification?.reference) || normalizedReference,
+        paid ? 'success' : status,
+        paid,
+        Number.isFinite(Number(verification?.amount)) && Number(verification?.amount) > 0
+          ? Number(verification?.amount)
+          : normalizedAmount
+      );
+    } catch (verifyError: any) {
+      const message = String(verifyError?.message || '');
+      const status = statusFromPaymentErrorMessage(message);
+      return formatInspectResult(
+        normalizedReference,
+        status,
+        false,
+        normalizedAmount,
+        message || undefined
+      );
+    }
+  },
+
   async finalizeMarketEscrowPayment(input: {
     reference: string;
     postId: string;
     quantity: number;
     deliveryAddress: string;
-    buyerPhone: string;
+    buyerPhone?: string | null;
     dealThreadId?: string | null;
     chatId?: string | null;
+    agreedUnitPrice?: number;
+    sellerId?: string | null;
+    itemTitle?: string | null;
   }): Promise<{
     success: boolean;
     orderId: string;
@@ -259,9 +509,16 @@ export const paymentsApi = {
     if (!input.postId) throw new Error('Market post ID is required to finalize order');
     if (input.quantity <= 0) throw new Error('Invalid quantity');
     if (!input.deliveryAddress) throw new Error('Delivery address is required to finalize order');
-    if (!input.buyerPhone) throw new Error('Buyer phone number is required to finalize order');
+    // Phone is optional — never block order creation after Paystack has charged.
 
     const dealThreadId = String(input.dealThreadId || input.chatId || '').trim() || null;
+    const agreedUnitPrice =
+      typeof input.agreedUnitPrice === 'number' && input.agreedUnitPrice > 0
+        ? input.agreedUnitPrice
+        : undefined;
+    const sellerId = String(input.sellerId || '').trim() || null;
+    const itemTitle = String(input.itemTitle || '').trim() || null;
+    const buyerPhone = String(input.buyerPhone || '').trim();
 
     return coreCloudClient.request<{
       success: boolean;
@@ -278,8 +535,11 @@ export const paymentsApi = {
           postId: input.postId,
           quantity: input.quantity,
           deliveryAddress: input.deliveryAddress,
-          buyerPhone: input.buyerPhone,
+          buyerPhone: buyerPhone || 'Not provided',
           ...(dealThreadId ? { dealThreadId, chatId: dealThreadId } : {}),
+          ...(agreedUnitPrice != null ? { agreedUnitPrice } : {}),
+          ...(sellerId ? { sellerId } : {}),
+          ...(itemTitle ? { itemTitle } : {}),
         },
         requiresAuth: true,
       }

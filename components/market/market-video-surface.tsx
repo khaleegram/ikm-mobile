@@ -9,6 +9,8 @@ export interface VideoPlaybackSnapshot {
 
 interface MarketVideoSurfaceProps {
   active: boolean;
+  /** User paused while still on this post — keeps scrub position */
+  paused?: boolean;
   muted?: boolean;
   showControls?: boolean;
   videoUri: string;
@@ -30,6 +32,7 @@ interface MarketVideoSurfaceProps {
 
 export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   active,
+  paused = false,
   muted = false,
   showControls = false,
   videoUri,
@@ -40,6 +43,7 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
 }: MarketVideoSurfaceProps) {
   const mountedRef = useRef(true);
   const firstFrameSentRef = useRef(false);
+  const wasActiveRef = useRef(false);
   const onPlaybackSnapshotRef = useRef(onPlaybackSnapshot);
   onPlaybackSnapshotRef.current = onPlaybackSnapshot;
   const onFirstFrameRef = useRef(onFirstFrame);
@@ -61,7 +65,10 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
 
   useEffect(() => {
     if (!mountedRef.current) return;
+
+    // Left the feed slot — reset so next visit starts from the top
     if (!active) {
+      wasActiveRef.current = false;
       try {
         videoPlayer.pause();
         videoPlayer.currentTime = 0;
@@ -70,11 +77,23 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
       return;
     }
 
+    // Still on this post but user paused — keep position
+    if (paused) {
+      try {
+        videoPlayer.pause();
+      } catch {}
+      return;
+    }
+
     try {
-      videoPlayer.currentTime = 0;
+      // Only seek to start when first becoming active (scroll-in), not on resume from pause
+      if (!wasActiveRef.current) {
+        videoPlayer.currentTime = 0;
+      }
+      wasActiveRef.current = true;
       videoPlayer.play();
     } catch {}
-  }, [active, videoPlayer]);
+  }, [active, paused, videoPlayer]);
 
   useEffect(() => {
     if (!onPlaybackSnapshotRef.current && !onFirstFrameRef.current) return undefined;
@@ -105,7 +124,7 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   }, []);
 
   return (
-    <View style={[styles.container, style]}>
+    <View style={[styles.container, style]} pointerEvents="none">
       <VideoView
         player={videoPlayer}
         style={StyleSheet.absoluteFill}

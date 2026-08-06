@@ -1,3 +1,8 @@
+> **ARCHIVED / HISTORICAL** — This document no longer matches the running codebase.
+> Canonical migration status: `docs/firebase-market-core-exit.md` and `docs/architecture-boundaries.md`.
+> Do not implement from this file.
+
+---
 # Deploy ChatCart API to Cloud Run
 
 Step-by-step guide for the hybrid feed API (`services/chatcart-api`).

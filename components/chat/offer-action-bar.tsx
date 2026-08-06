@@ -10,6 +10,11 @@ type OfferActionBarProps = {
   amount: number;
   currency: string;
   lowball?: boolean;
+  /** True when the current user can accept / counter / decline this pending offer. */
+  canRespond: boolean;
+  /** Whose offer this is — drives copy for buyer vs seller proposals. */
+  offerFrom: 'buyer' | 'seller';
+  /** True when the current user is the buyer in this deal. */
   isBuyer: boolean;
   status: 'pending' | 'accepted' | 'declined' | 'countered';
   onAccept: () => Promise<void>;
@@ -19,10 +24,11 @@ type OfferActionBarProps = {
 };
 
 export function OfferActionBar({
-  offerId,
   amount,
   currency,
   lowball,
+  canRespond,
+  offerFrom,
   isBuyer,
   status,
   onAccept,
@@ -63,18 +69,30 @@ export function OfferActionBar({
 
   if (status !== 'pending') return null;
 
+  const pendingLabel =
+    offerFrom === 'buyer'
+      ? canRespond
+        ? `Buying offer — ${formatted}`
+        : `Your buying offer sent — ${formatted}`
+      : canRespond
+        ? `Seller offer — ${formatted}`
+        : `Your offer sent — ${formatted}`;
+
+  const waitingHint =
+    offerFrom === 'buyer'
+      ? 'Waiting for seller response'
+      : 'Waiting for buyer response';
+
   return (
     <View style={[styles.wrap, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
-      <Text style={[styles.label, { color: colors.text }]}>
-        {isBuyer ? 'Offer from seller' : 'Buyer can respond'} — {formatted}
-      </Text>
+      <Text style={[styles.label, { color: colors.text }]}>{pendingLabel}</Text>
       {lowball ? (
         <Text style={[styles.hint, { color: colors.warning || '#B8860B' }]}>
           Below 50% of list price — consider countering
         </Text>
       ) : null}
 
-      {showCounter ? (
+      {canRespond && showCounter ? (
         <View style={styles.counterRow}>
           <TextInput
             value={counterAmount}
@@ -109,7 +127,7 @@ export function OfferActionBar({
         </View>
       ) : null}
 
-      {isBuyer ? (
+      {canRespond ? (
         <View style={styles.actions}>
           <AnimatedPressable
             style={[styles.chip, { backgroundColor: colors.primary }]}
@@ -134,7 +152,7 @@ export function OfferActionBar({
           </AnimatedPressable>
         </View>
       ) : (
-        <Text style={[styles.hint, { color: colors.textSecondary }]}>Waiting for buyer response</Text>
+        <Text style={[styles.hint, { color: colors.textSecondary }]}>{waitingHint}</Text>
       )}
     </View>
   );

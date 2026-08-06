@@ -13,17 +13,10 @@ import { router } from 'expo-router';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
+import { Alert } from '@/components/app-alert';
 
 type AuthSignupScreenProps = {
   variant: AppVariant;
@@ -57,9 +50,10 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
 
   const handleSignup = async () => {
     const normalizedDisplayName = toNameCase(displayName);
+    const phoneEntered = phone.trim().length > 0;
 
-    if (!displayName || !email || !phone || !password || !confirmPassword) {
-      Alert.alert('Error', 'Please fill in all fields');
+    if (!displayName || !email || !password || !confirmPassword) {
+      Alert.alert('Error', 'Please fill in name, email, and password');
       return;
     }
 
@@ -68,8 +62,8 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
       return;
     }
 
-    if (!isValidPhone) {
-      Alert.alert('Error', 'Enter a valid phone number');
+    if (phoneEntered && !isValidPhone) {
+      Alert.alert('Error', 'Enter a valid phone number, or leave it blank');
       return;
     }
 
@@ -98,8 +92,9 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
         id: user.uid,
         email: email.trim(),
         displayName: normalizedDisplayName,
-        phone: normalizedPhone,
-        marketBuyerPhone: normalizedPhone,
+        ...(isValidPhone
+          ? { phone: normalizedPhone, marketBuyerPhone: normalizedPhone }
+          : {}),
         role,
         isAdmin: false,
         createdAt: serverTimestamp(),
@@ -107,11 +102,34 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
       });
 
       await user.getIdToken(true);
+
+      // Neon is the market identity source of truth — block signup completion until
+      // the users row exists (ensureUser runs inside PATCH /users/me).
+      const { usersApi } = await import('@/lib/api/users-api');
+      await usersApi.updateMe({
+        displayName: normalizedDisplayName,
+        ...(isValidPhone ? { marketBuyerPhone: normalizedPhone } : {}),
+      });
+
       haptics.success();
       router.replace('/' as any);
     } catch (error: any) {
       haptics.error();
-      Alert.alert('Signup Failed', error.message || 'An error occurred');
+      const msg = String(error?.message || 'An error occurred');
+      const isProfileSync =
+        msg.toLowerCase().includes('network') ||
+        msg.toLowerCase().includes('fetch') ||
+        msg.toLowerCase().includes('timeout') ||
+        msg.toLowerCase().includes('500') ||
+        msg.toLowerCase().includes('503') ||
+        error?.statusCode ||
+        error?.status;
+      Alert.alert(
+        'Signup Failed',
+        isProfileSync
+          ? `Your account was created, but we could not sync your profile. Please check your connection and try signing in again.\n\n${msg}`
+          : msg
+      );
     } finally {
       setLoading(false);
     }
@@ -187,7 +205,9 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
             </View>
 
             <View style={styles.inputContainer}>
-              <Text style={[styles.inputLabel, { color: colors.text }]}>Phone Number</Text>
+              <Text style={[styles.inputLabel, { color: colors.text }]}>
+                Phone Number <Text style={{ color: colors.textSecondary, fontWeight: '500' }}>(optional)</Text>
+              </Text>
               <View
                 style={[
                   styles.inputWrapper,
@@ -327,9 +347,8 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       flexGrow: 1,
     },
     content: {
-      flex: 1,
-      justifyContent: 'center',
       padding: 24,
+      paddingBottom: 48,
     },
     header: {
       alignItems: 'center',

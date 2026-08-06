@@ -1,47 +1,32 @@
 import React from 'react';
-import { FlatList, FlatListProps, Platform } from 'react-native';
+import type { FlatListProps } from 'react-native';
 
-type KeyboardAwareModule = {
-  KeyboardAwareFlatList?: React.ComponentType<any>;
-};
+import { FlashListCompat, type FlashListCompatProps } from '@/components/layout/flash-list-compat';
 
-let keyboardAwareModule: KeyboardAwareModule | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  keyboardAwareModule = require('react-native-keyboard-aware-scroll-view');
-} catch {
-  keyboardAwareModule = null;
-}
-
-const KeyboardAwareFlatList = keyboardAwareModule?.KeyboardAwareFlatList;
-const HAS_KEYBOARD_AWARE = Boolean(KeyboardAwareFlatList);
-
-type KeyboardFlatListProps<ItemT> = FlatListProps<ItemT> & {
+type KeyboardFlatListProps<ItemT> = FlashListCompatProps<ItemT> & {
+  /** @deprecated Unused — kept for call-site compatibility with KeyboardScreen. */
   extraScrollHeight?: number;
 };
 
+/**
+ * Virtualized list defaults for screens with a search field / composer.
+ * Uses FlashList when available (falls back to FlatList via FlashListCompat).
+ * Keyboard avoidance for form screens should use `KeyboardScreen` /
+ * `KeyboardAwareScrollView` from `react-native-keyboard-controller`.
+ */
 export default function KeyboardFlatList<ItemT>({
-  extraScrollHeight = 24,
-  keyboardShouldPersistTaps = 'always',
-  keyboardDismissMode,
+  keyboardShouldPersistTaps = 'handled',
+  keyboardDismissMode = 'on-drag',
+  estimatedItemSize = 120,
+  extraScrollHeight: _extraScrollHeight,
   ...rest
 }: KeyboardFlatListProps<ItemT>) {
-  const ListComponent = (HAS_KEYBOARD_AWARE ? KeyboardAwareFlatList : FlatList) as React.ComponentType<any>;
-
-  const keyboardAwareProps = HAS_KEYBOARD_AWARE
-    ? {
-        enableOnAndroid: true,
-        extraScrollHeight,
-        keyboardOpeningTime: Platform.OS === 'android' ? 0 : 250,
-      }
-    : null;
-
   return (
-    <ListComponent
+    <FlashListCompat
       keyboardShouldPersistTaps={keyboardShouldPersistTaps}
-      keyboardDismissMode={keyboardDismissMode ?? 'none'}
-      {...keyboardAwareProps}
-      {...rest}
+      keyboardDismissMode={keyboardDismissMode}
+      estimatedItemSize={estimatedItemSize}
+      {...(rest as FlatListProps<ItemT>)}
     />
   );
 }

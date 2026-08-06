@@ -151,3 +151,10 @@ export const deleteDiscountCode = onRequest(async (request, response) => {
       return sendResponse(response, { success: true });
     });
 });
+
+/** Lightweight CF reachability probe (moved out of retired market.ts). */
+export const helloWorld = onRequest(async (request, response) => {
+  return corsHandler(request, response, async () => {
+    sendResponse(response, { message: 'Hello from IKM Cloud Functions' });
+  });
+});

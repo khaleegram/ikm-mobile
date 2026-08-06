@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VerifiedBadge } from '@/components/ui/verified-badge';
@@ -7,9 +7,10 @@ import { useTheme } from '@/lib/theme/theme-context';
 import { MarketComment } from '@/types';
 import { usePublicUserProfileOnce } from '@/lib/firebase/firestore/users';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { marketCommentsApi } from '@/lib/api/market-comments';
+import { deleteMarketCommentOptimistic } from '@/lib/hooks/use-market-comments';
 import { formatRelativeTime } from '@/lib/utils/date-format';
 import { haptics } from '@/lib/utils/haptics';
+import { Alert } from '@/components/app-alert';
 
 interface CommentItemProps {
   comment: MarketComment;
@@ -39,7 +40,7 @@ export const CommentItem = React.memo(function CommentItem({
   const isOwner = user?.uid === comment.userId;
 
   const handleDelete = () => {
-    if (pending || !comment.id || comment.id.startsWith('temp-')) return;
+    if (pending || !comment.id || String(comment.id).startsWith('temp_')) return;
     Alert.alert('Delete Comment', 'Remove this comment?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -48,7 +49,7 @@ export const CommentItem = React.memo(function CommentItem({
         onPress: async () => {
           try {
             haptics.medium();
-            await marketCommentsApi.delete(comment.id!);
+            await deleteMarketCommentOptimistic(String(comment.postId || ''), comment.id!);
             haptics.success();
             onDeleted?.();
           } catch (error: any) {

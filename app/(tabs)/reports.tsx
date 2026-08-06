@@ -1,5 +1,6 @@
 // Reports screen
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useState, useMemo } from 'react';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -10,8 +11,10 @@ import { useSellerProducts } from '@/lib/firebase/firestore/products';
 import { useSellerCustomers } from '@/lib/firebase/firestore/customers';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
+import { Alert } from '@/components/app-alert';
 
 export default function ReportsScreen() {
+  const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { user } = useUser();
   const { orders } = useSellerOrders(user?.uid || null);
@@ -212,7 +215,7 @@ export default function ReportsScreen() {
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <View style={[styles.header, { backgroundColor: colors.card }]}>
+      <View style={[styles.header, { backgroundColor: colors.card, paddingTop: insets.top + 12 }]}>
         <Text style={[styles.title, { color: colors.text }]}>Reports</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Generate and export business reports
@@ -270,7 +273,7 @@ const createStyles = (colors: ReturnType<typeof import('@/lib/theme/colors').get
       backgroundColor: colors.background,
     },
     header: {
-      paddingTop: 60,
+      /* safe-area applied at header usage */
       paddingBottom: 24,
       paddingHorizontal: 20,
       ...premiumShadow,

@@ -23,9 +23,33 @@ import {
   deleteMarketPost,
   getPostById,
   getPostsBatch,
+  listPostsBySound,
   listTrendingHashtags,
   searchPosts,
 } from './posts.mjs';
+import {
+  getSoundById,
+  listSounds,
+  listSavedSounds,
+  listSavedSoundIds,
+  isSoundSaved,
+  saveSound,
+  unsaveSound,
+} from './sounds.mjs';
+import {
+  listOrdersForUser,
+  getOrderById,
+  assertOrderAccess,
+  upsertOrderFromPayload,
+  appendTimelineEvent,
+  bumpPostPurchaseCount,
+  commitOrderFromPayload,
+  listPendingOrderOutbox,
+  ackOrderOutbox,
+  failOrderOutbox,
+  getOrderByPaystackReference,
+  getOrderByDealThreadId,
+} from './orders.mjs';
 import {
   followUser,
   unfollowUser,
@@ -42,7 +66,7 @@ import {
   deleteComment,
   listFollowingIds,
 } from './social-graph.mjs';
-import { getUser, updateUser, registerFcmToken } from './users.mjs';
+import { getUser, getUsersBatch, updateUser, registerFcmToken, unregisterFcmToken } from './users.mjs';
 import {
   getInbox,
   getOrCreateThread,
@@ -418,12 +442,18 @@ app.post('/v1/media/process-video', async (request, reply) => {
 
 app.get('/v1/posts', async (request, reply) => {
   try {
-    await requireAuth(request.headers.authorization);
+    // Public catalog: browse a store's listings or posts using a sound.
+    // Auth is optional — when present we still only return active posts.
     const posterId = String(request.query?.posterId || '').trim();
-    if (!posterId) {
-      return reply.code(400).send({ success: false, error: 'posterId is required' });
+    const soundId = String(request.query?.soundId || '').trim();
+    if (!posterId && !soundId) {
+      return reply.code(400).send({ success: false, error: 'posterId or soundId is required' });
     }
     const limit = Math.min(60, Math.max(1, Number(request.query?.limit || 40)));
+    if (soundId) {
+      const posts = await listPostsBySound(soundId, limit);
+      return reply.send({ success: true, posts });
+    }
     const { pool } = await import('./db.mjs');
     if (!pool) {
       return reply.code(503).send({ success: false, error: 'Database is not configured' });
@@ -442,10 +472,10 @@ app.get('/v1/posts', async (request, reply) => {
 
 app.get('/v1/posts/batch', async (request, reply) => {
   try {
-    await requireAuth(request.headers.authorization);
+    // Public hydrate for active posts (feed / store grids).
     const raw = String(request.query?.ids || '');
     const ids = raw.split(',').map((id) => id.trim()).filter(Boolean).slice(0, 50);
-    const posts = await getPostsBatch(ids);
+    const posts = (await getPostsBatch(ids)).filter((p) => String(p?.status || '') === 'active');
     return reply.send({ success: true, posts });
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
@@ -477,9 +507,20 @@ app.get('/v1/trending-hashtags', async (request, reply) => {
 
 app.get('/v1/posts/:postId', async (request, reply) => {
   try {
-    await requireAuth(request.headers.authorization);
+    // Active posts are publicly readable; hidden/deleted stay private.
     const post = await getPostById(request.params.postId);
     if (!post) return reply.code(404).send({ success: false, error: 'Post not found' });
+    if (String(post.status || '') !== 'active') {
+      // Owner can still fetch non-active via authenticated path later if needed
+      try {
+        const auth = await requireAuth(request.headers.authorization);
+        if (auth.uid !== String(post.posterId || '')) {
+          return reply.code(404).send({ success: false, error: 'Post not found' });
+        }
+      } catch {
+        return reply.code(404).send({ success: false, error: 'Post not found' });
+      }
+    }
     return reply.send({ success: true, post });
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
@@ -510,6 +551,79 @@ app.delete('/v1/posts/:postId', async (request, reply) => {
   try {
     const auth = await requireAuth(request.headers.authorization);
     const result = await deleteMarketPost(auth.uid, request.params.postId);
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/sounds', async (request, reply) => {
+  try {
+    const sounds = await listSounds({
+      limit: Number(request.query?.limit || 60),
+      q: String(request.query?.q || ''),
+    });
+    return reply.send({ success: true, sounds });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/sounds/saved', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const sounds = await listSavedSounds(auth.uid, Number(request.query?.limit || 150));
+    return reply.send({ success: true, sounds });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/sounds/saved/ids', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const ids = await listSavedSoundIds(auth.uid, Number(request.query?.limit || 150));
+    return reply.send({ success: true, ids });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/sounds/:soundId', async (request, reply) => {
+  try {
+    const sound = await getSoundById(request.params.soundId);
+    if (!sound) {
+      return reply.code(404).send({ success: false, error: 'Sound not found' });
+    }
+    let saved = false;
+    if (request.headers.authorization) {
+      try {
+        const auth = await requireAuth(request.headers.authorization);
+        saved = await isSoundSaved(auth.uid, sound.id);
+      } catch {
+        saved = false;
+      }
+    }
+    return reply.send({ success: true, sound, saved });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/sounds/:soundId/save', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await saveSound(auth.uid, request.params.soundId);
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.delete('/v1/sounds/:soundId/save', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await unsaveSound(auth.uid, request.params.soundId);
     return reply.send(result);
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
@@ -685,6 +799,23 @@ app.patch('/v1/users/me', async (request, reply) => {
   }
 });
 
+// Must be registered before /v1/users/:userId so "batch" is not captured as a userId.
+app.get('/v1/users/batch', async (request, reply) => {
+  try {
+    await requireAuth(request.headers.authorization);
+    const raw = String(request.query?.ids || '').trim();
+    const ids = raw
+      ? raw.split(',').map((id) => id.trim()).filter(Boolean)
+      : Array.isArray(request.query?.id)
+        ? request.query.id.map((id) => String(id || '').trim()).filter(Boolean)
+        : [];
+    const users = await getUsersBatch(ids);
+    return reply.send({ success: true, users });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
 app.get('/v1/users/:userId', async (request, reply) => {
   try {
     await requireAuth(request.headers.authorization);
@@ -700,6 +831,198 @@ app.post('/v1/users/me/fcm-token', async (request, reply) => {
     const auth = await requireAuth(request.headers.authorization);
     const result = await registerFcmToken(auth.uid, request.body?.token);
     return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.delete('/v1/users/me/fcm-token', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const token =
+      request.body?.token ||
+      request.query?.token ||
+      null;
+    const result = await unregisterFcmToken(auth.uid, token);
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// Prefer POST unregister — fetch DELETE often cannot send a JSON body on React Native.
+app.post('/v1/users/me/fcm-token/unregister', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await unregisterFcmToken(auth.uid, request.body?.token);
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/orders', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const role = String(request.query?.role || 'all').trim().toLowerCase();
+    const limit = Math.min(100, Math.max(1, Number(request.query?.limit || 40)));
+    const cursor = request.query?.cursor || null;
+    const result = await listOrdersForUser(auth.uid, { role, limit, cursor });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/orders/by-thread/:threadId', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const order = await getOrderByDealThreadId(request.params.threadId, { includeTimeline: true });
+    if (!order) return reply.code(404).send({ success: false, error: 'Order not found' });
+    await assertOrderAccess(order, auth.uid);
+    return reply.send({ success: true, order, timeline: order.timeline || [] });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/orders/:orderId', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const order = await getOrderById(request.params.orderId, { includeTimeline: true });
+    if (!order) return reply.code(404).send({ success: false, error: 'Order not found' });
+    await assertOrderAccess(order, auth.uid);
+    return reply.send({ success: true, order, timeline: order.timeline || [] });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// Internal (service-to-service) user read — lets Cloud Functions read buyer
+// profile fields (phone, location, display name) from Neon at order-creation
+// time instead of depending on a Firestore mirror of the users doc.
+app.get('/v1/users/internal/:userId', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const user = await getUser(asString(request.params.userId));
+    return reply.send({ success: true, user });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/orders/internal/upsert', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const order = await upsertOrderFromPayload(request.body || {});
+    if (request.body?.bumpPurchaseCount && (request.body?.postId || request.body?.post_id)) {
+      await bumpPostPurchaseCount(
+        request.body.postId || request.body.post_id,
+        request.body.customerId || request.body.customer_id
+      ).catch(() => {});
+    }
+    return reply.send({ success: true, order });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/** Neon write primary: order + timeline + firestore outbox in one transaction. */
+app.post('/v1/orders/internal/commit', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const result = await commitOrderFromPayload(request.body || {});
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/orders/internal/by-reference/:reference', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const order = await getOrderByPaystackReference(request.params.reference);
+    return reply.send({ success: true, order });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/orders/internal/outbox/pending', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const items = await listPendingOrderOutbox({ limit: request.query?.limit });
+    return reply.send({ success: true, items });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/orders/internal/outbox/ack', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const ids = request.body?.ids || request.body?.id;
+    const result = await ackOrderOutbox(ids);
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/orders/internal/outbox/fail', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const ids = request.body?.ids || request.body?.id;
+    const result = await failOrderOutbox(ids, request.body?.error || request.body?.message);
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/orders/internal/:orderId', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const order = await getOrderById(request.params.orderId, { includeTimeline: true });
+    if (!order) return reply.code(404).send({ success: false, error: 'Order not found' });
+    return reply.send({ success: true, order });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/orders/internal/timeline', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const result = await appendTimelineEvent(request.body || {});
+    return reply.send({ success: true, ...result });
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
   }

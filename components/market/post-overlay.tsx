@@ -1,12 +1,11 @@
 import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'expo-image';
@@ -24,16 +23,15 @@ import { marketPostsApi } from '@/lib/api/market-posts';
 import { marketSocialApi } from '@/lib/api/market-social';
 import { useFeedSocial } from '@/lib/context/feed-social-context';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { toggleMarketSave, useIsFollowing, useIsSaved } from '@/lib/firebase/firestore/market-social';
+import { toggleBlock, toggleFollow, toggleMarketSave, useIsFollowing, useIsSaved } from '@/lib/hooks/use-social';
 import { usePublicUserProfileOnce } from '@/lib/firebase/firestore/users';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { formatCompactCount } from '@/lib/utils/format-count';
 import { haptics } from '@/lib/utils/haptics';
-import { ChatBottomSheet } from '@/components/chat/chat-bottom-sheet';
-import { isPostgresChatBackend } from '@/lib/config/chat-backend';
 import { startPostQuoteChat } from '@/lib/utils/market-ask-price-chat';
 import { shareMarketPost } from '@/lib/utils/market-post-share';
 import { MarketPost } from '@/types';
+import { Alert } from '@/components/app-alert';
 
 const lightBrown = '#A67C52';
 const LIKE_RED = '#FF3B55';
@@ -53,7 +51,7 @@ function LucideIcon({
   color = '#FFFFFF',
   fill = 'none',
 }: {
-  name: 'Heart' | 'MessageCircle' | 'Bookmark' | 'Send' | 'Ellipsis';
+  name: 'Heart' | 'MessageCircle' | 'Bookmark' | 'Send' | 'Ellipsis' | 'Volume2' | 'VolumeX';
   size?: number;
   color?: string;
   fill?: string;
@@ -93,6 +91,24 @@ function LucideIcon({
         <Circle cx={12} cy={12} r={1} fill={color} />
         <Circle cx={19} cy={12} r={1} fill={color} />
         <Circle cx={5} cy={12} r={1} fill={color} />
+      </Svg>
+    );
+  }
+  if (name === 'Volume2') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Path d="M11 5 6 9H2v6h4l5 4V5z" />
+        <Path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+        <Path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+      </Svg>
+    );
+  }
+  if (name === 'VolumeX') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <Path d="M11 5 6 9H2v6h4l5 4V5z" />
+        <Path d="m22 9-6 6" />
+        <Path d="m16 9 6 6" />
       </Svg>
     );
   }
@@ -189,6 +205,8 @@ interface PostOverlayProps {
   onComment?: () => void;
   onShare?: () => void;
   onFavorite?: () => void;
+  muted?: boolean;
+  onMuteToggle?: () => void;
 }
 
 export const PostOverlay = React.memo(function PostOverlay({
@@ -198,21 +216,26 @@ export const PostOverlay = React.memo(function PostOverlay({
   onLike,
   onComment,
   onFavorite,
+  muted = false,
+  onMuteToggle,
 }: PostOverlayProps) {
   const { user } = useUser();
   const { enabled: feedSocialEnabled, followingIdSet, savedIdSet } = useFeedSocial();
   const insets = useSafeAreaInsets();
-  const { user: poster } = usePublicUserProfileOnce(post.posterId);
+  // Prefer denormalized identity from the post payload (API JOIN). Profile Query is only
+  // a fill-in when the feed row is missing store name/avatar.
+  const needsPosterFetch =
+    !String(post.posterStoreName || '').trim() || !String(post.posterAvatarUrl || '').trim();
+  const { user: poster } = usePublicUserProfileOnce(
+    needsPosterFetch ? post.posterId : null
+  );
   const isOwnPost = user?.uid === post.posterId;
   const marketLoginRoute = getLoginRouteForVariant('market');
   const [manageVisible, setManageVisible] = useState(false);
   const [actionsVisible, setActionsVisible] = useState(false);
   const [commentsVisible, setCommentsVisible] = useState(false);
-  const [chatSheet, setChatSheet] = useState<{ threadId: string; peerId: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
-  const [optFollowing, setOptFollowing] = useState<boolean | null>(null);
-  const [optSaved, setOptSaved] = useState<boolean | null>(null);
   const posterId = String(post.posterId || '').trim();
   const postId = String(post.id || '').trim();
   const likePop = useRef(new Animated.Value(1)).current;
@@ -233,15 +256,12 @@ export const PostOverlay = React.memo(function PostOverlay({
       : false
     : hookFollowing;
   const isSaved = feedSocialEnabled ? (postId ? savedIdSet.has(postId) : false) : hookSaved;
-  const displayFollowing = optFollowing ?? isFollowing;
-  const displaySaved = optSaved ?? isSaved;
-
-  useEffect(() => {
-    if (optFollowing !== null && optFollowing === isFollowing) setOptFollowing(null);
-  }, [isFollowing, optFollowing]);
-  useEffect(() => {
-    if (optSaved !== null && optSaved === isSaved) setOptSaved(null);
-  }, [isSaved, optSaved]);
+  // toggleFollow/toggleMarketSave optimistically update the shared Query cache that both
+  // `hookFollowing`/`hookSaved` and the feed-level `followingIdSet`/`savedIdSet` read from,
+  // so isFollowing/isSaved above already reflect the pending state instantly. No local
+  // optimistic override needed — and every other screen sharing that cache updates too.
+  const displayFollowing = isFollowing;
+  const displaySaved = isSaved;
 
   /* Like pop spring when liked flips on */
   useEffect(() => {
@@ -256,16 +276,31 @@ export const PostOverlay = React.memo(function PostOverlay({
   }, [isLiked, likePop]);
 
   const bottomClearance = TAB_BAR_CLEARANCE + Math.max(insets.bottom, 8);
-  const posterName = useMemo(
-    () => String(poster?.displayName || poster?.storeName || '').trim() || 'Seller',
-    [poster?.displayName, poster?.storeName]
-  );
+  const posterName = useMemo(() => {
+    const fromPost = String(post.posterStoreName || '').trim();
+    if (fromPost) return fromPost;
+    const store = String(poster?.storeName || '').trim();
+    if (store) return store;
+    const display = String(poster?.displayName || '').trim();
+    if (display && !display.includes('@') && display !== 'User' && display !== 'Seller') {
+      return display;
+    }
+    return display || 'Seller';
+  }, [post.posterStoreName, poster?.displayName, poster?.storeName]);
   const avatarUri = useMemo(
-    () => String(poster?.storeLogoUrl || (poster as any)?.photoURL || '').trim() || null,
-    [poster]
+    () =>
+      String(
+        post.posterAvatarUrl ||
+          poster?.storeLogoUrl ||
+          (poster as any)?.avatarUrl ||
+          (poster as any)?.photoURL ||
+          ''
+      ).trim() || null,
+    [post.posterAvatarUrl, poster]
   );
   const hasPrice = typeof post.price === 'number' && post.price > 0;
   const locationText = [post.location?.city, post.location?.state].filter(Boolean).join(', ');
+  const priceLabel = hasPrice ? `₦${Number(post.price).toLocaleString()}` : null;
 
   const promptAuth = useCallback(
     (message: string) => {
@@ -303,15 +338,13 @@ export const PostOverlay = React.memo(function PostOverlay({
       return;
     }
     if (saveBusy || !postId) return;
-    const next = !displaySaved;
     setSaveBusy(true);
     haptics.light();
     onFavorite?.();
     toggleMarketSave(user.uid, postId)
-      .then(() => setOptSaved(next))
       .catch(() => showToast('Failed to save', 'error'))
       .finally(() => setSaveBusy(false));
-  }, [user, saveBusy, postId, displaySaved, onFavorite, promptAuth]);
+  }, [user, saveBusy, postId, onFavorite, promptAuth]);
 
   /* Follow — instant + fire-and-forget */
   const handleFollow = useCallback(() => {
@@ -324,31 +357,27 @@ export const PostOverlay = React.memo(function PostOverlay({
       return;
     }
     const next = !displayFollowing;
-    setOptFollowing(next);
     haptics.light();
-    marketSocialApi
-      .setFollowState(post.posterId, next)
+    toggleFollow(user.uid, post.posterId, isFollowing)
       .then(() => showToast(next ? 'Following!' : 'Unfollowed.', 'success'))
       .catch((e: any) => {
-        setOptFollowing(isFollowing);
         showToast(e?.message || 'Unable to update follow.', 'error');
       });
   }, [post.posterId, user, displayFollowing, isFollowing, promptAuth]);
 
   const openChat = useCallback(
     (mode: 'ask-price' | 'dm') => {
+      // Always open the real inbox deal room (same screen as Messages) — not a feed-only sheet.
       void startPostQuoteChat({
         post,
         buyerId: user?.uid || '',
         sellerName: posterName,
+        sellerAvatar: avatarUri,
         mode,
         marketLoginRoute,
-        onOpenChat: isPostgresChatBackend()
-          ? ({ threadId, peerId }) => setChatSheet({ threadId, peerId })
-          : undefined,
       });
     },
-    [post, user?.uid, posterName, marketLoginRoute]
+    [post, user?.uid, posterName, avatarUri, marketLoginRoute]
   );
 
   const handleBuy = useCallback(() => {
@@ -450,9 +479,10 @@ export const PostOverlay = React.memo(function PostOverlay({
               text: 'Block',
               style: 'destructive',
               onPress: async () => {
+                if (!user?.uid || !post.posterId) return;
                 try {
                   haptics.medium();
-                  await marketSocialApi.blockUser(post.posterId);
+                  await toggleBlock(user.uid, post.posterId, false);
                   showToast('Blocked.', 'success');
                 } catch (e: any) {
                   showToast(e?.message || 'Failed.', 'error');
@@ -607,9 +637,20 @@ export const PostOverlay = React.memo(function PostOverlay({
             <LucideIcon name="Ellipsis" color="#FFFFFF" />
           </View>
         </RailAction>
+
+        {onMuteToggle ? (
+          <RailAction
+            onPress={onMuteToggle}
+            testID="feed-sound-btn"
+            showSpacer>
+            <View style={styles.iconShadow}>
+              <LucideIcon name={muted ? 'VolumeX' : 'Volume2'} color="#FFFFFF" />
+            </View>
+          </RailAction>
+        ) : null}
       </View>
 
-      <View style={[styles.content, { bottom: bottomClearance + 4 }]}>
+      <View style={[styles.content, { bottom: bottomClearance + 4 }]} pointerEvents="box-none">
         <View style={styles.handleRow}>
           <TouchableOpacity
             style={styles.handleTap}
@@ -635,9 +676,66 @@ export const PostOverlay = React.memo(function PostOverlay({
             </TouchableOpacity>
           )}
         </View>
-        {post.description ? (
-          <Text style={styles.description} numberOfLines={3}>
-            {post.description}
+
+        {/* Product pin under seller name */}
+        {(hasPrice || !isOwnPost) && (
+          <View style={styles.productPin} pointerEvents="box-none">
+            {hasPrice ? (
+              <View style={styles.productPinCard}>
+                <TouchableOpacity
+                  style={styles.productPinMain}
+                  onPress={isOwnPost ? undefined : handleBuy}
+                  activeOpacity={isOwnPost ? 1 : 0.85}
+                  disabled={isOwnPost}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Buy for ${priceLabel}`}>
+                  <View style={styles.productPinIcon}>
+                    <IconSymbol name="bag.fill" size={13} color="#1A1A1A" />
+                  </View>
+                  <Text style={styles.productPinPrice} numberOfLines={1}>
+                    {priceLabel}
+                  </Text>
+                  {!isOwnPost ? (
+                    <View style={styles.productPinBuy}>
+                      <Text style={styles.productPinBuyText}>Buy</Text>
+                    </View>
+                  ) : null}
+                </TouchableOpacity>
+                {!isOwnPost ? (
+                  <TouchableOpacity
+                    style={styles.productPinMsg}
+                    onPress={() => void openChat('dm')}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                    accessibilityLabel="Message seller to negotiate">
+                    <IconSymbol name="message.fill" size={15} color="#1A1A1A" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.productPinCard}
+                onPress={() => void openChat('ask-price')}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Ask for price">
+                <View style={styles.productPinMain}>
+                  <View style={styles.productPinIcon}>
+                    <IconSymbol name="tag.fill" size={13} color="#1A1A1A" />
+                  </View>
+                  <Text style={styles.productPinPrice}>Ask price</Text>
+                  <View style={styles.productPinBuy}>
+                    <Text style={styles.productPinBuyText}>Ask</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {post.title?.trim() ? (
+          <Text style={styles.productTitle} numberOfLines={2}>
+            {post.title.trim()}
           </Text>
         ) : null}
         {locationText ? (
@@ -646,39 +744,6 @@ export const PostOverlay = React.memo(function PostOverlay({
             <Text style={styles.locationText}>{locationText}</Text>
           </View>
         ) : null}
-        <View style={styles.ctaRow}>
-          {hasPrice ? (
-            <>
-              <View style={styles.pricePill}>
-                <Text style={styles.price}>NGN {Number(post.price).toLocaleString()}</Text>
-              </View>
-              {!isOwnPost && (
-                <>
-                  {post.isNegotiable ? (
-                    <TouchableOpacity
-                      style={[styles.ctaButton, styles.ctaButtonGhost]}
-                      onPress={() => void openChat('dm')}
-                      activeOpacity={0.75}>
-                      <IconSymbol name="message.fill" size={13} color="#FFFFFF" />
-                      <Text style={styles.ctaButtonText}>DM</Text>
-                    </TouchableOpacity>
-                  ) : null}
-                  <TouchableOpacity style={styles.ctaButton} onPress={handleBuy} activeOpacity={0.75}>
-                    <IconSymbol name="bag.fill" size={13} color="#FFFFFF" />
-                    <Text style={styles.ctaButtonText}>Buy</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-            </>
-          ) : !isOwnPost ? (
-            <TouchableOpacity
-              style={[styles.ctaButton, styles.ctaButtonFull]}
-              onPress={() => void openChat('ask-price')}
-              activeOpacity={0.75}>
-              <Text style={styles.ctaButtonText}>Ask for Price</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
       </View>
 
       <CommentsSheet
@@ -686,12 +751,6 @@ export const PostOverlay = React.memo(function PostOverlay({
         visible={commentsVisible}
         onClose={() => setCommentsVisible(false)}
         totalComments={post.comments ?? 0}
-      />
-      <ChatBottomSheet
-        visible={Boolean(chatSheet)}
-        threadId={chatSheet?.threadId || null}
-        peerId={chatSheet?.peerId || null}
-        onClose={() => setChatSheet(null)}
       />
       {actionsVisible && (
         <PostActionsSheet
@@ -719,8 +778,10 @@ export const PostOverlay = React.memo(function PostOverlay({
   prev.isLiked === next.isLiked &&
   prev.post.comments === next.post.comments &&
   prev.post.posterId === next.post.posterId &&
-  prev.post.description === next.post.description &&
+  prev.post.title === next.post.title &&
   prev.post.price === next.post.price &&
+  prev.muted === next.muted &&
+  prev.onMuteToggle === next.onMuteToggle &&
   prev.onLike === next.onLike &&
   prev.onComment === next.onComment &&
   prev.onShare === next.onShare &&
@@ -820,14 +881,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.15)',
   },
   inlineFollowText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
-  description: {
-    color: 'rgba(255,255,255,0.92)',
-    fontSize: 14,
-    fontWeight: '500',
+  productTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
     lineHeight: 20,
-    textShadowColor: 'rgba(0,0,0,0.4)',
+    textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+    textShadowRadius: 3,
   },
   locationRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   locationText: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '600' },
@@ -845,39 +906,66 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   soundPillText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700', flexShrink: 1 },
-  ctaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' },
-  price: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '900',
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+  productPin: {
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    marginTop: 2,
+    marginBottom: 2,
   },
-  pricePill: {
-    backgroundColor: 'rgba(0,0,0,0.42)',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
-  },
-  ctaButton: {
-    minHeight: 42,
-    borderRadius: 21,
-    paddingHorizontal: 18,
-    backgroundColor: '#A67C52',
+  productPinCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 6,
-    shadowColor: '#A67C52',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 4,
+    backgroundColor: '#F7F3EE',
+    borderRadius: 16,
+    paddingLeft: 6,
+    paddingRight: 6,
+    paddingVertical: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 8,
   },
-  ctaButtonGhost: { backgroundColor: 'rgba(166,124,82,0.75)' },
-  ctaButtonFull: { paddingHorizontal: 22 },
-  ctaButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  productPinMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+    minHeight: 36,
+  },
+  productPinIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(166,124,82,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  productPinPrice: {
+    color: '#1A1A1A',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+    flexShrink: 1,
+  },
+  productPinBuy: {
+    backgroundColor: lightBrown,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  productPinBuyText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  productPinMsg: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

@@ -94,8 +94,15 @@ export default function MarketTabLayout() {
           const nested = getFocusedRouteNameFromRoute(route) ?? 'index';
           const hideTabBar = nested !== 'index';
           return {
+            // height: 0 prevents a residual bottom gap when the custom bar returns null
             tabBarStyle: hideTabBar
-              ? { display: 'none' as const }
+              ? {
+                  display: 'none' as const,
+                  height: 0,
+                  overflow: 'hidden' as const,
+                  opacity: 0,
+                  position: 'absolute' as const,
+                }
               : {
                   position: 'absolute' as const,
                   backgroundColor: 'transparent',

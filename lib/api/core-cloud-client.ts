@@ -9,6 +9,26 @@ export interface CloudFunctionError {
 }
 
 const CLOUD_FUNCTIONS_DEBUG = false;
+// A hung fetch (dead wifi, dropped connection) previously left screens spinning forever with
+// no error shown. Cap every attempt so the UI can surface a retryable error instead.
+const REQUEST_TIMEOUT_MS = 15000;
+const TOKEN_TIMEOUT_MS = 10000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
 
 function cloudDebug(...args: any[]) {
   if (!CLOUD_FUNCTIONS_DEBUG) return;
@@ -56,16 +76,32 @@ export class CoreCloudClient {
 
   private isExpectedPaymentVerificationState(error: CloudFunctionError): boolean {
     const functionName = String(error?.functionName || '').trim().toLowerCase();
-    if (functionName !== 'verifypaystacktransaction') return false;
+    const isPaymentVerifyFn =
+      functionName === 'verifypaystacktransaction' ||
+      functionName === 'finalizemarketescrowpayment';
+    if (!isPaymentVerifyFn) return false;
     if (Number(error?.status) !== 400) return false;
 
     const message = String(error?.message || '').toLowerCase();
-    return (
+    // Normal during inspect/resume: unpaid, abandoned, or ref not on Paystack yet.
+    // Must not spam red ERROR / LogBox — these are handled in payment UI, not crashes.
+    const expectedShared =
       message.includes('payment not successful') ||
       message.includes('status: abandoned') ||
       message.includes('abandoned') ||
-      message.includes('pending')
-    );
+      message.includes('pending') ||
+      message.includes('could not be verified') ||
+      message.includes('not confirmed');
+
+    if (functionName === 'verifypaystacktransaction') {
+      return (
+        expectedShared ||
+        message.includes('transaction reference not found') ||
+        message.includes('reference not found')
+      );
+    }
+
+    return expectedShared;
   }
 
   private isExpectedIncrementViewsNotFound(error: CloudFunctionError): boolean {
@@ -101,7 +137,13 @@ export class CoreCloudClient {
         cloudWarn('[Cloud Function] No authenticated user');
         return null;
       }
-      const token = await user.getIdToken(forceRefresh);
+      // Firebase's own token refresh can hang on a dead connection with no error — bound it so
+      // callers get a rejected promise (and can show a retry) instead of spinning forever.
+      const token = await withTimeout(
+        user.getIdToken(forceRefresh),
+        TOKEN_TIMEOUT_MS,
+        'Authentication'
+      );
       if (!token) {
         cloudWarn('[Cloud Function] Failed to get ID token');
       }
@@ -112,7 +154,7 @@ export class CoreCloudClient {
         try {
           const user = auth.currentUser;
           if (user) {
-            return await user.getIdToken(false);
+            return await withTimeout(user.getIdToken(false), TOKEN_TIMEOUT_MS, 'Authentication');
           }
         } catch (retryError) {
           console.error('Error getting cached token:', retryError);
@@ -120,7 +162,7 @@ export class CoreCloudClient {
         return null;
       }
       console.error('Error getting ID token:', error);
-      return null;
+      throw error instanceof Error ? error : new Error('Failed to authenticate this request.');
     }
   }
 
@@ -174,8 +216,17 @@ export class CoreCloudClient {
           attempt: attempt + 1,
           functionName: this.getFunctionNameFromUrl(requestUrl),
         });
-        
-        const response = await fetch(requestUrl, requestOptions);
+
+        // A dropped/dead connection can leave fetch() pending indefinitely with no
+        // error — abort it so the UI gets a retryable error instead of an endless spinner.
+        const abortController = new AbortController();
+        const timeoutTimer = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
+        let response: Response;
+        try {
+          response = await fetch(requestUrl, { ...requestOptions, signal: abortController.signal });
+        } finally {
+          clearTimeout(timeoutTimer);
+        }
 
         if (!response) {
           throw new Error('No response from server. Please check your internet connection.');
@@ -288,7 +339,10 @@ export class CoreCloudClient {
         cloudDebug('[Cloud Function] Success');
         return data as T;
       } catch (error: any) {
-        if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        const isNetworkError =
+          (error.name === 'TypeError' && String(error.message || '').includes('fetch')) ||
+          error.name === 'AbortError';
+        if (isNetworkError) {
           if (attempt < retries) {
             lastError = error;
             cloudWarn('[Cloud Function] Network error, will retry...');

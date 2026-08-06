@@ -1,8 +1,9 @@
 import { coreCloudClient } from './core-cloud-client';
+import { legacyCloudFunctionUrl } from './cloud-functions-base';
 
 const ORDER_CHAT_FUNCTIONS = {
-  sendOrderChatMessage: 'https://us-central1-ikm-marketplace.cloudfunctions.net/sendOrderChatMessage',
-  markOrderMessagesRead: 'https://us-central1-ikm-marketplace.cloudfunctions.net/markOrderMessagesRead',
+  sendOrderChatMessage: legacyCloudFunctionUrl('sendOrderChatMessage'),
+  markOrderMessagesRead: legacyCloudFunctionUrl('markOrderMessagesRead'),
 };
 
 export const orderChatApi = {

@@ -9,6 +9,7 @@ import { AnimatedPressable } from '@/components/animated-pressable';
 import { parseMarketOfferLink } from '@/lib/utils/market-offer-link';
 import { VoiceMessageBubble } from '@/components/chat/voice-message-bubble';
 import { MilestoneCard } from '@/components/chat/milestone-card';
+import { productTitleOrFallback } from '@/lib/chat/enrich-inbox-snapshots';
 
 interface MessageBubbleProps {
   message: MarketMessage;
@@ -21,6 +22,8 @@ interface MessageBubbleProps {
     chatId?: string;
   }) => void;
   onRetryVoice?: (messageId: string) => void;
+  /** Retry a failed text/quote send (voice retries go through onRetryVoice). */
+  onRetryMessage?: (message: MarketMessage) => void;
 }
 
 export const MessageBubble = memo(function MessageBubble({
@@ -29,16 +32,19 @@ export const MessageBubble = memo(function MessageBubble({
   peerAvatarUri,
   onOpenOffer,
   onRetryVoice,
+  onRetryMessage,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
   const isSent = Boolean(currentUserId && currentUserId === message.senderId);
   const messageId = String(message.id || '').trim();
   const clientMessageId = String(message.clientMessageId || '').trim();
-  const voiceSendStatus = (message as any).voiceSendStatus as 'sending' | 'failed' | undefined;
+  const sendStatus = message.sendStatus;
+  const isFailed = sendStatus === 'failed';
   const isPending =
-    voiceSendStatus !== 'failed' &&
+    !isFailed &&
     (messageId.startsWith('local-') ||
       messageId.startsWith('queued-') ||
+      sendStatus === 'sending' ||
       (Boolean(clientMessageId) && messageId === clientMessageId));
   const offerPayload = parseMarketOfferLink(message.paymentLink);
   const messageText = String((message as any).text || message.message || '').trim();
@@ -76,8 +82,8 @@ export const MessageBubble = memo(function MessageBubble({
   // Voice notes are their own bubble — no outer message card behind them.
   if (message.voiceUrl && !messageText && !message.imageUrl && !message.quoteCard && !message.paymentLink && !message.chatOffer) {
     const pending =
-      voiceSendStatus === 'sending' ||
-      (isPending && voiceSendStatus !== 'failed');
+      sendStatus === 'sending' ||
+      (isPending && sendStatus !== 'failed');
     return (
       <View style={[styles.container, isSent ? styles.sentContainer : styles.receivedContainer]}>
         {!isSent ? (
@@ -94,10 +100,11 @@ export const MessageBubble = memo(function MessageBubble({
           durationSec={message.voiceDurationSec}
           isSent={isSent}
           pending={pending}
-          failed={voiceSendStatus === 'failed'}
+          failed={sendStatus === 'failed'}
           createdAt={message.createdAt}
+          messageKey={clientMessageId || messageId}
           onRetry={
-            voiceSendStatus === 'failed' && messageId
+            sendStatus === 'failed' && messageId
               ? () => onRetryVoice?.(messageId)
               : undefined
           }
@@ -159,20 +166,27 @@ export const MessageBubble = memo(function MessageBubble({
                   styles.quoteHeaderText,
                   { color: isSent ? '#FFFFFF' : colors.textSecondary },
                 ]}>
-                From Post
+                Product
               </Text>
             </View>
-            <Text
-              numberOfLines={2}
-              style={[
-                styles.quotePreviewText,
-                { color: isSent ? '#FFFFFF' : colors.text },
-              ]}>
-              {message.quoteCard.previewText}
-            </Text>
             {message.quoteCard.previewImage ? (
               <SafeImage uri={message.quoteCard.previewImage} style={styles.quotePreviewImage} />
             ) : null}
+            {(() => {
+              const raw = String(message.quoteCard.previewText || '').trim();
+              if (!raw) return null;
+              const safe = productTitleOrFallback(raw);
+              return (
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.quotePreviewText,
+                    { color: isSent ? '#FFFFFF' : colors.text },
+                  ]}>
+                  {safe}
+                </Text>
+              );
+            })()}
           </View>
         )}
 
@@ -188,8 +202,15 @@ export const MessageBubble = memo(function MessageBubble({
             ]}>
             <IconSymbol name="dollarsign.circle.fill" size={14} color={isSent ? '#fff' : colors.primary} />
             <Text style={[styles.offerChipText, { color: isSent ? '#fff' : colors.text }]}>
+              {isSent ? 'Your offer' : 'Offer'}{' '}
               {message.chatOffer.currency} {message.chatOffer.amount.toLocaleString()}
-              {message.chatOffer.status === 'pending' ? ' · pending' : ''}
+              {message.chatOffer.status === 'pending'
+                ? ' · pending'
+                : message.chatOffer.status === 'accepted'
+                  ? ' · accepted'
+                  : message.chatOffer.status
+                    ? ` · ${message.chatOffer.status}`
+                    : ''}
             </Text>
           </View>
         ) : null}
@@ -221,10 +242,19 @@ export const MessageBubble = memo(function MessageBubble({
             ]}>
             {formatRelativeTime(message.createdAt)}
           </Text>
-          {isSent && isPending ? (
+          {isSent && isFailed ? (
+            <AnimatedPressable
+              onPress={() => onRetryMessage?.(message)}
+              scaleValue={0.94}
+              disabled={!onRetryMessage}>
+              <Text style={[styles.pendingText, { color: '#FFD1D1', textDecorationLine: 'underline' }]}>
+                Failed · Tap to retry
+              </Text>
+            </AnimatedPressable>
+          ) : isSent && isPending ? (
             <Text style={[styles.pendingText, { color: 'rgba(255,255,255,0.8)' }]}>Pending</Text>
           ) : null}
-          {isSent && (
+          {isSent && !isFailed && (
             <IconSymbol
               name={message.read ? 'checkmark.circle.fill' : 'checkmark.circle'}
               size={14}

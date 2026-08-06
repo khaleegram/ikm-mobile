@@ -17,7 +17,8 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { useUserProfile } from '@/lib/firebase/firestore/users';
 import { haptics } from '@/lib/utils/haptics';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useActiveStatuses, useMyActiveStatuses, addMarketStatus, MarketStatus } from '@/lib/firebase/firestore/market-statuses';
+import { useActiveStatuses, useMyActiveStatuses, addMarketStatus, MarketStatus } from '@/lib/firebase/stories/market-statuses';
+import { buildUserMediaPath } from '@/lib/utils/media-path';
 import { uploadImage } from '@/lib/utils/image-upload';
 import { showToast } from '@/components/toast';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -169,7 +170,7 @@ export function SellerStoriesRow() {
       if (!result.canceled && result.assets && result.assets[0]) {
         setIsUploading(true);
         const asset = result.assets[0];
-        const path = `marketStatuses/${user.uid}/status_${Date.now()}.jpg`;
+        const path = buildUserMediaPath('marketStatuses', user.uid, `status_${Date.now()}.jpg`);
         const uploadResult = await uploadImage(asset.uri, path);
         await addMarketStatus(user.uid, uploadResult.url);
         haptics.success();

@@ -78,6 +78,9 @@ function buildActionUrl(
   orderId?: string,
   chatRoomId?: string
 ): string {
+  if (chatRoomId) {
+    return `/(market)/messages/${chatRoomId}`;
+  }
   switch (type) {
     case 'order_update':
     case 'payment':
@@ -168,10 +171,18 @@ async function notifyUser(input: {
 
 export async function notifyBuyer(orderData: {
   buyerId: string;
-  event: 'payment_success' | 'order_shipped' | 'order_delivered' | 'refund_processed' | 'order_cancelled' | 'dispute_resolved';
+  event:
+    | 'payment_success'
+    | 'order_shipped'
+    | 'order_delivered'
+    | 'refund_processed'
+    | 'order_cancelled'
+    | 'dispute_resolved'
+    | 'availability_update';
   orderId: string;
   orderSummary: string;
   extra?: string;
+  chatRoomId?: string | null;
 }): Promise<void> {
   const titles: Record<string, string> = {
     payment_success: 'Payment Successful',
@@ -180,6 +191,7 @@ export async function notifyBuyer(orderData: {
     refund_processed: 'Refund Processed',
     order_cancelled: 'Order Cancelled',
     dispute_resolved: 'Dispute Resolved',
+    availability_update: 'Seller update on your order',
   };
 
   const bodies: Record<string, string> = {
@@ -189,6 +201,7 @@ export async function notifyBuyer(orderData: {
     refund_processed: `Refund of ${orderData.orderSummary} has been processed.`,
     order_cancelled: `${orderData.orderSummary} has been cancelled.`,
     dispute_resolved: `Your dispute for ${orderData.orderSummary} has been resolved.`,
+    availability_update: orderData.extra || orderData.orderSummary,
   };
 
   await notifyUser({
@@ -197,6 +210,7 @@ export async function notifyBuyer(orderData: {
     title: titles[orderData.event] || 'Order Update',
     body: bodies[orderData.event] || orderData.orderSummary,
     orderId: orderData.orderId,
+    chatRoomId: orderData.chatRoomId || undefined,
     priority: 'high',
     channels: ['push', 'in_app'],
   });
@@ -204,29 +218,42 @@ export async function notifyBuyer(orderData: {
 
 export async function notifySeller(orderData: {
   sellerId: string;
-  event: 'new_order' | 'payment_received' | 'new_message' | 'delivery_confirmed' | 'dispute_opened' | 'refund_requested' | 'escrow_released';
+  event:
+    | 'new_order'
+    | 'payment_received'
+    | 'new_message'
+    | 'delivery_confirmed'
+    | 'dispute_opened'
+    | 'refund_requested'
+    | 'escrow_released'
+    | 'shipment_reminder';
   orderId: string;
   orderSummary: string;
   extra?: string;
+  chatRoomId?: string | null;
 }): Promise<void> {
   const titles: Record<string, string> = {
-    new_order: 'New Order Received!',
+    new_order: 'New purchase on ChatCart',
     payment_received: 'Payment Received',
     new_message: 'New Message from Buyer',
     delivery_confirmed: 'Delivery Confirmed',
     dispute_opened: 'Dispute Opened',
     refund_requested: 'Refund Requested',
     escrow_released: 'Payment Released',
+    shipment_reminder: 'Ship this order',
   };
 
   const bodies: Record<string, string> = {
-    new_order: `New order: ${orderData.orderSummary}`,
+    new_order: `Buyer paid for ${orderData.orderSummary}. Open the deal room to fulfill.`,
     payment_received: `Payment for ${orderData.orderSummary} has been received.`,
     new_message: orderData.extra || 'You have a new message about an order.',
     delivery_confirmed: `Buyer confirmed delivery for ${orderData.orderSummary}.`,
     dispute_opened: `A dispute has been opened for ${orderData.orderSummary}.`,
     refund_requested: `Refund requested for ${orderData.orderSummary}.`,
     escrow_released: `NGN ${orderData.orderSummary} released to your balance.`,
+    shipment_reminder:
+      orderData.extra ||
+      `${orderData.orderSummary} is still waiting to ship. Update the buyer in chat or mark shipped.`,
   };
 
   await notifyUser({
@@ -235,6 +262,7 @@ export async function notifySeller(orderData: {
     title: titles[orderData.event] || 'Order Update',
     body: bodies[orderData.event] || orderData.orderSummary,
     orderId: orderData.orderId,
+    chatRoomId: orderData.chatRoomId || undefined,
     priority: 'high',
     channels: ['push', 'in_app'],
   });

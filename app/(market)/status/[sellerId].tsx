@@ -5,7 +5,7 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 
-import { useMyActiveStatuses, useActiveStatuses } from '@/lib/firebase/firestore/market-statuses';
+import { useMyActiveStatuses, useActiveStatuses } from '@/lib/firebase/stories/market-statuses';
 import { usePublicUserProfile } from '@/lib/firebase/firestore/users';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { IconSymbol } from '@/components/ui/icon-symbol';

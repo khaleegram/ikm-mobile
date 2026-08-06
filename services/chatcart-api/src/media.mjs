@@ -20,6 +20,8 @@ const ALLOWED_PREFIXES = new Set([
   'chatVoice',
   'chatImages',
   'avatars',
+  'orderProof',
+  'marketStatuses',
 ]);
 
 const CHAT_VOICE_MAX_BYTES = 512 * 1024;
@@ -80,25 +82,37 @@ export function urlToStoragePath(url) {
 }
 
 export function validateMediaPath(storagePath, uid) {
+  return validateMediaPathDetailed(storagePath, uid).ok;
+}
+
+export function validateMediaPathDetailed(storagePath, uid) {
   const normalized = normalizeStoragePath(storagePath);
-  if (!normalized || normalized.includes('..')) return false;
+  if (!normalized || normalized.includes('..')) {
+    return { ok: false, reason: 'invalid' };
+  }
 
   const parts = normalized.split('/');
   const prefix = parts[0];
-  if (!ALLOWED_PREFIXES.has(prefix)) return false;
-
-  if (prefix === 'marketMessages' || prefix === 'chatVoice' || prefix === 'chatImages') {
-    return parts.length >= 2 && parts[1] === uid;
+  if (!ALLOWED_PREFIXES.has(prefix)) {
+    return { ok: false, reason: 'prefix', prefix };
   }
 
-  if (parts.length < 2) return false;
-  return parts[1] === uid;
+  if (parts.length < 3 || parts[1] !== uid) {
+    return { ok: false, reason: 'owner', prefix };
+  }
+
+  return { ok: true };
 }
 
 export async function createPresignedUpload({ uid, storagePath, contentType, contentLength }) {
   const path = normalizeStoragePath(storagePath);
-  if (!validateMediaPath(path, uid)) {
-    const err = new Error('Invalid or unauthorized media path');
+  const validation = validateMediaPathDetailed(path, uid);
+  if (!validation.ok) {
+    const err = new Error(
+      validation.reason === 'prefix'
+        ? `Invalid media prefix "${validation.prefix}". Redeploy chatcart-api if this folder was recently added.`
+        : 'Invalid or unauthorized media path. Use {folder}/{yourUserId}/{fileName}.'
+    );
     err.statusCode = 403;
     throw err;
   }
@@ -303,6 +317,24 @@ export async function processOriginalMarketSound({ uid, postId, videoPath }) {
          WHERE id = $1`,
         [postId, JSON.stringify(nextSoundMeta)]
       );
+    }
+
+    try {
+      const { upsertSound } = await import('./sounds.mjs');
+      await upsertSound({
+        id: soundId,
+        title: nextSoundMeta.title || 'Original sound',
+        createdBy: uid,
+        creatorName: nextSoundMeta.creatorName,
+        sourceType: nextSoundMeta.sourceType || 'original',
+        sourceUri: audioUrl,
+        artworkUrl: nextSoundMeta.artworkUrl || postData.coverImageUrl,
+        durationMs: nextSoundMeta.durationMs,
+        rightsStatus: 'owned',
+        status: 'active',
+      });
+    } catch (err) {
+      console.warn('[media] upsertSound after extraction failed:', err?.message || err);
     }
 
     return { success: true, audioUrl, path: destPath };
