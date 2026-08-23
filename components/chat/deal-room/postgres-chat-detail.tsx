@@ -1,5 +1,6 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import { useQueryClient } from '@tanstack/react-query';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import {
   ActivityIndicator,
@@ -34,7 +35,7 @@ import { useBlockedUserIds } from '@/lib/hooks/use-social';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMarketPost, useMarketPostsByIds } from '@/lib/hooks/use-market-post';
 import { useDealOrder, useInvalidateOrder } from '@/lib/hooks/use-order';
-import { useChatThread, migrateChatThreadQuery } from '@/lib/hooks/use-chat-thread';
+import { useChatThread } from '@/lib/hooks/use-chat-thread';
 import type { VoiceRecordingResult } from '@/lib/hooks/use-voice-recorder';
 import { useTheme } from '@/lib/theme/theme-context';
 import { orderApi } from '@/lib/api/orders';
@@ -45,12 +46,18 @@ import { buildUserMediaPath } from '@/lib/utils/media-path';
 import { uploadImage } from '@/lib/utils/image-upload';
 import { retryQuoteMessage } from '@/lib/utils/market-ask-price-chat';
 import { chatVoicePlayer } from '@/lib/chat/voice-player';
-import { useChatInboxCache } from '@/lib/stores/chat-inbox-cache';
 import {
-  chatThreadCache,
-  isPendingThreadId,
-  parsePendingThreadId,
-} from '@/lib/stores/chat-thread-cache';
+  findThreadQueryByPostAndPeer,
+  getInboxItems,
+  getThreadQueryData,
+  migrateChatThreadQuery,
+  patchThreadQueryData,
+  replaceInboxThreadId,
+  seedThreadFromInbox,
+  setThreadQueryData,
+} from '@/lib/chat/chat-query-cache';
+import { isPendingThreadId, parsePendingThreadId } from '@/lib/chat/thread-id';
+import { mergeThreadMessages } from '@/lib/chat/thread-messages';
 import { useMarketChatStore } from '@/lib/stores/marketChatStore';
 import { MarketMessage, MarketPost } from '@/types';
 import { AnimatedPressable } from '@/components/animated-pressable';
@@ -87,8 +94,20 @@ export function PostgresChatDetail({
   const insets = useSafeAreaInsets();
   const marketLoginRoute = getLoginRouteForVariant('market');
   const userId = user?.uid || null;
+  const queryClient = useQueryClient();
+  const [inboxVersion, setInboxVersion] = useState(0);
   const { idSet: blockedIds } = useBlockedUserIds(userId);
   const setActiveMarketConversationId = useMarketChatStore((s) => s.setActiveMarketConversationId);
+
+  useEffect(() => {
+    if (!userId) return;
+    return queryClient.getQueryCache().subscribe((event) => {
+      const key = event.query.queryKey;
+      if (key[0] === 'chat' && key[1] === 'inbox' && key[2] === userId) {
+        setInboxVersion((v) => v + 1);
+      }
+    });
+  }, [userId, queryClient]);
 
   // 1 = expanded chrome (product tabs + card), 0 = collapsed for fuller chat
   const chromeProgress = useSharedValue(1);
@@ -118,14 +137,12 @@ export function PostgresChatDetail({
     const pending = parsePendingThreadId(threadIdBase);
     if (!pending) return;
 
-    // Sync fast path: if we already know the real UUID locally, skip the pending spinner era.
-    const localHit = chatThreadCache.findByPostAndPeer(pending.postId, pending.peerId);
+    const localHit = findThreadQueryByPostAndPeer(pending.postId, pending.peerId);
     const localId = String(localHit?.thread?.id || '').trim();
     if (localId && !isPendingThreadId(localId)) {
-      chatThreadCache.migrate(threadIdBase, localId);
       migrateChatThreadQuery(threadIdBase, localId);
       setResolvedThreadId(localId);
-      useChatInboxCache.getState().replaceThreadId(userId, threadIdBase, localId);
+      replaceInboxThreadId(userId, threadIdBase, localId);
       return;
     }
 
@@ -135,12 +152,10 @@ export function PostgresChatDetail({
       try {
         const { thread, isNew } = await chatApi.getOrCreateThread(pending.postId, pending.peerId);
 
-        // Always persist — even if this screen unmounted — so feed DMs land in inbox deal rooms.
-        chatThreadCache.migrate(threadIdBase, thread.id);
         migrateChatThreadQuery(threadIdBase, thread.id);
 
-        // Prefer the rich local snapshot (cover from feed) over a thin/empty server row.
-        const priorCached = chatThreadCache.get(thread.id) || chatThreadCache.get(threadIdBase);
+        const priorCached =
+          getThreadQueryData(thread.id) || getThreadQueryData(threadIdBase);
         const priorSnap = priorCached?.thread?.postSnapshot || {};
         const serverSnap = thread.postSnapshot || {};
         const mergedSnapshot = {
@@ -149,27 +164,25 @@ export function PostgresChatDetail({
           title: String(priorSnap.title || serverSnap.title || '').trim() || 'Product',
           imageUrl: priorSnap.imageUrl || serverSnap.imageUrl || null,
         };
-        chatThreadCache.set(thread.id, {
+        setThreadQueryData(thread.id, {
           thread: { ...thread, postSnapshot: mergedSnapshot },
           peer: priorCached?.peer || undefined,
         });
 
-        useChatInboxCache.getState().replaceThreadId(userId, threadIdBase, thread.id, {
+        replaceInboxThreadId(userId, threadIdBase, thread.id, {
           lastPreview:
-            chatThreadCache.get(thread.id)?.messages?.slice(-1)[0]?.body || 'New conversation',
+            getThreadQueryData(thread.id)?.messages?.slice(-1)[0]?.body || 'New conversation',
           lastAt: new Date().toISOString(),
           postId: thread.postId,
           status: thread.status,
           postSnapshot: mergedSnapshot,
         });
 
-        const cached = chatThreadCache.get(thread.id);
+        const cached = getThreadQueryData(thread.id);
         const pendingFlush = (cached?.messages || []).find(
           (m) => (m.payload as any)?.needsServerFlush && m.type === 'quote'
         );
 
-        // Only send the product quote card when this is a brand-new room.
-        // Reopening an existing product room must continue the thread, not spam a new cover card.
         if (pendingFlush && isNew) {
           const quote = (pendingFlush.payload as any)?.quote || {
             postId: pending.postId,
@@ -183,7 +196,7 @@ export function PostgresChatDetail({
               clientMsgId: pendingFlush.clientMsgId || pendingFlush.id,
               quote,
             });
-            chatThreadCache.set(thread.id, {
+            patchThreadQueryData(thread.id, {
               messages: (cached?.messages || [])
                 .filter((m) => m.id !== pendingFlush.id && m.clientMsgId !== pendingFlush.clientMsgId)
                 .concat([
@@ -193,14 +206,14 @@ export function PostgresChatDetail({
                   },
                 ]),
             });
-            useChatInboxCache.getState().replaceThreadId(userId, thread.id, thread.id, {
+            replaceInboxThreadId(userId, thread.id, thread.id, {
               lastPreview: String(saved.body || pendingFlush.body || ''),
               lastAt: saved.createdAt || new Date().toISOString(),
             });
           } catch (err: any) {
             if (alive) showToast(err?.message || 'Failed to send your message', 'error');
-            const latestCached = chatThreadCache.get(thread.id);
-            chatThreadCache.set(thread.id, {
+            const latestCached = getThreadQueryData(thread.id);
+            patchThreadQueryData(thread.id, {
               messages: (latestCached?.messages || cached?.messages || []).map((m) =>
                 m.id === pendingFlush.id || m.clientMsgId === pendingFlush.clientMsgId
                   ? {
@@ -213,8 +226,7 @@ export function PostgresChatDetail({
           }
         } else {
           if (pendingFlush && !isNew) {
-            // Drop the unsent duplicate quote bubble — room already has history.
-            chatThreadCache.set(thread.id, {
+            patchThreadQueryData(thread.id, {
               messages: (cached?.messages || []).filter(
                 (m) =>
                   m.id !== pendingFlush.id &&
@@ -226,7 +238,10 @@ export function PostgresChatDetail({
           void chatApi
             .getMessages(thread.id)
             .then((page) => {
-              chatThreadCache.appendMessages(thread.id, page.messages, { notify: false });
+              const current = getThreadQueryData(thread.id);
+              patchThreadQueryData(thread.id, {
+                messages: mergeThreadMessages(current?.messages || [], page.messages),
+              });
             })
             .catch(() => {});
         }
@@ -280,15 +295,12 @@ export function PostgresChatDetail({
   const { post: hydratedThreadPost } = useMarketPost(thread?.postId || null);
   const resolvedPostSnapshot = useMemo(() => {
     const cachedSnap =
-      (threadId ? chatThreadCache.get(threadId)?.thread?.postSnapshot : null) ||
-      (threadIdBase ? chatThreadCache.get(threadIdBase)?.thread?.postSnapshot : null) ||
+      (threadId ? getThreadQueryData(threadId)?.thread?.postSnapshot : null) ||
+      (threadIdBase ? getThreadQueryData(threadIdBase)?.thread?.postSnapshot : null) ||
       null;
     const inboxSnap =
       (userId && threadId
-        ? useChatInboxCache
-            .getState()
-            .getItems(userId)
-            .find((row) => row.threadId === threadId)?.postSnapshot
+        ? getInboxItems(userId).find((row) => row.threadId === threadId)?.postSnapshot
         : null) || null;
     const existing = thread?.postSnapshot || cachedSnap || inboxSnap || null;
     const fromPost = snapshotFromMarketPost(hydratedThreadPost);
@@ -309,13 +321,11 @@ export function PostgresChatDetail({
         (existing as any)?.thumbnailUrl ||
         null,
     };
-  }, [hydratedThreadPost, thread?.postSnapshot, threadId, threadIdBase, userId]);
+  }, [hydratedThreadPost, thread?.postSnapshot, threadId, threadIdBase, userId, inboxVersion]);
 
-  // Read sibling deal rooms straight from the cached inbox (kept fresh by the Deals tab)
-  // instead of mounting a full `useChatInbox` here — that spun up a second 15s poll and
-  // hydrated posts for EVERY thread. The product switcher only needs same-peer rooms.
-  const cachedInboxItems = useChatInboxCache((s) =>
-    userId ? s.byUserId[userId] ?? EMPTY_INBOX_ITEMS : EMPTY_INBOX_ITEMS
+  const cachedInboxItems = useMemo(
+    () => (userId ? getInboxItems(userId) : EMPTY_INBOX_ITEMS),
+    [userId, inboxVersion]
   );
   const siblingRooms = useMemo(() => {
     const pid = String(resolvedPeerId || peer?.id || '').trim();
@@ -348,12 +358,12 @@ export function PostgresChatDetail({
 
   React.useEffect(() => {
     const id = threadId || '';
-    const items = userId ? useChatInboxCache.getState().byUserId[userId] || [] : [];
+    const items = userId ? getInboxItems(userId) : [];
     const item = items.find((row) => row.threadId === id);
     unreadSnapshotThreadRef.current = id;
     setOpenUnreadCount(Number(item?.unreadCount || 0));
     setUnreadDividerId('');
-  }, [threadId, userId]);
+  }, [threadId, userId, inboxVersion]);
 
   React.useEffect(() => {
     if (!openUnreadCount || unreadDividerId) return;
@@ -409,7 +419,7 @@ export function PostgresChatDetail({
   // Instant header/cover hints from inbox — don't wait on getThread for name/avatar.
   const inboxRoomHint = useMemo(() => {
     if (!userId) return null;
-    const items = useChatInboxCache.getState().getItems(userId);
+    const items = getInboxItems(userId);
     return (
       items.find((row) => row.threadId === threadId) ||
       items.find((row) => row.threadId === threadIdBase) ||
@@ -422,11 +432,11 @@ export function PostgresChatDetail({
         : null) ||
       null
     );
-  }, [userId, threadId, threadIdBase, peerId, thread?.postId]);
+  }, [userId, threadId, threadIdBase, peerId, thread?.postId, inboxVersion]);
 
   React.useEffect(() => {
     if (!threadId || !inboxRoomHint) return;
-    chatThreadCache.seedFromInbox(inboxRoomHint, { notify: false });
+    seedThreadFromInbox(inboxRoomHint);
   }, [threadId, inboxRoomHint]);
 
   const openStoreProfile = useCallback(() => {

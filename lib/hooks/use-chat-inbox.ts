@@ -4,10 +4,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { chatApi } from '@/lib/api/chat';
 import { marketPostsApi } from '@/lib/api/market-posts';
+import {
+  mergePendingInboxWithServer,
+  setInboxItems,
+} from '@/lib/chat/chat-query-cache';
 import { enrichInboxRoomsWithPosts } from '@/lib/chat/enrich-inbox-snapshots';
 import { queryKeys } from '@/lib/query/keys';
-import { chatThreadCache, isPendingThreadId } from '@/lib/stores/chat-thread-cache';
-import { useChatInboxCache } from '@/lib/stores/chat-inbox-cache';
 import type { ChatInboxItem } from '@/types/chat';
 import type { MarketPost } from '@/types';
 
@@ -50,69 +52,31 @@ async function attachLivePostTitles(threads: ChatInboxItem[]): Promise<ChatInbox
 
 async function fetchInboxForUser(userId: string): Promise<ChatInboxItem[]> {
   const threads = await chatApi.getInbox();
-  const local = useChatInboxCache.getState().getItems(userId);
-  const pendingLocal = local.filter(
-    (item) =>
-      isPendingThreadId(item.threadId) &&
-      !threads.some(
-        (row) =>
-          String(row.postId || '') === String(item.postId || '') &&
-          String(row.peerId || '') === String(item.peerId || '')
-      )
-  );
-  const merged = [...pendingLocal, ...threads];
-  for (const item of merged) {
-    chatThreadCache.seedFromInbox(item, { notify: false });
-  }
-
+  const merged = mergePendingInboxWithServer(userId, threads);
   const enriched = await attachLivePostTitles(merged);
-  useChatInboxCache.getState().setItems(userId, enriched);
-  for (const item of enriched) {
-    chatThreadCache.seedFromInbox(item, { notify: false });
-  }
+  setInboxItems(userId, enriched);
   return enriched;
 }
 
 /**
- * Inbox backed by TanStack Query (`queryKeys.chat.inbox`) with MMKV seed so cold opens
- * paint instantly. Zustand inbox cache still mirrors writes for pending/optimistic rooms.
+ * Inbox backed by TanStack Query (`queryKeys.chat.inbox`) — single source of truth.
  */
 export function useChatInbox(userId: string | null): UseChatInboxResult {
-  const hydrate = useChatInboxCache((s) => s.hydrate);
-  const hydrated = useChatInboxCache((s) => s.hydrated);
-  const cachedItems = useChatInboxCache((s) => {
-    if (!userId) return EMPTY_INBOX;
-    return s.byUserId[userId] ?? EMPTY_INBOX;
-  });
   const queryClient = useQueryClient();
   const [lastFocusRefresh, setLastFocusRefresh] = useState(0);
 
-  useEffect(() => {
-    void hydrate();
-  }, [hydrate]);
-
   const query = useQuery({
     queryKey: queryKeys.chat.inbox(userId),
-    enabled: Boolean(userId) && hydrated,
+    enabled: Boolean(userId),
     staleTime: 20_000,
-    placeholderData: () => (cachedItems.length > 0 ? cachedItems : undefined),
     queryFn: async (): Promise<ChatInboxItem[]> => {
       if (!userId) return [];
       return fetchInboxForUser(userId);
     },
   });
 
-  // Seed Query from MMKV on first hydrate so revisiting never flashes empty.
   useEffect(() => {
-    if (!userId || !hydrated || cachedItems.length === 0) return;
-    const existing = queryClient.getQueryData(queryKeys.chat.inbox(userId));
-    if (!existing) {
-      queryClient.setQueryData(queryKeys.chat.inbox(userId), cachedItems);
-    }
-  }, [userId, hydrated, cachedItems, queryClient]);
-
-  useEffect(() => {
-    if (!userId || !hydrated) return;
+    if (!userId) return;
     const timer = setInterval(() => {
       if (AppState.currentState === 'active') {
         void queryClient.invalidateQueries({ queryKey: queryKeys.chat.inbox(userId) });
@@ -127,9 +91,9 @@ export function useChatInbox(userId: string | null): UseChatInboxResult {
       clearInterval(timer);
       sub.remove();
     };
-  }, [userId, hydrated, queryClient]);
+  }, [userId, queryClient]);
 
-  const items = query.data ?? cachedItems;
+  const items = query.data ?? EMPTY_INBOX;
   const showInitialLoader = Boolean(userId) && query.isPending && items.length === 0;
 
   const refresh = useCallback(async () => {

@@ -118,11 +118,21 @@ export class CoreCloudClient {
     return functionName === 'gettransactiontruth' && Number(error?.status) === 404;
   }
 
+  /** Deal rooms often exist before checkout — no linked order yet. */
+  private isExpectedOrderNotFoundByThread(error: CloudFunctionError): boolean {
+    if (Number(error?.status) !== 404) return false;
+    const url = String(error?.url || '').toLowerCase();
+    if (!url.includes('/orders/by-thread/')) return false;
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('order not found');
+  }
+
   private reportFunctionError(error: CloudFunctionError): void {
     if (
       this.isExpectedPaymentVerificationState(error) ||
       this.isExpectedIncrementViewsNotFound(error) ||
-      this.isExpectedTransactionTruthMissing(error)
+      this.isExpectedTransactionTruthMissing(error) ||
+      this.isExpectedOrderNotFoundByThread(error)
     ) {
       cloudDebug('[Cloud Function] Expected payment verification state:', error);
       return;

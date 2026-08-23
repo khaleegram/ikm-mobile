@@ -21,6 +21,7 @@ import {
   savePendingEscrowCheckout,
 } from '@/lib/utils/pending-escrow-checkout';
 import type { MarketPost } from '@/types';
+import type { MarketCartLine } from '@/lib/stores/market-cart';
 import { Alert } from '@/components/app-alert';
 
 const ACCENT = '#A67C52';
@@ -88,6 +89,9 @@ interface PaymentSheetModalProps {
   buyerName: string;
   buyerId: string;
   fromChatId?: string | null;
+  /** Same-seller multi-item cart — when set, amount = sum(line.unitPrice * qty). */
+  cartLines?: MarketCartLine[] | null;
+  cartSessionId?: string | null;
   onSuccess: (orderId: string, dealThreadId?: string | null) => void;
 }
 
@@ -106,6 +110,8 @@ export default function PaymentSheetModal({
   buyerName,
   buyerId,
   fromChatId = null,
+  cartLines = null,
+  cartSessionId = null,
   onSuccess,
 }: PaymentSheetModalProps) {
   const { colors } = useTheme();
@@ -118,8 +124,18 @@ export default function PaymentSheetModal({
   const [paystackRetryKey, setPaystackRetryKey] = useState(0);
 
   const safeUnitPrice = Math.max(0, Number(unitPrice) || 0);
-  const total = safeUnitPrice * Math.max(1, Number(quantity) || 1);
-  const postId = String(post.id || '').trim();
+  const activeCartLines =
+    Array.isArray(cartLines) && cartLines.length > 0
+      ? cartLines.filter((line) => line.postId && line.unitPrice > 0 && line.quantity > 0)
+      : null;
+  const isCartCheckout = Boolean(activeCartLines && activeCartLines.length > 0);
+  const total = isCartCheckout
+    ? activeCartLines!.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0)
+    : safeUnitPrice * Math.max(1, Number(quantity) || 1);
+  const primaryPostId = isCartCheckout
+    ? String(activeCartLines![0].postId)
+    : String(post.id || '').trim();
+  const postId = String(cartSessionId || primaryPostId || post.id || '').trim();
   const finalizeAttemptRef = useRef(false);
   const pendingResumeCheckedRef = useRef(false);
   const triggerFinalizationRef = useRef<
@@ -205,15 +221,28 @@ export default function PaymentSheetModal({
         try {
           response = await paymentsApi.finalizeMarketEscrowPayment({
             reference: normalizedRef,
-            postId: postId || post.id || '',
-            quantity: finalizeQuantity,
+            postId: primaryPostId || post.id || '',
+            quantity: isCartCheckout
+              ? activeCartLines!.reduce((sum, line) => sum + line.quantity, 0)
+              : finalizeQuantity,
             deliveryAddress: finalizeDelivery,
             buyerPhone: finalizePhone,
             dealThreadId: finalizeDealThread,
             chatId: finalizeDealThread,
-            agreedUnitPrice: finalizeUnitPrice,
-            sellerId: post.posterId,
-            itemTitle: String(post.title || post.description || 'Marketplace Item').slice(0, 80),
+            agreedUnitPrice: isCartCheckout ? undefined : finalizeUnitPrice,
+            sellerId: post.posterId || activeCartLines?.[0]?.sellerId,
+            itemTitle: isCartCheckout
+              ? `${activeCartLines!.length} items`
+              : String(post.title || post.description || 'Marketplace Item').slice(0, 80),
+            lineItems: isCartCheckout
+              ? activeCartLines!.map((line) => ({
+                  postId: line.postId,
+                  quantity: line.quantity,
+                  unitPrice: line.unitPrice,
+                  title: line.title,
+                }))
+              : undefined,
+            cartSessionId: cartSessionId || undefined,
           });
           lastError = null;
           break;
@@ -321,6 +350,7 @@ export default function PaymentSheetModal({
     }
   }, [
     postId,
+    primaryPostId,
     post.posterId,
     post.title,
     post.description,
@@ -332,6 +362,9 @@ export default function PaymentSheetModal({
     total,
     buyerEmail,
     buyerId,
+    isCartCheckout,
+    activeCartLines,
+    cartSessionId,
   ]);
 
   triggerFinalizationRef.current = triggerFinalization;
@@ -428,19 +461,33 @@ export default function PaymentSheetModal({
       callbackUrl: mockCallbackUrl,
       reference: defaultRef,
       metadata: {
-        source: 'chatcart-market-buy',
-        postId: post.id,
+        source: isCartCheckout ? 'chatcart-market-cart' : 'chatcart-market-buy',
+        postId: primaryPostId || post.id,
         buyerId,
-        sellerId: post.posterId,
-        quantity,
-        agreedUnitPrice: safeUnitPrice,
+        sellerId: post.posterId || activeCartLines?.[0]?.sellerId,
+        quantity: isCartCheckout
+          ? activeCartLines!.reduce((sum, line) => sum + line.quantity, 0)
+          : quantity,
+        agreedUnitPrice: isCartCheckout ? total : safeUnitPrice,
+        cartTotal: isCartCheckout ? total : undefined,
+        cartSessionId: cartSessionId || undefined,
+        lineItems: isCartCheckout
+          ? activeCartLines!.map((line) => ({
+              postId: line.postId,
+              quantity: line.quantity,
+              unitPrice: line.unitPrice,
+              title: line.title,
+            }))
+          : undefined,
         dealThreadId: fromChatId || null,
         firebaseUid: buyerId,
         deliveryAddress,
         buyerPhone,
         buyerEmail,
         buyerName,
-        itemTitle: String(post.title || post.description || 'Marketplace Item').slice(0, 80),
+        itemTitle: isCartCheckout
+          ? `${activeCartLines!.length} items`
+          : String(post.title || post.description || 'Marketplace Item').slice(0, 80),
       },
     });
 
@@ -454,9 +501,11 @@ export default function PaymentSheetModal({
       buyerName,
       buyerEmail,
       buyerPhone,
-      post,
-      quantity,
-      finalPrice: safeUnitPrice,
+      post: isCartCheckout ? ({ ...post, id: postId } as typeof post) : post,
+      quantity: isCartCheckout
+        ? activeCartLines!.reduce((sum, line) => sum + line.quantity, 0)
+        : quantity,
+      finalPrice: isCartCheckout ? total : safeUnitPrice,
       deliveryAddress,
       fromChatId,
       deliveryState,
@@ -471,8 +520,11 @@ export default function PaymentSheetModal({
 
   const handleStartPayment = async () => {
     try {
-      if (!(safeUnitPrice > 0)) {
+      if (!(safeUnitPrice > 0) && !isCartCheckout) {
         throw new Error('Invalid checkout price. Go back and reopen Complete purchase.');
+      }
+      if (isCartCheckout && !(total > 0)) {
+        throw new Error('Cart total is invalid.');
       }
       haptics.light();
       setPaymentState('INITIALIZING');
@@ -661,20 +713,35 @@ export default function PaymentSheetModal({
             </View>
 
             <View style={[styles.detailCard, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Item</Text>
-                <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>
-                  {String(post.title || post.description || 'Marketplace Post').trim()}
-                </Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Unit price</Text>
-                <Text style={[styles.value, { color: colors.text }]}>{formatNgn(safeUnitPrice)}</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Quantity</Text>
-                <Text style={[styles.value, { color: colors.text }]}>{quantity}</Text>
-              </View>
+              {isCartCheckout ? (
+                activeCartLines!.map((line) => (
+                  <View key={line.postId} style={styles.row}>
+                    <Text style={[styles.label, { color: colors.textSecondary, flex: 1 }]} numberOfLines={1}>
+                      {line.title} ×{line.quantity}
+                    </Text>
+                    <Text style={[styles.value, { color: colors.text }]}>
+                      {formatNgn(line.unitPrice * line.quantity)}
+                    </Text>
+                  </View>
+                ))
+              ) : (
+                <>
+                  <View style={styles.row}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Item</Text>
+                    <Text style={[styles.value, { color: colors.text }]} numberOfLines={1}>
+                      {String(post.title || post.description || 'Marketplace Post').trim()}
+                    </Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Unit price</Text>
+                    <Text style={[styles.value, { color: colors.text }]}>{formatNgn(safeUnitPrice)}</Text>
+                  </View>
+                  <View style={styles.row}>
+                    <Text style={[styles.label, { color: colors.textSecondary }]}>Quantity</Text>
+                    <Text style={[styles.value, { color: colors.text }]}>{quantity}</Text>
+                  </View>
+                </>
+              )}
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Escrow Protection</Text>
                 <Text style={[styles.value, { color: '#10B981', fontWeight: '800' }]}>Active</Text>

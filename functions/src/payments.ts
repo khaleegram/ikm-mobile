@@ -1116,7 +1116,51 @@ const finalizeMarketEscrowPaymentSchema = z.object({
   agreedUnitPrice: z.number().positive().optional(),
   sellerId: z.string().min(1).optional().nullable(),
   itemTitle: z.string().min(1).max(120).optional().nullable(),
+  cartSessionId: z.string().min(1).optional().nullable(),
+  lineItems: z
+    .array(
+      z.object({
+        postId: z.string().min(1),
+        quantity: z.number().int().positive(),
+        unitPrice: z.number().positive(),
+        title: z.string().max(120).optional().nullable(),
+      })
+    )
+    .min(1)
+    .max(30)
+    .optional(),
 });
+
+function parseEscrowLineItems(raw: unknown): {
+  postId: string;
+  quantity: number;
+  unitPrice: number;
+  title?: string;
+}[] | null {
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const lines = [];
+  for (const entry of value) {
+    const postId = asNonEmptyString(entry?.postId);
+    const quantity = Math.max(1, Math.floor(Number(entry?.quantity || 0)) || 0);
+    const unitPrice = Number(entry?.unitPrice || 0);
+    if (!postId || !(quantity > 0) || !(unitPrice > 0)) continue;
+    lines.push({
+      postId,
+      quantity,
+      unitPrice,
+      title: asNonEmptyString(entry?.title) || undefined,
+    });
+  }
+  return lines.length ? lines : null;
+}
 
 /**
  * Deterministic Firestore order id from Paystack reference.
@@ -1225,25 +1269,79 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
   }
 
   const commissionRate = await getPlatformCommissionRate();
-  const postSnap = await firestore.collection('marketPosts').doc(postId).get();
-  const postData = postSnap.exists ? postSnap.data()! : null;
-  const postStatus = String(postData?.status || 'active').toLowerCase();
-  if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
-    console.warn('Webhook auto-finalize skipped: post unavailable', reference, postId);
-    return;
+  const cartLineItems = parseEscrowLineItems(meta.lineItems);
+  let orderTotal = 0;
+  let orderItems: Array<{ productId: string; name: string; price: number; quantity: number }> = [];
+  let resolvedSellerId = '';
+  let primaryPostId = postId;
+  let unitPrice = 0;
+  let listedPrice: number | null = null;
+  let itemName = 'Marketplace Item';
+
+  if (cartLineItems && cartLineItems.length > 0) {
+    const sellers = new Set<string>();
+    for (const line of cartLineItems) {
+      const linePostSnap = await firestore.collection('marketPosts').doc(line.postId).get();
+      const linePost = linePostSnap.exists ? linePostSnap.data()! : null;
+      const lineStatus = String(linePost?.status || 'active').toLowerCase();
+      if (linePost && (lineStatus === 'hidden' || lineStatus === 'deleted')) {
+        console.warn('Webhook auto-finalize skipped: cart item unavailable', reference, line.postId);
+        return;
+      }
+      const seller = asNonEmptyString(linePost?.posterId || bodySellerId || meta.sellerId);
+      if (seller) sellers.add(seller);
+      orderItems.push({
+        productId: `market_post_${line.postId}`,
+        name: String(line.title || linePost?.title || linePost?.description || 'Item').slice(0, 70),
+        price: line.unitPrice,
+        quantity: line.quantity,
+      });
+      orderTotal += line.unitPrice * line.quantity;
+    }
+    if (sellers.size !== 1) {
+      console.warn('Webhook auto-finalize skipped: multi-seller cart', reference);
+      return;
+    }
+    resolvedSellerId = [...sellers][0];
+    primaryPostId = cartLineItems[0].postId;
+    unitPrice = cartLineItems[0].unitPrice;
+    itemName =
+      cartLineItems.length === 1 ? orderItems[0].name : `${cartLineItems.length} items`.slice(0, 70);
+  } else {
+    const postSnap = await firestore.collection('marketPosts').doc(postId).get();
+    const postData = postSnap.exists ? postSnap.data()! : null;
+    const postStatus = String(postData?.status || 'active').toLowerCase();
+    if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
+      console.warn('Webhook auto-finalize skipped: post unavailable', reference, postId);
+      return;
+    }
+
+    listedPrice = Number(postData?.price || 0);
+    unitPrice =
+      (Number.isFinite(bodyAgreedUnitPrice) && bodyAgreedUnitPrice > 0
+        ? bodyAgreedUnitPrice
+        : null) || (listedPrice > 0 ? listedPrice : null) ||
+      0;
+    if (!unitPrice || !(unitPrice > 0)) {
+      console.warn('Webhook auto-finalize skipped: missing unit price', reference);
+      return;
+    }
+
+    orderTotal = unitPrice * quantity;
+    itemName = String(
+      bodyItemTitle || postData?.title || postData?.description || 'Marketplace Item'
+    ).slice(0, 70);
+    orderItems = [
+      {
+        productId: `market_post_${postId}`,
+        name: itemName,
+        price: unitPrice,
+        quantity,
+      },
+    ];
+    resolvedSellerId = asNonEmptyString(postData?.posterId || bodySellerId || meta.sellerId);
   }
 
-  const listedPrice = Number(postData?.price || 0);
-  const unitPrice =
-    (Number.isFinite(bodyAgreedUnitPrice) && bodyAgreedUnitPrice > 0
-      ? bodyAgreedUnitPrice
-      : null) || (listedPrice > 0 ? listedPrice : null);
-  if (!unitPrice || !(unitPrice > 0)) {
-    console.warn('Webhook auto-finalize skipped: missing unit price', reference);
-    return;
-  }
-
-  const orderTotal = unitPrice * quantity;
   if (Math.abs(orderTotal - paidAmount) > 0.01) {
     console.warn(
       'Webhook auto-finalize skipped: amount mismatch',
@@ -1253,17 +1351,10 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
     return;
   }
 
-  const resolvedSellerId = asNonEmptyString(
-    postData?.posterId || bodySellerId || meta.sellerId
-  );
   if (!resolvedSellerId || resolvedSellerId === buyerId) {
     console.warn('Webhook auto-finalize skipped: invalid seller', reference);
     return;
   }
-
-  const itemName = String(
-    bodyItemTitle || postData?.title || postData?.description || 'Marketplace Item'
-  ).slice(0, 70);
   const commission = orderTotal * commissionRate;
   const sellerEarning = orderTotal - commission;
 
@@ -1271,7 +1362,7 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
   try {
     dealThreadId = await orderChat.ensureDealThreadForOrder({
       buyerId,
-      postId,
+      postId: primaryPostId,
       sellerId: resolvedSellerId,
       threadId: requestedDealThreadId,
     });
@@ -1284,16 +1375,9 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
     id: orderId,
     customerId: buyerId,
     sellerId: resolvedSellerId,
-    postId,
+    postId: primaryPostId,
     idempotencyKey: reference,
-    items: [
-      {
-        productId: `market_post_${postId}`,
-        name: itemName,
-        price: unitPrice,
-        quantity,
-      },
-    ],
+    items: orderItems,
     total: orderTotal,
     shippingPrice: 0,
     shippingType: 'pickup',
@@ -1313,9 +1397,10 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
     chatThreadId: dealThreadId || null,
     marketMeta: {
       fromChatId: dealThreadId || requestedDealThreadId,
-      postId,
+      postId: primaryPostId,
       agreedUnitPrice: unitPrice,
       listedPrice: listedPrice || null,
+      lineItems: cartLineItems || null,
       finalizedBy: 'paystack-webhook',
     },
     createdAt: nowIso,
@@ -1363,8 +1448,12 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
       },
       { merge: true }
     );
-    if (postSnap.exists) {
-      await firestore.collection('marketPosts').doc(postId).set(
+    const bumpPostIds =
+      cartLineItems && cartLineItems.length > 0
+        ? cartLineItems.map((line) => line.postId)
+        : [primaryPostId];
+    for (const bumpId of bumpPostIds) {
+      await firestore.collection('marketPosts').doc(bumpId).set(
         {
           lastBuyerId: buyerId,
           purchaseCount: FieldValue.increment(1),
@@ -1475,7 +1564,13 @@ export const finalizeMarketEscrowPayment = onRequest(
             return sendError(response, 'Forbidden: Payment session belongs to another user', 403);
           }
           const sessionPostId = String(sessionMeta.postId || '').trim();
-          if (sessionPostId && postId && sessionPostId !== postId) {
+          const sessionLineItems = parseEscrowLineItems(sessionMeta.lineItems);
+          if (
+            sessionPostId &&
+            postId &&
+            sessionPostId !== postId &&
+            !(sessionLineItems || []).some((line) => line.postId === postId)
+          ) {
             return sendError(
               response,
               'This payment was initialized for a different product',
@@ -1488,6 +1583,10 @@ export const finalizeMarketEscrowPayment = onRequest(
             quantity = sessionQty;
           }
         }
+
+        const bodyLineItems = parseEscrowLineItems(validation.data.lineItems);
+        const sessionLineItemsForOrder = parseEscrowLineItems(sessionMeta?.lineItems);
+        const cartLineItems = sessionLineItemsForOrder || bodyLineItems;
 
         // 2. Query/Verify transaction truth cached or via Paystack
         let txStatus = '';
@@ -1616,43 +1715,102 @@ export const finalizeMarketEscrowPayment = onRequest(
 
         const commissionRate = await getPlatformCommissionRate();
 
-        const postSnap = await firestore.collection('marketPosts').doc(postId).get();
-        const postData = postSnap.exists ? postSnap.data()! : null;
-        const postStatus = String(postData?.status || 'active').toLowerCase();
-        if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
-          return sendError(response, 'This item is no longer available', 409);
-        }
+        let orderTotal = 0;
+        let orderItems: {
+          productId: string;
+          name: string;
+          price: number;
+          quantity: number;
+        }[] = [];
+        let resolvedSellerId = '';
+        let listedPrice: number | null = null;
+        let unitPrice = 0;
+        let itemName = 'Marketplace Item';
 
-        const listedPrice = Number(postData?.price || 0);
-        const sessionAgreed = Number(
-          sessionMeta.agreedUnitPrice ?? sessionMeta.agreed_unit_price ?? 0
-        );
-        const metaAgreed = Number(
-          txMetadata?.agreedUnitPrice ?? txMetadata?.agreed_unit_price ?? 0
-        );
-        // Session/unit locked at initialize wins over client body (anti-tamper).
-        const unitPrice =
-          (Number.isFinite(sessionAgreed) && sessionAgreed > 0 ? sessionAgreed : null) ||
-          (Number.isFinite(metaAgreed) && metaAgreed > 0 ? metaAgreed : null) ||
-          (bodyAgreedUnitPrice && bodyAgreedUnitPrice > 0 ? bodyAgreedUnitPrice : null) ||
-          (listedPrice > 0 ? listedPrice : null);
+        if (cartLineItems && cartLineItems.length > 0) {
+          const sellers = new Set<string>();
+          for (const line of cartLineItems) {
+            const linePostSnap = await firestore.collection('marketPosts').doc(line.postId).get();
+            const linePost = linePostSnap.exists ? linePostSnap.data()! : null;
+            const lineStatus = String(linePost?.status || 'active').toLowerCase();
+            if (linePost && (lineStatus === 'hidden' || lineStatus === 'deleted')) {
+              return sendError(response, 'One or more cart items are no longer available', 409);
+            }
+            const seller = String(
+              linePost?.posterId || bodySellerId || sessionMeta.sellerId || txMetadata?.sellerId || ''
+            ).trim();
+            if (seller) sellers.add(seller);
+            orderItems.push({
+              productId: `market_post_${line.postId}`,
+              name: String(line.title || linePost?.title || linePost?.description || 'Item').slice(0, 70),
+              price: line.unitPrice,
+              quantity: line.quantity,
+            });
+            orderTotal += line.unitPrice * line.quantity;
+          }
+          if (sellers.size !== 1) {
+            return sendError(response, 'Cart checkout requires items from one seller', 400);
+          }
+          resolvedSellerId = [...sellers][0];
+          postId = cartLineItems[0].postId;
+          unitPrice = cartLineItems[0].unitPrice;
+          itemName =
+            cartLineItems.length === 1
+              ? orderItems[0].name
+              : `${cartLineItems.length} items`.slice(0, 70);
+          const primarySnap = await firestore.collection('marketPosts').doc(postId).get();
+          listedPrice = primarySnap.exists ? Number(primarySnap.data()?.price || 0) : null;
+        } else {
+          const postSnap = await firestore.collection('marketPosts').doc(postId).get();
+          const postData = postSnap.exists ? postSnap.data()! : null;
+          const postStatus = String(postData?.status || 'active').toLowerCase();
+          if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
+            return sendError(response, 'This item is no longer available', 409);
+          }
 
-        if (!unitPrice || !(unitPrice > 0)) {
-          return sendError(
-            response,
-            'Checkout price missing. Reopen Complete purchase from the deal.',
-            400
+          listedPrice = Number(postData?.price || 0);
+          const sessionAgreed = Number(
+            sessionMeta.agreedUnitPrice ?? sessionMeta.agreed_unit_price ?? 0
           );
-        }
+          const metaAgreed = Number(
+            txMetadata?.agreedUnitPrice ?? txMetadata?.agreed_unit_price ?? 0
+          );
+          // Session/unit locked at initialize wins over client body (anti-tamper).
+          unitPrice =
+            (Number.isFinite(sessionAgreed) && sessionAgreed > 0 ? sessionAgreed : null) ||
+            (Number.isFinite(metaAgreed) && metaAgreed > 0 ? metaAgreed : null) ||
+            (bodyAgreedUnitPrice && bodyAgreedUnitPrice > 0 ? bodyAgreedUnitPrice : null) ||
+            (listedPrice > 0 ? listedPrice : null) ||
+            0;
 
-        const orderTotal = unitPrice * quantity;
-        const itemName = String(
-          bodyItemTitle ||
-            sessionMeta.itemTitle ||
-            postData?.title ||
-            postData?.description ||
-            'Marketplace Item'
-        ).slice(0, 70);
+          if (!unitPrice || !(unitPrice > 0)) {
+            return sendError(
+              response,
+              'Checkout price missing. Reopen Complete purchase from the deal.',
+              400
+            );
+          }
+
+          orderTotal = unitPrice * quantity;
+          itemName = String(
+            bodyItemTitle ||
+              sessionMeta.itemTitle ||
+              postData?.title ||
+              postData?.description ||
+              'Marketplace Item'
+          ).slice(0, 70);
+          orderItems = [
+            {
+              productId: `market_post_${postId}`,
+              name: itemName,
+              price: unitPrice,
+              quantity,
+            },
+          ];
+          resolvedSellerId = String(
+            postData?.posterId || bodySellerId || sessionMeta.sellerId || txMetadata?.sellerId || ''
+          ).trim();
+        }
 
         if (Math.abs(orderTotal - paidAmount) > 0.01) {
           return sendError(
@@ -1662,9 +1820,6 @@ export const finalizeMarketEscrowPayment = onRequest(
           );
         }
 
-        const resolvedSellerId = String(
-          postData?.posterId || bodySellerId || sessionMeta.sellerId || txMetadata?.sellerId || ''
-        ).trim();
         if (!resolvedSellerId) {
           return sendError(response, 'Seller ID missing from post', 400);
         }
@@ -1694,14 +1849,7 @@ export const finalizeMarketEscrowPayment = onRequest(
           sellerId: resolvedSellerId,
           postId,
           idempotencyKey: reference,
-          items: [
-            {
-              productId: `market_post_${postId}`,
-              name: itemName,
-              price: unitPrice,
-              quantity,
-            },
-          ],
+          items: orderItems,
           total: orderTotal,
           shippingPrice: 0,
           shippingType: 'pickup',
@@ -1724,6 +1872,8 @@ export const finalizeMarketEscrowPayment = onRequest(
             postId,
             agreedUnitPrice: unitPrice,
             listedPrice: listedPrice || null,
+            cartSessionId: validation.data.cartSessionId || sessionMeta.cartSessionId || null,
+            lineItems: cartLineItems || null,
           },
           createdAt: nowIso,
           updatedAt: nowIso,
@@ -1778,10 +1928,20 @@ export const finalizeMarketEscrowPayment = onRequest(
             },
             { merge: true }
           );
-          if (postSnap.exists) {
+          if (cartLineItems && cartLineItems.length > 0) {
+            for (const line of cartLineItems) {
+              await firestore.collection('marketPosts').doc(line.postId).set(
+                {
+                  lastBuyerId: auth.uid,
+                  purchaseCount: FieldValue.increment(1),
+                  updatedAt: FieldValue.serverTimestamp(),
+                },
+                { merge: true }
+              );
+            }
+          } else {
             await firestore.collection('marketPosts').doc(postId).set(
               {
-                status: postStatus === 'sold' ? 'active' : postData?.status || 'active',
                 lastBuyerId: auth.uid,
                 purchaseCount: FieldValue.increment(1),
                 updatedAt: FieldValue.serverTimestamp(),

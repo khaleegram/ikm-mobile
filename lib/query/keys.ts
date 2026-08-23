@@ -40,6 +40,10 @@ export const queryKeys = {
   social: {
     following: (userId: string | null | undefined) =>
       ['social', 'following', normalizeId(userId)] as const,
+    followingOf: (userId: string | null | undefined) =>
+      ['social', 'following-of', normalizeId(userId)] as const,
+    followersOf: (userId: string | null | undefined) =>
+      ['social', 'followers-of', normalizeId(userId)] as const,
     saved: (userId: string | null | undefined) =>
       ['social', 'saved', normalizeId(userId)] as const,
     liked: (userId: string | null | undefined) =>
@@ -57,6 +61,13 @@ export const queryKeys = {
       ['market-posts-by-sound', normalizeId(soundId)] as const,
     search: (searchTerm: string | null | undefined) =>
       ['market-posts-search', String(searchTerm ?? '').trim().toLowerCase()] as const,
+    sellersSearch: (searchTerm: string, city: string, state: string) =>
+      [
+        'sellers-search',
+        String(searchTerm ?? '').trim().toLowerCase(),
+        String(city ?? '').trim().toLowerCase(),
+        String(state ?? '').trim().toLowerCase(),
+      ] as const,
     comments: (postId: string | null | undefined) =>
       ['market-post-comments', normalizeId(postId)] as const,
   },
@@ -72,9 +83,9 @@ export const queryKeys = {
   },
 
   feed: {
-    /** `sessionId` pins a feed session (e.g. server-side ranking session) to one cache entry. */
-    page: (mode: 'forYou' | 'following' | 'public', sessionId?: string | null) =>
-      ['feed', mode, sessionId ?? null] as const,
+    /** Stable root — session lives in infinite pageParam / page data, not the key. */
+    infinite: (mode: 'forYou' | 'following' | 'public', userId?: string | null) =>
+      ['feed', 'infinite', mode, normalizeId(userId) ?? 'guest'] as const,
   },
 
   chat: {

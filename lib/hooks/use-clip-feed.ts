@@ -1,12 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useMemo } from 'react';
+import {
+  useInfiniteQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 
-import { marketFeedApi, type FeedPageParams, type FeedPageResult } from '@/lib/api/market-feed';
+import { marketFeedApi } from '@/lib/api/market-feed';
 import { normalizeMarketPostRecord } from '@/lib/market/normalize-market-post';
+import { queryKeys } from '@/lib/query/keys';
 import type { MarketPost } from '@/types';
 
-export type ClipFeedMode = 'initial' | 'refresh' | 'more';
+export type ClipFeedSourceMode = 'forYou' | 'following' | 'public';
 
-export type ClipFeedFetchPage = (params: FeedPageParams) => Promise<FeedPageResult>;
+export type FeedPageParam = {
+  cursor: string | null;
+  sessionId: string | null;
+};
+
+export type FeedQueryPage = {
+  items: MarketPost[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  sessionId: string | null;
+};
+
+export interface UseClipFeedOptions {
+  mode: ClipFeedSourceMode;
+  userId?: string | null;
+  enabled?: boolean;
+}
 
 export interface UseClipFeedResult {
   items: MarketPost[];
@@ -29,140 +51,132 @@ function normalizeItems(raw: MarketPost[]): MarketPost[] {
     .filter((post) => Boolean(post.id));
 }
 
+async function fetchFeedPage(
+  mode: ClipFeedSourceMode,
+  pageParam: FeedPageParam
+): Promise<FeedQueryPage> {
+  const params = {
+    limit: marketFeedApi.pageSize,
+    cursor: pageParam.cursor,
+    sessionId: pageParam.sessionId,
+  };
+
+  const result =
+    mode === 'following'
+      ? await marketFeedApi.getFollowingFeed(params)
+      : mode === 'public'
+        ? await marketFeedApi.getPublicFeed(params)
+        : await marketFeedApi.getForYouFeed(params);
+
+  return {
+    items: normalizeItems(result.items),
+    nextCursor: result.nextCursor,
+    hasMore: result.hasMore,
+    sessionId: result.sessionId,
+  };
+}
+
+function flattenFeedPages(pages: FeedQueryPage[] | undefined): MarketPost[] {
+  if (!pages?.length) return [];
+  const seen = new Set<string>();
+  const merged: MarketPost[] = [];
+  for (const page of pages) {
+    for (const item of page.items) {
+      const id = String(item.id || '');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+function patchFeedInfiniteData(
+  old: InfiniteData<FeedQueryPage, FeedPageParam> | undefined,
+  updater: (items: MarketPost[]) => MarketPost[]
+): InfiniteData<FeedQueryPage, FeedPageParam> | undefined {
+  if (!old?.pages?.length) return old;
+  const flat = flattenFeedPages(old.pages);
+  const nextFlat = updater(flat);
+  const byId = new Map(nextFlat.map((item) => [item.id, item]));
+  return {
+    ...old,
+    pages: old.pages.map((page) => ({
+      ...page,
+      items: page.items
+        .map((item) => byId.get(item.id) ?? item)
+        .filter((item) => byId.has(item.id)),
+    })),
+  };
+}
+
 /**
- * Clip-style feed pagination: session-pinned pages, race-safe requests,
- * local remove/patch mutations.
+ * Clip-style feed pagination on TanStack Query — session-pinned pages,
+ * MMKV cold start, local remove/patch mutations.
  */
-export function useClipFeed(fetchPage: ClipFeedFetchPage | null): UseClipFeedResult {
-  const [items, setItems] = useState<MarketPost[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const [hasMore, setHasMore] = useState(true);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+export function useClipFeed({
+  mode,
+  userId = null,
+  enabled = true,
+}: UseClipFeedOptions): UseClipFeedResult {
+  const queryClient = useQueryClient();
+  const queryKey = queryKeys.feed.infinite(mode, userId);
 
-  const sessionIdRef = useRef<string | null>(null);
-  const cursorRef = useRef<string | null>(null);
-  const hasMoreRef = useRef(true);
-  const requestIdRef = useRef(0);
-  const fetchPageRef = useRef(fetchPage);
-  fetchPageRef.current = fetchPage;
-  const inFlightMoreRef = useRef(false);
-
-  const clearSession = useCallback(() => {
-    sessionIdRef.current = null;
-    cursorRef.current = null;
-    setSessionId(null);
-  }, []);
-
-  const runFetch = useCallback(
-    async (mode: ClipFeedMode) => {
-      const fetcher = fetchPageRef.current;
-      if (!fetcher) {
-        setItems([]);
-        setLoading(false);
-        setRefreshing(false);
-        setLoadingMore(false);
-        setError(null);
-        setHasMore(false);
-        hasMoreRef.current = false;
-        clearSession();
-        return;
-      }
-
-      const requestId = ++requestIdRef.current;
-
-      if (mode === 'initial') {
-        setLoading(true);
-        clearSession();
-        hasMoreRef.current = true;
-      } else if (mode === 'refresh') {
-        setRefreshing(true);
-        clearSession();
-        hasMoreRef.current = true;
-      } else {
-        if (inFlightMoreRef.current || !hasMoreRef.current) return;
-        inFlightMoreRef.current = true;
-        setLoadingMore(true);
-      }
-
-      setError(null);
-
-      try {
-        const result = await fetcher({
-          limit: marketFeedApi.pageSize,
-          cursor: mode === 'more' ? cursorRef.current : null,
-          sessionId: mode === 'more' ? sessionIdRef.current : null,
-        });
-
-        if (requestId !== requestIdRef.current) return;
-
-        const nextItems = normalizeItems(result.items);
-        if (result.sessionId) {
-          sessionIdRef.current = result.sessionId;
-          setSessionId(result.sessionId);
-        }
-        cursorRef.current = result.nextCursor;
-        hasMoreRef.current = Boolean(result.hasMore);
-        setHasMore(hasMoreRef.current);
-
-        setItems((prev) => {
-          if (mode === 'more') {
-            const seen = new Set(prev.map((p) => p.id));
-            const appended = nextItems.filter((p) => p.id && !seen.has(p.id));
-            return [...prev, ...appended];
-          }
-          return nextItems;
-        });
-      } catch (err) {
-        if (requestId !== requestIdRef.current) return;
-        console.error('useClipFeed fetch failed:', err);
-        setError(err as Error);
-        if (mode === 'initial') setItems([]);
-      } finally {
-        if (requestId === requestIdRef.current) {
-          setLoading(false);
-          setRefreshing(false);
-          setLoadingMore(false);
-          inFlightMoreRef.current = false;
-        }
-      }
+  const query = useInfiniteQuery({
+    queryKey,
+    enabled,
+    initialPageParam: { cursor: null, sessionId: null } satisfies FeedPageParam,
+    staleTime: 45_000,
+    queryFn: ({ pageParam }) => fetchFeedPage(mode, pageParam),
+    getNextPageParam: (lastPage) => {
+      if (!lastPage.hasMore || !lastPage.nextCursor) return undefined;
+      return {
+        cursor: lastPage.nextCursor,
+        sessionId: lastPage.sessionId,
+      };
     },
-    [clearSession]
-  );
+  });
 
-  // Reset + initial load whenever fetchPage identity changes (tab/source switch).
-  useEffect(() => {
-    clearSession();
-    setItems([]);
-    setHasMore(true);
-    void runFetch('initial');
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only when fetchPage changes
-  }, [fetchPage]);
+  const items = useMemo(() => flattenFeedPages(query.data?.pages), [query.data?.pages]);
+
+  const sessionId = useMemo(() => {
+    const pages = query.data?.pages;
+    if (!pages?.length) return null;
+    return pages[pages.length - 1]?.sessionId ?? pages[0]?.sessionId ?? null;
+  }, [query.data?.pages]);
 
   const loadMore = useCallback(async () => {
-    if (!hasMore || loading || refreshing || loadingMore) return;
-    await runFetch('more');
-  }, [hasMore, loading, refreshing, loadingMore, runFetch]);
+    if (!query.hasNextPage || query.isFetchingNextPage) return;
+    await query.fetchNextPage();
+  }, [query]);
 
   const refresh = useCallback(async () => {
-    await runFetch('refresh');
-  }, [runFetch]);
+    await query.refetch();
+  }, [query]);
 
-  const removeItem = useCallback((clipId: string) => {
-    const id = String(clipId || '').trim();
-    if (!id) return;
-    setItems((prev) => prev.filter((item) => item.id !== id));
-  }, []);
+  const removeItem = useCallback(
+    (clipId: string) => {
+      const id = String(clipId || '').trim();
+      if (!id) return;
+      queryClient.setQueryData<InfiniteData<FeedQueryPage, FeedPageParam>>(queryKey, (old) =>
+        patchFeedInfiniteData(old, (flat) => flat.filter((item) => item.id !== id))
+      );
+    },
+    [queryClient, queryKey]
+  );
 
-  const patchItem = useCallback((clipId: string, patch: Partial<MarketPost>) => {
-    const id = String(clipId || '').trim();
-    if (!id) return;
-    setItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...patch, id: item.id } : item))
-    );
-  }, []);
+  const patchItem = useCallback(
+    (clipId: string, patch: Partial<MarketPost>) => {
+      const id = String(clipId || '').trim();
+      if (!id) return;
+      queryClient.setQueryData<InfiniteData<FeedQueryPage, FeedPageParam>>(queryKey, (old) =>
+        patchFeedInfiniteData(old, (flat) =>
+          flat.map((item) => (item.id === id ? { ...item, ...patch, id: item.id } : item))
+        )
+      );
+    },
+    [queryClient, queryKey]
+  );
 
   const markSeen = useCallback((postIds: string[], dwellSec?: number) => {
     if (!postIds.length) return;
@@ -171,11 +185,11 @@ export function useClipFeed(fetchPage: ClipFeedFetchPage | null): UseClipFeedRes
 
   return {
     items,
-    loading,
-    refreshing,
-    loadingMore,
-    error,
-    hasMore,
+    loading: enabled && query.isPending && !query.data,
+    refreshing: query.isRefetching && Boolean(query.data),
+    loadingMore: query.isFetchingNextPage,
+    error: query.error instanceof Error ? query.error : null,
+    hasMore: Boolean(query.hasNextPage),
     sessionId,
     loadMore,
     refresh,

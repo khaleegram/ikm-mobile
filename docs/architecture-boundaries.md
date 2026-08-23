@@ -60,7 +60,9 @@ Do not add AsyncStorage TTL caches for API responses.
 
 Primary delivery is the chat WebSocket (`chat-ws.mjs` + client stream in `use-chat-thread`).
 
-**Constraint:** Cloud Run can run multiple instances; in-memory WS registries do not fan out across instances. Until Redis pub/sub (or sticky single-instance) is production-hardened, the client keeps a **quiet poll fallback**:
+Cross-instance fan-out uses **Upstash Redis TCP pub/sub** (`REDIS_URL` + `ioredis` in `chat-ws.mjs`) when configured on Cloud Run. Without `REDIS_URL`, WS remains in-memory on a single instance.
+
+**Constraint:** Until Redis pub/sub is verified in prod, the client keeps a **quiet poll fallback**:
 
 | Surface | Behavior |
 |---------|----------|

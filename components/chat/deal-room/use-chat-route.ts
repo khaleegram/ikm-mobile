@@ -9,7 +9,7 @@ import {
   resolveDirectConversationPeerId,
 } from '@/lib/chat/conversation-ids';
 import { isPostgresChatBackend } from '@/lib/config/chat-backend';
-import { isPendingThreadId } from '@/lib/stores/chat-thread-cache';
+import { isPendingThreadId } from '@/lib/chat/thread-id';
 
 const THREAD_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

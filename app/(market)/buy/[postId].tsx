@@ -362,6 +362,11 @@ export default function MarketBuyScreen() {
           <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
             {post.title?.trim() || post.description?.trim() || marketBrand.genericItemLower}
           </Text>
+          {post.title?.trim() && post.description?.trim() ? (
+            <Text style={[styles.itemDescription, { color: colors.textSecondary }]} numberOfLines={4}>
+              {post.description.trim()}
+            </Text>
+          ) : null}
           <View style={styles.sellerMetaRow}>
             <Text style={[styles.itemMeta, { color: colors.textSecondary }]}>Seller: {sellerName}</Text>
             <VerifiedBadge size={12} />
@@ -815,6 +820,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     lineHeight: 21,
+  },
+  itemDescription: {
+    fontSize: 13,
+    fontWeight: '500',
+    lineHeight: 18,
+    marginTop: 6,
   },
   itemMeta: {
     fontSize: 12,

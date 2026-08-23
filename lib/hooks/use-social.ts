@@ -12,16 +12,39 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 
 import { queryClient } from '@/lib/query/client';
 import { queryKeys } from '@/lib/query/keys';
+import type { MarketPost } from '@/types';
+
+export type SavedCollection = {
+  ids: string[];
+  posts: MarketPost[];
+};
+
+function normalizeSavedCache(data: unknown): SavedCollection {
+  if (Array.isArray(data)) {
+    return { ids: data, posts: [] };
+  }
+  if (data && typeof data === 'object') {
+    const record = data as Partial<SavedCollection>;
+    return {
+      ids: Array.isArray(record.ids) ? record.ids : [],
+      posts: Array.isArray(record.posts) ? record.posts : [],
+    };
+  }
+  return { ids: [], posts: [] };
+}
 
 async function fetchFollowingIds(): Promise<string[]> {
   const { marketSocialApi } = await import('@/lib/api/market-social');
   return marketSocialApi.listFollowingIds();
 }
 
-async function fetchSavedIds(): Promise<string[]> {
+async function fetchSavedCollection(): Promise<SavedCollection> {
   const { marketSocialApi } = await import('@/lib/api/market-social');
   const saved = await marketSocialApi.listSaved();
-  return saved.ids;
+  return {
+    ids: Array.isArray(saved.ids) ? saved.ids : [],
+    posts: Array.isArray(saved.posts) ? (saved.posts as MarketPost[]) : [],
+  };
 }
 
 async function fetchBlockedIds(): Promise<string[]> {
@@ -131,6 +154,10 @@ export async function toggleFollow(
       await marketSocialApi.followUser(followedId);
     }
     void queryClient.invalidateQueries({ queryKey: key });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.social.followersOf(followedId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.social.followingOf(followerId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.user.byId(followedId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.user.byId(followerId) });
   } catch (err) {
     queryClient.setQueryData(key, previous);
     throw err;
@@ -144,9 +171,54 @@ export function useUserSavedPostIds(userId: string | null): SocialIdsResult {
     queryKey: queryKeys.social.saved(id),
     enabled,
     staleTime: 30_000,
-    queryFn: fetchSavedIds,
+    queryFn: fetchSavedCollection,
   });
-  return useSocialIdsQuery(enabled, query);
+  const failed = query.isError && !query.data;
+  const collection = failed ? { ids: [], posts: [] } : normalizeSavedCache(query.data);
+  const ids = collection.ids;
+  const idSet = useMemo(() => new Set(ids), [ids]);
+  return {
+    ids,
+    idSet,
+    loading: enabled && query.isPending && !query.data,
+    error: failed
+      ? query.error instanceof Error
+        ? query.error
+        : new Error('Failed to load')
+      : null,
+    refetch: query.refetch,
+  };
+}
+
+/** Saved posts in API order — one round trip via `/social/saved`. */
+export function useSavedMarketPosts(userId: string | null) {
+  const id = String(userId || '').trim() || null;
+  const enabled = Boolean(id);
+  const query = useQuery({
+    queryKey: queryKeys.social.saved(id),
+    enabled,
+    staleTime: 30_000,
+    queryFn: fetchSavedCollection,
+  });
+  const failed = query.isError && !query.data;
+  const collection = failed ? { ids: [], posts: [] } : normalizeSavedCache(query.data);
+  const posts = useMemo(() => {
+    if (!collection.ids.length) return [];
+    const byId = new Map(collection.posts.map((post) => [String(post.id), post]));
+    return collection.ids.map((postId) => byId.get(postId)).filter(Boolean) as MarketPost[];
+  }, [collection.ids, collection.posts]);
+
+  return {
+    ids: collection.ids,
+    posts,
+    loading: enabled && query.isPending && !query.data,
+    error: failed
+      ? query.error instanceof Error
+        ? query.error
+        : new Error('Failed to load saved posts')
+      : null,
+    refetch: query.refetch,
+  };
 }
 
 /** Derives from the same shared saved-list cache as `useUserSavedPostIds` — no extra fetch. */
@@ -159,11 +231,12 @@ export function useIsSaved(userId: string | null, postId: string | null) {
     queryKey: queryKeys.social.saved(user),
     enabled,
     staleTime: 30_000,
-    queryFn: fetchSavedIds,
+    queryFn: fetchSavedCollection,
   });
 
   const failed = query.isError && !query.data;
-  const isSaved = enabled && !failed ? (query.data ?? []).includes(post as string) : false;
+  const ids = failed ? [] : normalizeSavedCache(query.data).ids;
+  const isSaved = enabled && !failed ? ids.includes(post as string) : false;
   return {
     isSaved,
     loading: enabled && query.isPending && !query.data,
@@ -179,12 +252,15 @@ export function useIsSaved(userId: string | null, postId: string | null) {
 /** Optimistically updates the shared saved-list cache; rolls back on failure. */
 export async function toggleMarketSave(userId: string, postId: string) {
   const key = queryKeys.social.saved(userId);
-  const previous = queryClient.getQueryData<string[]>(key) ?? [];
-  const currentlySaved = previous.includes(postId);
-  const next = currentlySaved
-    ? previous.filter((id) => id !== postId)
-    : [...new Set([...previous, postId])];
-  queryClient.setQueryData(key, next);
+  const previous = normalizeSavedCache(queryClient.getQueryData(key));
+  const currentlySaved = previous.ids.includes(postId);
+  const nextIds = currentlySaved
+    ? previous.ids.filter((id) => id !== postId)
+    : [...new Set([...previous.ids, postId])];
+  const nextPosts = currentlySaved
+    ? previous.posts.filter((post) => String(post.id) !== postId)
+    : previous.posts;
+  queryClient.setQueryData(key, { ids: nextIds, posts: nextPosts });
 
   try {
     const { marketSocialApi } = await import('@/lib/api/market-social');

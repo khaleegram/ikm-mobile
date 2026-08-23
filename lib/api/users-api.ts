@@ -6,6 +6,7 @@ export type ApiUserProfile = {
   email?: string | null;
   displayName?: string | null;
   storeName?: string | null;
+  bio?: string | null;
   avatarUrl?: string | null;
   storeLogoUrl?: string | null;
   photoURL?: string | null;
@@ -31,6 +32,10 @@ export const usersApi = {
       apiUrl('/users/me'),
       { method: 'PATCH', body: patch, requiresAuth: true }
     );
+    if (response.user?.id) {
+      const { setUserIdentityCache } = await import('@/lib/hooks/use-user-identity');
+      setUserIdentityCache(response.user);
+    }
     return response.user;
   },
 
@@ -51,6 +56,24 @@ export const usersApi = {
     if (ids.length === 0) return [];
     const response = await coreCloudClient.request<{ success: boolean; users: ApiUserProfile[] }>(
       apiUrl(`/users/batch?ids=${ids.map(encodeURIComponent).join(',')}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.users) ? response.users : [];
+  },
+
+  async search(params: {
+    q?: string;
+    city?: string;
+    state?: string;
+    limit?: number;
+  }): Promise<ApiUserProfile[]> {
+    const qs = new URLSearchParams();
+    if (params.q?.trim()) qs.set('q', params.q.trim());
+    if (params.city?.trim()) qs.set('city', params.city.trim());
+    if (params.state?.trim()) qs.set('state', params.state.trim());
+    if (params.limit) qs.set('limit', String(params.limit));
+    const response = await coreCloudClient.request<{ success: boolean; users: ApiUserProfile[] }>(
+      apiUrl(`/users/search?${qs.toString()}`),
       { method: 'GET', requiresAuth: true }
     );
     return Array.isArray(response.users) ? response.users : [];

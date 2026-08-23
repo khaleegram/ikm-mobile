@@ -21,6 +21,7 @@ function mapUserRow(row) {
     email: row.email || null,
     displayName: row.display_name || null,
     storeName: row.store_name || null,
+    bio: row.bio || null,
     avatarUrl: row.avatar_url || null,
     storeLogoUrl: row.store_logo_url || null,
     photoURL: row.avatar_url || row.store_logo_url || null,
@@ -49,6 +50,7 @@ export async function upsertUserFromAuth(userId, profile = {}) {
        market_location = COALESCE($8::jsonb, market_location),
        market_buyer_location = COALESCE($9::jsonb, market_buyer_location),
        market_buyer_phone = COALESCE($10, market_buyer_phone),
+       bio = COALESCE($11, bio),
        updated_at = now()
      WHERE id = $1`,
     [
@@ -62,6 +64,7 @@ export async function upsertUserFromAuth(userId, profile = {}) {
       profile.marketLocation ? JSON.stringify(profile.marketLocation) : null,
       profile.marketBuyerLocation ? JSON.stringify(profile.marketBuyerLocation) : null,
       asString(profile.marketBuyerPhone) || null,
+      asString(profile.bio) || null,
     ]
   );
   return getUser(userId);
@@ -96,6 +99,7 @@ async function hydrateUserFromFirestoreIfNeeded(id, row) {
         marketLocation: data.marketLocation || data.location || null,
         marketBuyerLocation: data.marketBuyerLocation || null,
         marketBuyerPhone: data.marketBuyerPhone || null,
+        bio: asString(data.bio) || null,
       });
       const db = requirePool();
       const refreshed = await db.query(`SELECT * FROM users WHERE id = $1 LIMIT 1`, [id]);
@@ -106,6 +110,51 @@ async function hydrateUserFromFirestoreIfNeeded(id, row) {
   }
 
   return mapUserRow(row) || { id, displayName: 'User', avatarUrl: null };
+}
+
+export async function searchUsers({
+  q = '',
+  city = '',
+  state = '',
+  limit = 40,
+} = {}) {
+  const db = requirePool();
+  const query = asString(q);
+  const cityFilter = asString(city);
+  const stateFilter = asString(state);
+  const take = Math.min(Math.max(Number(limit) || 40, 1), 80);
+
+  if (!query && !cityFilter && !stateFilter) {
+    return [];
+  }
+
+  const params = [];
+  const where = [];
+
+  if (query) {
+    params.push(`%${query.toLowerCase()}%`);
+    where.push(
+      `(LOWER(COALESCE(store_name, '')) LIKE $${params.length} OR LOWER(COALESCE(display_name, '')) LIKE $${params.length})`
+    );
+  }
+  if (cityFilter) {
+    params.push(cityFilter.toLowerCase());
+    where.push(`LOWER(COALESCE(market_location->>'city', '')) = $${params.length}`);
+  }
+  if (stateFilter) {
+    params.push(stateFilter.toLowerCase());
+    where.push(`LOWER(COALESCE(market_location->>'state', '')) = $${params.length}`);
+  }
+
+  params.push(take);
+  const { rows } = await db.query(
+    `SELECT * FROM users
+     WHERE ${where.join(' AND ')}
+     ORDER BY follower_count DESC NULLS LAST, updated_at DESC NULLS LAST
+     LIMIT $${params.length}`,
+    params
+  );
+  return rows.map(mapUserRow).filter(Boolean);
 }
 
 export async function getUser(userId) {
@@ -161,6 +210,7 @@ export async function updateUser(userId, patch = {}) {
     marketBuyerPhone: patch.marketBuyerPhone,
     role: patch.role,
     email: patch.email,
+    bio: patch.bio,
   });
 
   // The COALESCE upsert ignores nulls, so an explicit clear (patch key present but
@@ -172,15 +222,18 @@ export async function updateUser(userId, patch = {}) {
   const clearLocation =
     Object.prototype.hasOwnProperty.call(patch, 'marketBuyerLocation') &&
     patch.marketBuyerLocation === null;
-  if (clearPhone || clearLocation) {
+  const clearBio =
+    Object.prototype.hasOwnProperty.call(patch, 'bio') && !asString(patch.bio);
+  if (clearPhone || clearLocation || clearBio) {
     const db = requirePool();
     await db.query(
       `UPDATE users SET
          market_buyer_phone = CASE WHEN $2 THEN NULL ELSE market_buyer_phone END,
          market_buyer_location = CASE WHEN $3 THEN NULL ELSE market_buyer_location END,
+         bio = CASE WHEN $4 THEN NULL ELSE bio END,
          updated_at = now()
        WHERE id = $1`,
-      [userId, clearPhone, clearLocation]
+      [userId, clearPhone, clearLocation, clearBio]
     );
     return getUser(userId);
   }

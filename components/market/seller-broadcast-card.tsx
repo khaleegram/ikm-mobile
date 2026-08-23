@@ -42,6 +42,7 @@ interface SellerBroadcastCardProps {
   onPress: (mediaIndex: number) => void;
   onBuyPress?: () => void;
   onAskPress?: () => void;
+  onAddToCartPress?: () => void;
 }
 
 export function SellerBroadcastCard({
@@ -57,6 +58,7 @@ export function SellerBroadcastCard({
   onPress,
   onBuyPress,
   onAskPress,
+  onAddToCartPress,
 }: SellerBroadcastCardProps) {
   const isVideo = isVideoMarketPost(post);
   const imageUrls = useMemo(() => getCardImageUrls(post), [post]);
@@ -64,7 +66,7 @@ export function SellerBroadcastCard({
   const hasPrice = typeof post.price === 'number' && post.price > 0;
   const showAsk = !hasPrice && Boolean(onAskPress);
   const hasMedia = imageUrls.length > 0 || isVideo;
-  const showActions = (hasPrice && onBuyPress) || (showAsk && onAskPress);
+  const showActions = (hasPrice && onBuyPress) || (showAsk && onAskPress) || (hasPrice && onAddToCartPress);
   // When priced, buyers can always message to negotiate (reuse ask handler as DM)
   const showMessage = hasPrice && Boolean(onAskPress);
 
@@ -98,6 +100,21 @@ export function SellerBroadcastCard({
             <Text style={[styles.caption, { color: textColor }]} numberOfLines={hasMedia ? 2 : undefined}>
               {productTitle}
             </Text>
+            {String(post.description || '').trim() ? (
+              <Text
+                style={[styles.description, { color: textSecondary }]}
+                numberOfLines={hasMedia ? 3 : 6}>
+                {String(post.description).trim()}
+              </Text>
+            ) : null}
+          </View>
+        ) : String(post.description || '').trim() ? (
+          <View style={styles.captionWrap}>
+            <Text
+              style={[styles.description, { color: textSecondary }]}
+              numberOfLines={hasMedia ? 3 : 6}>
+              {String(post.description).trim()}
+            </Text>
           </View>
         ) : null}
 
@@ -124,6 +141,15 @@ export function SellerBroadcastCard({
                   activeOpacity={0.82}>
                   <IconSymbol name="cart.fill" size={10} color="#FFF" />
                   <Text style={styles.pillSolidText}>Buy</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {hasPrice && onAddToCartPress ? (
+                <TouchableOpacity
+                  style={[styles.pill, { borderColor: accentColor, borderWidth: 1.5 }]}
+                  onPress={onAddToCartPress}
+                  activeOpacity={0.85}>
+                  <Text style={[styles.pillText, { color: accentColor }]}>Add</Text>
                 </TouchableOpacity>
               ) : null}
 
@@ -302,6 +328,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '400',
+  },
+  description: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '400',
+    marginTop: 4,
   },
   mediaWrap: {
     paddingHorizontal: MEDIA_INSET,

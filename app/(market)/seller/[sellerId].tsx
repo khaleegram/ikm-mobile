@@ -27,6 +27,7 @@ import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import { startPostQuoteChat } from '@/lib/utils/market-ask-price-chat';
 import { buildSellerFeedItems, type SellerFeedItem } from '@/lib/utils/seller-feed';
+import { useMarketCartStore } from '@/lib/stores/market-cart';
 import { useTheme } from '@/lib/theme/theme-context';
 import type { MarketPost } from '@/types';
 import { Alert } from '@/components/app-alert';
@@ -161,6 +162,14 @@ export default function SellerProfileScreen() {
     router.push(`/(market)/buy/${post.id}` as any);
   }, []);
 
+  const addToCart = useCallback((post: MarketPost) => {
+    if (!user) {
+      router.push(marketLoginRoute as any);
+      return;
+    }
+    useMarketCartStore.getState().addPost(post);
+  }, [marketLoginRoute, user]);
+
   const renderItem = useCallback(
     ({ item }: { item: SellerFeedItem }) => {
       if (item.kind === 'date') {
@@ -187,11 +196,12 @@ export default function SellerProfileScreen() {
           accentColor={lightBrown}
           onPress={(mediaIndex) => openPost(item.post, mediaIndex)}
           onBuyPress={hasPrice ? () => openBuy(item.post) : undefined}
+          onAddToCartPress={hasPrice && !isOwnProfile ? () => addToCart(item.post) : undefined}
           onAskPress={!isOwnProfile ? () => handleAskPrice(item.post) : undefined}
         />
       );
     },
-    [avatarUri, cardColor, colors.border, colors.text, colors.textSecondary, handleAskPrice, isOwnProfile, mediaFallbackColor, openBuy, openPost]
+    [addToCart, avatarUri, cardColor, colors.border, colors.text, colors.textSecondary, handleAskPrice, isOwnProfile, mediaFallbackColor, openBuy, openPost]
   );
 
   // Never block the whole screen on profile — listings Query starts immediately and should
@@ -369,14 +379,34 @@ export default function SellerProfileScreen() {
                 <Text style={[styles.infoStatValue, { color: colors.text }]}>{posts.length}</Text>
                 <Text style={[styles.infoStatLabel, { color: colors.textSecondary }]}>Listings</Text>
               </View>
-              <View style={styles.infoStat}>
+              <TouchableOpacity
+                style={styles.infoStat}
+                activeOpacity={0.7}
+                onPress={() => {
+                  if (!sellerId) return;
+                  setInfoVisible(false);
+                  router.push({
+                    pathname: '/(market)/social-people',
+                    params: { mode: 'followers', userId: sellerId },
+                  } as any);
+                }}>
                 <Text style={[styles.infoStatValue, { color: colors.text }]}>{seller?.followerCount ?? 0}</Text>
                 <Text style={[styles.infoStatLabel, { color: colors.textSecondary }]}>Followers</Text>
-              </View>
-              <View style={styles.infoStat}>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.infoStat}
+                activeOpacity={0.7}
+                onPress={() => {
+                  if (!sellerId) return;
+                  setInfoVisible(false);
+                  router.push({
+                    pathname: '/(market)/social-people',
+                    params: { mode: 'following', userId: sellerId },
+                  } as any);
+                }}>
                 <Text style={[styles.infoStatValue, { color: colors.text }]}>{seller?.followingCount ?? 0}</Text>
                 <Text style={[styles.infoStatLabel, { color: colors.textSecondary }]}>Following</Text>
-              </View>
+              </TouchableOpacity>
             </View>
 
             {!isOwnProfile ? (

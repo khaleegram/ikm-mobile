@@ -89,6 +89,8 @@ export interface FeedVideoItemProps {
   onRemoveItem?: (clipId: string) => void;
   onComment?: () => void;
   onShare?: () => void;
+  isPostSaved?: boolean;
+  isPosterFollowed?: boolean;
 }
 
 export const FeedVideoItem = React.memo(function FeedVideoItem({
@@ -102,6 +104,8 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
   onPatchItem,
   onComment,
   onShare,
+  isPostSaved,
+  isPosterFollowed,
 }: FeedVideoItemProps) {
   const { user } = useUser();
   const isActiveFromStore = useIsFeedItemActive(post.id);
@@ -124,6 +128,18 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
   const setVerticalScrollLocked = useFeedVerticalScrollLock();
   const galleryLockRef = useRef(false);
   const touchStartRef = useRef({ x: 0, y: 0 });
+
+  const [showVideoPlayer, setShowVideoPlayer] = useState(mountMedia);
+
+  useEffect(() => {
+    if (mountMedia) {
+      setShowVideoPlayer(true);
+      return undefined;
+    }
+    // Pause first (feedActive drops with mountMedia), then release the native player.
+    const timer = setTimeout(() => setShowVideoPlayer(false), 400);
+    return () => clearTimeout(timer);
+  }, [mountMedia]);
 
   const engagement = useClipEngagement({ post, user, onPatchItem });
 
@@ -300,9 +316,10 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
             onPress={handleVideoPress}
             onLongPress={handleLongPress}
             delayLongPress={400}>
-            {mountMedia ? (
+            {showVideoPlayer ? (
               <>
                 <MarketVideoSurface
+                  key={`${post.id}-video`}
                   active={feedActive}
                   paused={isPaused || chatVoicePlaying}
                   muted={muted || !appForeground || chatVoicePlaying}
@@ -337,7 +354,7 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
             ) : (
               <View style={[styles.mediaImage, { backgroundColor: '#000' }]} />
             )}
-            {isPaused && mountMedia && (
+            {isPaused && showVideoPlayer && (
               <View style={styles.pauseOverlay} pointerEvents="none">
                 <IconSymbol name="play.fill" size={56} color="rgba(255,255,255,0.92)" />
               </View>
@@ -437,6 +454,8 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
         onFavorite={handleFavorite}
         muted={muted}
         onMuteToggle={isVideo ? handleMuteToggle : undefined}
+        isPostSaved={isPostSaved}
+        isPosterFollowed={isPosterFollowed}
       />
     </View>
   );
@@ -452,7 +471,9 @@ export const FeedVideoItem = React.memo(function FeedVideoItem({
   prev.focused === next.focused &&
   prev.muted === next.muted &&
   prev.onMutedChange === next.onMutedChange &&
-  prev.index === next.index
+  prev.index === next.index &&
+  prev.isPostSaved === next.isPostSaved &&
+  prev.isPosterFollowed === next.isPosterFollowed
 );
 
 const styles = StyleSheet.create({

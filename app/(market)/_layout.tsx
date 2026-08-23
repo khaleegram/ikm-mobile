@@ -140,6 +140,7 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="post/[id]" options={{ href: null }} />
       <Tabs.Screen name="post-edit/[id]" options={{ href: null }} />
       <Tabs.Screen name="buy/[postId]" options={{ href: null }} />
+      <Tabs.Screen name="cart" options={{ href: null }} />
       <Tabs.Screen name="orders/index" options={{ href: null }} />
       <Tabs.Screen name="orders/[id]" options={{ href: null }} />
       <Tabs.Screen name="payouts" options={{ href: null }} />
@@ -147,6 +148,9 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="sound/[soundId]" options={{ href: null }} />
       <Tabs.Screen name="saved-sounds" options={{ href: null }} />
       <Tabs.Screen name="following" options={{ href: null }} />
+      <Tabs.Screen name="followers" options={{ href: null }} />
+      <Tabs.Screen name="following-people" options={{ href: null }} />
+      <Tabs.Screen name="social-people" options={{ href: null }} />
       <Tabs.Screen name="liked" options={{ href: null }} />
       <Tabs.Screen name="seller/[sellerId]" options={{ href: null }} />
       <Tabs.Screen name="post-view/[id]" options={{ href: null }} />

@@ -498,6 +498,13 @@ export const paymentsApi = {
     agreedUnitPrice?: number;
     sellerId?: string | null;
     itemTitle?: string | null;
+    lineItems?: Array<{
+      postId: string;
+      quantity: number;
+      unitPrice: number;
+      title?: string;
+    }>;
+    cartSessionId?: string | null;
   }): Promise<{
     success: boolean;
     orderId: string;
@@ -519,6 +526,8 @@ export const paymentsApi = {
     const sellerId = String(input.sellerId || '').trim() || null;
     const itemTitle = String(input.itemTitle || '').trim() || null;
     const buyerPhone = String(input.buyerPhone || '').trim();
+    const lineItems = Array.isArray(input.lineItems) ? input.lineItems : undefined;
+    const cartSessionId = String(input.cartSessionId || '').trim() || null;
 
     return coreCloudClient.request<{
       success: boolean;
@@ -540,6 +549,8 @@ export const paymentsApi = {
           ...(agreedUnitPrice != null ? { agreedUnitPrice } : {}),
           ...(sellerId ? { sellerId } : {}),
           ...(itemTitle ? { itemTitle } : {}),
+          ...(lineItems?.length ? { lineItems } : {}),
+          ...(cartSessionId ? { cartSessionId } : {}),
         },
         requiresAuth: true,
       }

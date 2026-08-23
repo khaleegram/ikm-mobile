@@ -1,33 +1,32 @@
 /**
  * Foundational deal-room open path:
- * - Sync-seed TanStack Query (`queryKeys.chat.thread`) from inbox/MMKV before navigate
- * - Prefetch getThread + getMessages into that same Query key (not MMKV-only)
+ * - Sync-seed TanStack Query (`queryKeys.chat.thread`) from inbox before navigate
+ * - Prefetch getThread + getMessages into that same Query key
  * - Prefer real UUIDs — resolve `pending:` before navigation whenever the network allows
  */
 import { router } from 'expo-router';
 
 import { chatApi } from '@/lib/api/chat';
+import {
+  findThreadQueryByPostAndPeer,
+  getThreadQueryData,
+  migrateChatThreadQuery,
+  patchThreadData,
+  replaceInboxThreadId,
+  seedThreadFromInbox,
+  setThreadQueryData,
+  type ChatThreadQueryData,
+} from '@/lib/chat/chat-query-cache';
+import { isPendingThreadId, parsePendingThreadId } from '@/lib/chat/thread-id';
+import { mergeThreadMessages } from '@/lib/chat/thread-messages';
 import { queryClient } from '@/lib/query/client';
 import { queryKeys } from '@/lib/query/keys';
-import {
-  chatThreadCache,
-  isPendingThreadId,
-  mergeThreadMessages,
-  parsePendingThreadId,
-} from '@/lib/stores/chat-thread-cache';
-import { useChatInboxCache } from '@/lib/stores/chat-inbox-cache';
 import type { ChatInboxItem, ChatMessage, ChatPeerProfile, ChatThread } from '@/types/chat';
 
-/** Mirrors `ChatThreadQueryData` in use-chat-thread (kept local to avoid import cycles). */
-type DealRoomQueryData = {
-  thread: ChatThread | null;
-  peer: ChatPeerProfile | null;
-  messages: ChatMessage[];
-  olderCursor: string | null;
-  hasMore: boolean;
-};
+export type { ChatThreadQueryData } from '@/lib/chat/chat-query-cache';
+export { migrateChatThreadQuery } from '@/lib/chat/chat-query-cache';
 
-function emptyThreadData(): DealRoomQueryData {
+function emptyThreadData(): ChatThreadQueryData {
   return {
     thread: null,
     peer: null,
@@ -37,22 +36,7 @@ function emptyThreadData(): DealRoomQueryData {
   };
 }
 
-export function migrateDealRoomQuery(fromThreadId: string, toThreadId: string) {
-  const from = String(fromThreadId || '').trim();
-  const to = String(toThreadId || '').trim();
-  if (!from || !to || from === to) return;
-  const prev = queryClient.getQueryData<DealRoomQueryData>(queryKeys.chat.thread(from));
-  if (prev) {
-    queryClient.setQueryData<DealRoomQueryData>(queryKeys.chat.thread(to), {
-      ...prev,
-      thread: prev.thread ? { ...prev.thread, id: to } : prev.thread,
-      messages: prev.messages.map((m) => ({ ...m, threadId: to })),
-    });
-  }
-  queryClient.removeQueries({ queryKey: queryKeys.chat.thread(from) });
-}
-
-/** Write a deal-room snapshot into TanStack Query + MMKV (sync). */
+/** Write a deal-room snapshot into TanStack Query (sync). */
 export function seedDealRoomQuery(
   threadId: string,
   seed?: {
@@ -62,69 +46,31 @@ export function seedDealRoomQuery(
     olderCursor?: string | null;
     hasMore?: boolean;
   }
-): DealRoomQueryData {
+): ChatThreadQueryData {
   const id = String(threadId || '').trim();
   if (!id) return emptyThreadData();
 
-  const key = queryKeys.chat.thread(id);
-  const prev = queryClient.getQueryData<DealRoomQueryData>(key);
-  const mmkv = chatThreadCache.get(id);
-  const messages = mergeThreadMessages(
-    mergeThreadMessages(mmkv?.messages || [], prev?.messages || []),
-    seed?.messages || []
-  );
-  const next: DealRoomQueryData = {
-    thread: seed?.thread !== undefined ? seed.thread : prev?.thread ?? mmkv?.thread ?? null,
-    peer: seed?.peer !== undefined ? seed.peer : prev?.peer ?? mmkv?.peer ?? null,
+  const prev = getThreadQueryData(id);
+  const messages = mergeThreadMessages(prev?.messages || [], seed?.messages || []);
+  return setThreadQueryData(id, {
+    thread: seed?.thread !== undefined ? seed.thread : prev?.thread ?? null,
+    peer: seed?.peer !== undefined ? seed.peer : prev?.peer ?? null,
     messages,
-    olderCursor:
-      seed?.olderCursor !== undefined ? seed.olderCursor : prev?.olderCursor ?? null,
+    olderCursor: seed?.olderCursor !== undefined ? seed.olderCursor : prev?.olderCursor ?? null,
     hasMore: seed?.hasMore !== undefined ? seed.hasMore : Boolean(prev?.hasMore),
-  };
-
-  queryClient.setQueryData(key, next);
-  chatThreadCache.set(
-    id,
-    { thread: next.thread, peer: next.peer, messages: next.messages },
-    { notify: false }
-  );
-  return next;
+  });
 }
 
 /** Seed Query from an inbox row before navigation (instant chrome). */
 export function seedDealRoomFromInbox(room: ChatInboxItem): void {
-  const id = String(room.threadId || '').trim();
-  if (!id) return;
-  chatThreadCache.seedFromInbox(room, { notify: false });
-  const cached = chatThreadCache.get(id);
-  seedDealRoomQuery(id, {
-    thread: cached?.thread || {
-      id,
-      postId: room.postId,
-      buyerId: '',
-      sellerId: '',
-      status: room.status,
-      postSnapshot: room.postSnapshot || {},
-      lastMessage: room.lastPreview,
-      lastAt: room.lastAt,
-    },
-    peer: cached?.peer || {
-      id: room.peerId,
-      displayName: room.peerName,
-      storeName: room.peerName || null,
-      avatarUrl: room.peerAvatar || null,
-      presence: room.peerPresence,
-      lastSeenAt: room.peerLastSeenAt,
-    },
-    messages: cached?.messages || [],
-  });
+  seedThreadFromInbox(room);
 }
 
 /**
  * Network prefetch into the same Query key the deal room reads.
  * Safe to fire-and-forget after a sync seed + navigate.
  */
-export async function prefetchDealRoom(threadId: string): Promise<DealRoomQueryData | null> {
+export async function prefetchDealRoom(threadId: string): Promise<ChatThreadQueryData | null> {
   const id = String(threadId || '').trim();
   if (!id || isPendingThreadId(id)) return null;
 
@@ -136,13 +82,9 @@ export async function prefetchDealRoom(threadId: string): Promise<DealRoomQueryD
       chatApi.getMessages(id),
     ]);
     const key = queryKeys.chat.thread(id);
-    const prev = queryClient.getQueryData<DealRoomQueryData>(key);
-    const mmkv = chatThreadCache.get(id);
-    const messages = mergeThreadMessages(
-      mergeThreadMessages(mmkv?.messages || [], prev?.messages || []),
-      page.messages
-    );
-    const next: DealRoomQueryData = {
+    const prev = queryClient.getQueryData<ChatThreadQueryData>(key);
+    const messages = mergeThreadMessages(prev?.messages || [], page.messages);
+    const next: ChatThreadQueryData = {
       thread: meta.thread,
       peer: meta.peer,
       messages,
@@ -150,14 +92,9 @@ export async function prefetchDealRoom(threadId: string): Promise<DealRoomQueryD
       hasMore: Boolean(page.hasMore),
     };
     queryClient.setQueryData(key, next);
-    chatThreadCache.set(
-      id,
-      { thread: next.thread, peer: next.peer, messages: next.messages },
-      { notify: true }
-    );
     return next;
   } catch {
-    return queryClient.getQueryData<DealRoomQueryData>(queryKeys.chat.thread(id)) ?? null;
+    return queryClient.getQueryData<ChatThreadQueryData>(queryKeys.chat.thread(id)) ?? null;
   }
 }
 
@@ -172,13 +109,12 @@ export async function resolvePendingThreadId(
   const pending = parsePendingThreadId(raw);
   if (!pending) return raw;
 
-  const local = chatThreadCache.findByPostAndPeer(pending.postId, pending.peerId);
+  const local = findThreadQueryByPostAndPeer(pending.postId, pending.peerId);
   const localId = String(local?.thread?.id || '').trim();
   if (localId && !isPendingThreadId(localId)) {
-    chatThreadCache.migrate(raw, localId);
-    migrateDealRoomQuery(raw, localId);
+    migrateChatThreadQuery(raw, localId);
     if (userId) {
-      useChatInboxCache.getState().replaceThreadId(userId, raw, localId);
+      replaceInboxThreadId(userId, raw, localId);
     }
     return localId;
   }
@@ -187,11 +123,10 @@ export async function resolvePendingThreadId(
     const { thread } = await chatApi.getOrCreateThread(pending.postId, pending.peerId);
     const realId = String(thread.id || '').trim();
     if (!realId || isPendingThreadId(realId)) return raw;
-    chatThreadCache.migrate(raw, realId);
-    migrateDealRoomQuery(raw, realId);
-    chatThreadCache.set(realId, { thread }, { notify: false });
+    migrateChatThreadQuery(raw, realId);
+    setThreadQueryData(realId, { thread });
     if (userId) {
-      useChatInboxCache.getState().replaceThreadId(userId, raw, realId, {
+      replaceInboxThreadId(userId, raw, realId, {
         postId: thread.postId,
         status: thread.status,
         postSnapshot: thread.postSnapshot,
@@ -231,10 +166,12 @@ export async function openDealRoom(room: ChatInboxItem, userId?: string | null):
   const roomForSeed: ChatInboxItem = { ...room, threadId };
   seedDealRoomFromInbox(roomForSeed);
 
-  // Prefer not to land on pending — only navigate pending if resolve failed.
   navigateToDealRoom(threadId, peerId);
 
   if (!isPendingThreadId(threadId)) {
     void prefetchDealRoom(threadId);
   }
 }
+
+// Re-export patch helper for consumers that merge thread snapshots.
+export { patchThreadData };

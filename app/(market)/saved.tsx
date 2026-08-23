@@ -18,8 +18,8 @@ import { FeedSegmentSwitch } from '@/components/market/feed-segment-switch';
 import { VerticalClipFeed } from '@/components/market/vertical-clip-feed';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useUser } from '@/lib/firebase/auth/use-user';
-import { useMarketPostsByIds, useUserLikedPostIds } from '@/lib/hooks/use-market-post';
-import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/hooks/use-social';
+import { useUserLikedPostIds, useMarketPostsByIds } from '@/lib/hooks/use-market-post';
+import { useFollowingUserIds, useSavedMarketPosts, useUserSavedPostIds } from '@/lib/hooks/use-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
 import { getFeedActivePostId, setFeedActivePostId, useFeedMediaPrefetch } from '@/lib/hooks/use-feed-active-post';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -54,8 +54,14 @@ export default function SavedScreen() {
     idSet: savedIdSet,
     loading: savesLoading,
     error: savesError,
-    refetch: refetchSaved,
+    refetch: refetchSavedIds,
   } = useUserSavedPostIds(user?.uid || null);
+  const {
+    posts: savedPosts,
+    loading: savedPostsLoading,
+    error: savedPostsError,
+    refetch: refetchSavedPosts,
+  } = useSavedMarketPosts(user?.uid || null);
   const {
     likedPostIds,
     loading: likesLoading,
@@ -67,10 +73,20 @@ export default function SavedScreen() {
   const activeIds = collectionMode === 'liked' ? likedPostIds : savedIds;
   const idsLoading = collectionMode === 'liked' ? likesLoading : savesLoading;
   const idsError = collectionMode === 'liked' ? likesError : savesError;
-  const refetchIds = collectionMode === 'liked' ? refetchLiked : refetchSaved;
-  const { posts, loading: postsLoading, error } = useMarketPostsByIds(activeIds, 50);
+  const refetchIds = collectionMode === 'liked' ? refetchLiked : refetchSavedIds;
+  const { posts: likedPosts, loading: likedPostsLoading, error: likedPostsError } =
+    useMarketPostsByIds(collectionMode === 'liked' ? likedPostIds : [], 50);
 
-  const visiblePosts = useMemo(() => posts.filter((post) => post !== undefined), [posts]);
+  const visiblePosts = useMemo(
+    () => (collectionMode === 'liked' ? likedPosts : savedPosts).filter(Boolean),
+    [collectionMode, likedPosts, savedPosts]
+  );
+  const postsLoading = collectionMode === 'liked' ? likedPostsLoading : savedPostsLoading;
+  const postsError = collectionMode === 'liked' ? likedPostsError : savedPostsError;
+
+  const refetchSaved = useCallback(async () => {
+    await Promise.all([refetchSavedIds(), refetchSavedPosts()]);
+  }, [refetchSavedIds, refetchSavedPosts]);
 
   const scrollToTop = useCallback(() => {
     const ref = listRef.current;
@@ -142,9 +158,11 @@ export default function SavedScreen() {
         index={index}
         isActive={index === activeIndex}
         focused={focused}
+        isPostSaved={savedIdSet.has(item.id)}
+        isPosterFollowed={item.posterId ? followingIdSet.has(item.posterId) : false}
       />
     ),
-    [activeIndex, focused]
+    [activeIndex, focused, savedIdSet, followingIdSet]
   );
 
   const renderHeader = () => (
@@ -234,8 +252,8 @@ export default function SavedScreen() {
     );
   }
 
-  if (idsError || error) {
-    const displayError = idsError || error;
+  if (idsError || postsError) {
+    const displayError = idsError || postsError;
     return (
       <View style={[styles.center, { backgroundColor: '#000' }]}>
         <StatusBar barStyle="light-content" />

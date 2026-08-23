@@ -13,7 +13,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { showToast } from '@/components/toast';
 import { saveMarketBuyerProfile } from '@/lib/api/market-buyer-profile';
-import { marketFeedApi, type FeedPageParams } from '@/lib/api/market-feed';
 import { useFollowingUserIds, useUserSavedPostIds } from '@/lib/hooks/use-social';
 import { FeedSocialProvider } from '@/lib/context/feed-social-context';
 import {
@@ -36,6 +35,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Platform } from 'react-native';
 import { Alert } from '@/components/app-alert';
+import { useMarketCartStore } from '@/lib/stores/market-cart';
 
 const lightBrown = '#A67C52';
 const MARKET_LOCATION_PROMPT_KEY = '@ikm_market_location_prompted_v1';
@@ -55,6 +55,7 @@ export default function MarketFeedScreen() {
   const listRef = useRef<any>(null);
   const hasShownLocationPromptRef = useRef(false);
   const navigation = useNavigation();
+  const cartCount = useMarketCartStore((s) => s.lines.reduce((sum, line) => sum + line.quantity, 0));
 
   const {
     ids: followingIds,
@@ -76,16 +77,9 @@ export default function MarketFeedScreen() {
     }
   }, [feedMode, user]);
 
-  const fetchPage = React.useMemo(() => {
-    if (feedMode === 'following') {
-      if (!user) return null;
-      return (params: FeedPageParams) => marketFeedApi.getFollowingFeed(params);
-    }
-    if (!user) {
-      return (params: FeedPageParams) => marketFeedApi.getPublicFeed(params);
-    }
-    return (params: FeedPageParams) => marketFeedApi.getForYouFeed(params);
-  }, [feedMode, user]);
+  const feedQueryMode =
+    feedMode === 'following' ? 'following' : user ? 'forYou' : 'public';
+  const feedQueryEnabled = feedMode !== 'following' || Boolean(user);
 
   const {
     items: posts,
@@ -99,7 +93,11 @@ export default function MarketFeedScreen() {
     removeItem,
     patchItem,
     markSeen,
-  } = useClipFeed(fetchPage);
+  } = useClipFeed({
+    mode: feedQueryMode,
+    userId: user?.uid ?? null,
+    enabled: feedQueryEnabled,
+  });
 
   // One batched identity fetch for visible posters — warms Query so overlays don't
   // each flash "Seller" while waiting on N× GET /users/:id.
@@ -286,9 +284,11 @@ export default function MarketFeedScreen() {
         onMutedChange={setMuted}
         onPatchItem={patchItem}
         onRemoveItem={removeItem}
+        isPostSaved={savedIdSet.has(item.id)}
+        isPosterFollowed={item.posterId ? followingIdSet.has(item.posterId) : false}
       />
     ),
-    [activeIndex, focused, muted, patchItem, removeItem]
+    [activeIndex, focused, muted, patchItem, removeItem, savedIdSet, followingIdSet]
   );
 
   const renderHomeAppBar = () => (
@@ -309,6 +309,20 @@ export default function MarketFeedScreen() {
           onChange={handleFeedModeChange}
         />
         <View style={[styles.headerSide, styles.headerSideRight]}>
+          <TouchableOpacity
+            style={styles.searchPill}
+            onPress={() => {
+              haptics.light();
+              router.push('/(market)/cart');
+            }}
+            activeOpacity={0.8}>
+            <IconSymbol name="cart.fill" size={14} color="rgba(255,255,255,0.85)" />
+            {cartCount > 0 ? (
+              <View style={styles.cartBadge}>
+                <Text style={styles.cartBadgeText}>{cartCount > 9 ? '9+' : String(cartCount)}</Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.searchPill}
             onPress={() => {
@@ -468,6 +482,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.18)',
     borderRadius: 20,
+  },
+  cartBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: lightBrown,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  cartBadgeText: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: '800',
   },
   center: {
     flex: 1,

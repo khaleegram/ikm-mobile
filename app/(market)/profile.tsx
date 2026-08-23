@@ -2,10 +2,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import React,
-  { useCallback,
-  useMemo,
-  useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -19,19 +16,25 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 
 import { PostManageSheet } from '@/components/market/post-manage-sheet';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VerifiedBadge } from '@/components/ui/verified-badge';
 import { showToast } from '@/components/toast';
 import { marketPostsApi } from '@/lib/api/market-posts';
+import { usersApi } from '@/lib/api/users-api';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { firestore } from '@/lib/firebase/config';
 import { useUserMarketPosts } from '@/lib/hooks/use-market-post';
 import { useUserOrders } from '@/lib/hooks/use-order';
 import { useSellerPayouts } from '@/lib/firebase/firestore/payouts';
-import { updateUserProfile, useUserProfile } from '@/lib/firebase/firestore/users';
+import { useUserProfile } from '@/lib/firebase/firestore/users';
+import {
+  avatarUriFromProfile,
+  displayNameFromProfile,
+  useUserIdentity,
+} from '@/lib/hooks/use-user-identity';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant, getSignupRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
@@ -70,7 +73,8 @@ export default function ProfileScreen() {
   const { colors, colorScheme, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { user: profile } = useUserProfile(user?.uid ?? null);
+  const { user: firestoreProfile } = useUserProfile(user?.uid ?? null);
+  const { user: identity, publicUser } = useUserIdentity(user?.uid ?? null);
   const { posts, loading: postsLoading, error: postsError, refetch: refetchPosts } = useUserMarketPosts(
     user?.uid ?? null
   );
@@ -93,22 +97,59 @@ export default function ProfileScreen() {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const [savingName, setSavingName] = useState(false);
+  const bioMigratedRef = useRef(false);
 
   const isDark = colorScheme === 'dark';
 
   const displayName = useMemo(() => {
-    const raw = String(profile?.displayName || user?.displayName || '').trim();
+    const fromIdentity = displayNameFromProfile(identity, '');
+    const raw = String(fromIdentity || firestoreProfile?.displayName || user?.displayName || '').trim();
     return raw ? toNameCase(raw) : user?.email?.split('@')[0] || 'Market User';
-  }, [profile?.displayName, user?.displayName, user?.email]);
+  }, [firestoreProfile?.displayName, identity, user?.displayName, user?.email]);
 
-  const avatarUrl = useMemo(() => String(profile?.storeLogoUrl || '').trim(), [profile?.storeLogoUrl]);
+  const avatarUrl = useMemo(
+    () =>
+      avatarUriFromProfile(identity) ||
+      String(firestoreProfile?.storeLogoUrl || '').trim() ||
+      '',
+    [firestoreProfile?.storeLogoUrl, identity]
+  );
   const initials = useMemo(() => getInitials(displayName), [displayName]);
+  const profileBio = String(identity?.bio || publicUser?.bio || '').trim();
 
   const roleLabel = useMemo(() => {
     if (user?.isAdmin) return 'Admin';
-    if ((user as any)?.isSeller || profile?.storeName) return 'Seller';
+    if ((user as any)?.isSeller || identity?.storeName || firestoreProfile?.storeName) return 'Seller';
     return 'Buyer';
-  }, [profile?.storeName, user?.isAdmin, (user as any)?.isSeller]);
+  }, [firestoreProfile?.storeName, identity?.storeName, user?.isAdmin, (user as any)?.isSeller]);
+
+  // One-time: copy Firestore bio into Neon when market identity has none yet.
+  useEffect(() => {
+    if (!user?.uid || bioMigratedRef.current || !identity) return;
+    if (String(identity.bio || '').trim()) {
+      bioMigratedRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(firestore, 'users', user.uid));
+        const legacyBio = String(snap.data()?.bio || '').trim();
+        if (!legacyBio || cancelled) {
+          bioMigratedRef.current = true;
+          return;
+        }
+        await usersApi.updateMe({ bio: legacyBio.slice(0, 150) });
+      } catch {
+        // ignore — seller page will stay empty until user re-saves bio
+      } finally {
+        if (!cancelled) bioMigratedRef.current = true;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, user?.uid]);
 
   const balance = useMemo(() => {
     const released = sellerOrders.reduce((sum, o) => {
@@ -137,7 +178,8 @@ export default function ProfileScreen() {
     }).length;
   }, [sellerOrders]);
 
-  const followerCount = Number(profile?.followerCount || 0);
+  const followerCount = Number(identity?.followerCount ?? firestoreProfile?.followerCount ?? 0);
+  const followingCount = Number(identity?.followingCount ?? firestoreProfile?.followingCount ?? 0);
 
   // Must be above early returns to keep hook order stable
   const paddedPosts: (MarketPost | null)[] = useMemo(() => {
@@ -151,7 +193,6 @@ export default function ProfileScreen() {
   const persistPhoto = async (url: string | null) => {
     if (!user?.uid) return;
     try {
-      const { usersApi } = await import('@/lib/api/users-api');
       await usersApi.updateMe({ storeLogoUrl: url, avatarUrl: url });
     } catch {
       // Fall back for seller/admin profile fields still on Firestore.
@@ -234,7 +275,7 @@ export default function ProfileScreen() {
     setSavingBio(true);
     haptics.light();
     try {
-      await updateUserProfile(user.uid, { bio: bioInput.trim() });
+      await usersApi.updateMe({ bio: bioInput.trim().slice(0, 150) || null });
       setEditingBio(false);
       showToast('Bio saved.', 'success');
     } catch {
@@ -255,7 +296,8 @@ export default function ProfileScreen() {
     setSavingName(true);
     haptics.light();
     try {
-      await updateUserProfile(user.uid, { displayName: toNameCase(val) });
+      const cleaned = toNameCase(val);
+      await usersApi.updateMe({ displayName: cleaned, storeName: cleaned });
       setEditingName(false);
       showToast('Name updated.', 'success');
     } catch {
@@ -450,7 +492,15 @@ export default function ProfileScreen() {
           <View style={[styles.roleChip, { backgroundColor: `${ACCENT}18` }]}>
             <Text style={[styles.roleText, { color: ACCENT }]}>{roleLabel}</Text>
           </View>
-          <View style={[styles.followersPill, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <TouchableOpacity
+            style={[styles.followersPill, { backgroundColor: colors.card, borderColor: colors.border }]}
+            activeOpacity={0.75}
+            onPress={() =>
+              router.push({
+                pathname: '/(market)/social-people',
+                params: { mode: 'followers', userId: user.uid },
+              } as any)
+            }>
             <IconSymbol name="person.2.fill" size={12} color={ACCENT} />
             <Text style={[styles.followersPillText, { color: colors.text }]}>
               {followerCount.toLocaleString()}
@@ -458,7 +508,21 @@ export default function ProfileScreen() {
             <Text style={[styles.followersPillLabel, { color: colors.textSecondary }]}>
               {followerCount === 1 ? 'follower' : 'followers'}
             </Text>
-          </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.followersPill, { backgroundColor: colors.card, borderColor: colors.border }]}
+            activeOpacity={0.75}
+            onPress={() =>
+              router.push({
+                pathname: '/(market)/social-people',
+                params: { mode: 'following', userId: user.uid },
+              } as any)
+            }>
+            <Text style={[styles.followersPillText, { color: colors.text }]}>
+              {followingCount.toLocaleString()}
+            </Text>
+            <Text style={[styles.followersPillLabel, { color: colors.textSecondary }]}>following</Text>
+          </TouchableOpacity>
         </View>
 
         {editingBio ? (
@@ -488,9 +552,9 @@ export default function ProfileScreen() {
             </View>
           </View>
         ) : (
-          <TouchableOpacity style={styles.bioDisplay} activeOpacity={0.7} onPress={() => { setBioInput(profile?.bio || ''); setEditingBio(true); }}>
-            {profile?.bio ? (
-              <Text style={[styles.bioText, { color: colors.text }]}>{profile.bio}</Text>
+          <TouchableOpacity style={styles.bioDisplay} activeOpacity={0.7} onPress={() => { setBioInput(profileBio); setEditingBio(true); }}>
+            {profileBio ? (
+              <Text style={[styles.bioText, { color: colors.text }]}>{profileBio}</Text>
             ) : (
               <View style={styles.bioEmptyRow}>
                 <IconSymbol name="plus.circle" size={14} color={ACCENT} />

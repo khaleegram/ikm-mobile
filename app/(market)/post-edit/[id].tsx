@@ -33,6 +33,7 @@ export default function EditMarketPostScreen() {
   const { setPost, invalidatePost } = useInvalidateMarketPost();
 
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [hashtags, setHashtags] = useState<string[]>([]);
   const [price, setPrice] = useState('');
   const [city, setCity] = useState('');
@@ -45,6 +46,7 @@ export default function EditMarketPostScreen() {
   useEffect(() => {
     if (!post || isInitialized) return;
     setTitle(post.title || '');
+    setDescription(post.description || '');
     setHashtags(
       Array.isArray(post.hashtags)
         ? post.hashtags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean)
@@ -59,6 +61,7 @@ export default function EditMarketPostScreen() {
   const hasChanges = useMemo(() => {
     if (!post) return false;
     const initialTitle = post.title || '';
+    const initialDescription = post.description || '';
     const initialPrice = post.price ? String(post.price) : '';
     const initialCity = post.location?.city || '';
     const initialState = post.location?.state || '';
@@ -71,12 +74,13 @@ export default function EditMarketPostScreen() {
 
     return (
       title.trim() !== initialTitle.trim() ||
+      description.trim() !== initialDescription.trim() ||
       tagsChanged ||
       price.trim() !== initialPrice.trim() ||
       city.trim() !== initialCity.trim() ||
       state.trim() !== initialState.trim()
     );
-  }, [city, hashtags, post, price, state, title]);
+  }, [city, description, hashtags, post, price, state, title]);
 
   const handleSave = async () => {
     if (!post || !post.id || !isOwner || saving) return;
@@ -92,6 +96,7 @@ export default function EditMarketPostScreen() {
       haptics.medium();
 
       const cleanedTitle = title.trim().slice(0, 80);
+      const cleanedDescription = description.trim().slice(0, 500);
       const cleanedCity = city.trim();
       const cleanedState = state.trim();
       const hasListedPrice = Number.isFinite(parsedPrice);
@@ -103,8 +108,7 @@ export default function EditMarketPostScreen() {
 
       const payload: Record<string, unknown> = {
         title: cleanedTitle,
-        // This screen has no description field — omit it so PATCH leaves the existing
-        // caption/description untouched instead of wiping it on every save.
+        description: cleanedDescription || null,
         hashtags,
         price: hasListedPrice ? parsedPrice : null,
         isNegotiable: hasListedPrice,
@@ -200,7 +204,7 @@ export default function EditMarketPostScreen() {
           <Text style={[styles.cardTitle, { color: colors.text }]}>Preview</Text>
           <Image source={{ uri: post.images[0] }} style={styles.previewImage} contentFit="cover" />
           <Text style={[styles.cardHint, { color: colors.textSecondary }]}>
-            Update title, hashtags, price, and location. Photo edits are not available here.
+            Update title, description, hashtags, price, and location. Photo edits are not available here.
           </Text>
         </View>
 
@@ -220,6 +224,26 @@ export default function EditMarketPostScreen() {
             value={title}
             onChangeText={(value) => setTitle(value.slice(0, 80))}
             maxLength={80}
+          />
+
+          <Text style={[styles.inputLabel, styles.spacingTop, { color: colors.text }]}>Description</Text>
+          <TextInput
+            style={[
+              styles.input,
+              styles.descriptionInput,
+              {
+                color: colors.text,
+                borderColor: colors.border,
+                backgroundColor: colors.backgroundSecondary,
+              },
+            ]}
+            placeholder="Optional details — size, condition, what’s included"
+            placeholderTextColor={colors.textSecondary}
+            value={description}
+            onChangeText={(value) => setDescription(value.slice(0, 500))}
+            multiline
+            maxLength={500}
+            textAlignVertical="top"
           />
 
           <View style={styles.spacingTop}>
@@ -390,6 +414,12 @@ const styles = StyleSheet.create({
     height: 46,
     fontSize: 14,
     fontWeight: '600',
+  },
+  descriptionInput: {
+    height: undefined,
+    minHeight: 96,
+    paddingVertical: 10,
+    fontWeight: '500',
   },
   locationRow: {
     flexDirection: 'row',

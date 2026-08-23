@@ -61,6 +61,7 @@ export default function CreatePostScreen() {
   const [videoUri, setVideoUri] = useState("");
   const [coverImageUri, setCoverImageUri] = useState("");
   const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [hashtags, setHashtags] = useState<string[]>([]);
   const [price, setPrice] = useState("");
   const [location, setLocation] = useState({ state: "", city: "" });
@@ -125,6 +126,7 @@ export default function CreatePostScreen() {
     setVideoUri("");
     setCoverImageUri("");
     setTitle("");
+    setDescription("");
     setHashtags([]);
     setPrice("");
     setLocation({ state: "", city: "" });
@@ -145,8 +147,7 @@ export default function CreatePostScreen() {
       videoUri: postMode === "video" ? videoUri || undefined : undefined,
       hashtags,
       title: title.trim().slice(0, 80) || undefined,
-      // Caption is not collected — title + hashtags (algorithm only)
-      description: undefined,
+      description: description.trim().slice(0, 500) || undefined,
       price: hasListedPrice ? parsedPrice : undefined,
       // Listed price is a starting point; buyers can always message to negotiate
       isNegotiable: hasListedPrice,
@@ -362,6 +363,28 @@ export default function CreatePostScreen() {
             </Text>
           </View>
 
+          <View style={[styles.descriptionSection, { borderTopColor: colors.border }]}>
+            <Text style={[styles.fieldLabel, { color: LIGHT_BROWN, marginBottom: 8, paddingHorizontal: 0 }]}>
+              DESCRIPTION
+            </Text>
+            <Text style={[styles.hashtagHint, { color: colors.textSecondary }]}>
+              Optional details buyers see before messaging — size, condition, what’s included.
+            </Text>
+            <TextInput
+              value={description}
+              onChangeText={(value) => setDescription(value.slice(0, 500))}
+              placeholder="Add more details…"
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              maxLength={500}
+              textAlignVertical="top"
+              style={[styles.descriptionInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+            />
+            <Text style={[styles.charCount, { color: colors.textSecondary, alignSelf: "flex-end" }]}>
+              {description.length}/500
+            </Text>
+          </View>
+
           {/* Hashtags for discovery/algorithm only — not shown on the feed */}
           <View style={[styles.hashtagSection, { borderTopColor: colors.border }]}>
             <Text style={[styles.fieldLabel, { color: LIGHT_BROWN, marginBottom: 8, paddingHorizontal: 0 }]}>
@@ -556,6 +579,23 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   charCount: { fontSize: 11, alignSelf: "flex-end" },
+
+  descriptionSection: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  descriptionInput: {
+    minHeight: 88,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 6,
+  },
 
   hashtagSection: {
     paddingHorizontal: 14,

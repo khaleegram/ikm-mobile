@@ -57,8 +57,14 @@ function loadMigrationFiles() {
     .map(([version, file]) => ({ version, file }));
 }
 
+function normalizeMigrationSql(sql) {
+  // Checksums are computed on LF-normalized SQL so Windows CRLF checkouts
+  // match what ran on Linux/Cloud Run when migrations were first applied.
+  return sql.replace(/\r\n/g, '\n');
+}
+
 function checksumOf(sql) {
-  return crypto.createHash('sha256').update(sql).digest('hex');
+  return crypto.createHash('sha256').update(normalizeMigrationSql(sql)).digest('hex');
 }
 
 async function ensureMigrationsTable(client) {
@@ -94,7 +100,7 @@ async function main() {
 
     for (const { version, file } of migrations) {
       const sqlPath = path.join(MIGRATIONS_DIR, file);
-      const sql = fs.readFileSync(sqlPath, 'utf8');
+      const sql = normalizeMigrationSql(fs.readFileSync(sqlPath, 'utf8'));
       const checksum = checksumOf(sql);
       const existing = applied.get(version);
 

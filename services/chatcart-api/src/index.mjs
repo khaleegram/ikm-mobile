@@ -65,8 +65,9 @@ import {
   createComment,
   deleteComment,
   listFollowingIds,
+  listFollowerIds,
 } from './social-graph.mjs';
-import { getUser, getUsersBatch, updateUser, registerFcmToken, unregisterFcmToken } from './users.mjs';
+import { getUser, getUsersBatch, updateUser, registerFcmToken, unregisterFcmToken, searchUsers } from './users.mjs';
 import {
   getInbox,
   getOrCreateThread,
@@ -85,6 +86,7 @@ import {
 import {
   registerThreadSocket,
   unregisterThreadSocket,
+  initChatWsPubSub,
 } from './chat-ws.mjs';
 import { touchPresence } from './chat-presence.mjs';
 
@@ -653,7 +655,29 @@ app.delete('/v1/social/follow/:userId', async (request, reply) => {
 app.get('/v1/social/following', async (request, reply) => {
   try {
     const auth = await requireAuth(request.headers.authorization);
-    const ids = await listFollowingIds(auth.uid);
+    const forUserId = String(request.query?.userId || '').trim() || auth.uid;
+    const ids = await listFollowingIds(forUserId);
+    return reply.send({ success: true, ids });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/social/followers', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const forUserId = String(request.query?.userId || '').trim() || auth.uid;
+    const ids = await listFollowerIds(forUserId);
+    return reply.send({ success: true, ids });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/social/followers/:userId', async (request, reply) => {
+  try {
+    await requireAuth(request.headers.authorization);
+    const ids = await listFollowerIds(request.params.userId);
     return reply.send({ success: true, ids });
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
@@ -799,7 +823,22 @@ app.patch('/v1/users/me', async (request, reply) => {
   }
 });
 
-// Must be registered before /v1/users/:userId so "batch" is not captured as a userId.
+// Must be registered before /v1/users/:userId so "search" / "batch" are not captured as a userId.
+app.get('/v1/users/search', async (request, reply) => {
+  try {
+    await requireAuth(request.headers.authorization);
+    const users = await searchUsers({
+      q: request.query?.q,
+      city: request.query?.city,
+      state: request.query?.state,
+      limit: Number(request.query?.limit || 40),
+    });
+    return reply.send({ success: true, users });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
 app.get('/v1/users/batch', async (request, reply) => {
   try {
     await requireAuth(request.headers.authorization);
@@ -1029,5 +1068,6 @@ app.post('/v1/orders/internal/timeline', async (request, reply) => {
 });
 
 const host = '0.0.0.0';
+await initChatWsPubSub();
 await app.listen({ port: config.port, host });
 console.log(`chatcart-api listening on ${host}:${config.port}`);

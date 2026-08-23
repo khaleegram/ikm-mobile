@@ -7,6 +7,9 @@
 //   EXPO_PUBLIC_APP_VARIANT=market  eas build --profile market-production
 //   EXPO_PUBLIC_APP_VARIANT=seller  eas build --profile seller-production
 
+const fs = require("fs");
+const path = require("path");
+
 /** @type {(ctx: import('expo/config').ConfigContext) => import('expo/config').ExpoConfig} */
 module.exports = ({ config }) => {
   const rawVariant = process.env.EXPO_PUBLIC_APP_VARIANT;
@@ -69,6 +72,10 @@ module.exports = ({ config }) => {
     };
   }
 
+  const googleServicesFile = fs.existsSync(path.join(__dirname, "google-services.json"))
+    ? "./google-services.json"
+    : undefined;
+
   const androidPermissions = Array.from(
     new Set([
       ...((config.android && Array.isArray(config.android.permissions)
@@ -108,6 +115,7 @@ module.exports = ({ config }) => {
       package: androidPackage,
       softwareKeyboardLayoutMode: "resize",
       permissions: androidPermissions,
+      ...(googleServicesFile ? { googleServicesFile } : {}),
     },
     plugins,
     extra,

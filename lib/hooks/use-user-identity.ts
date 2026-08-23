@@ -55,6 +55,7 @@ export function apiUserToPublicUser(profile: ApiUserProfile): PublicUser {
           city: String(loc.city || '').trim() || '',
         }
       : undefined,
+    bio: String(profile.bio || '').trim() || undefined,
     followerCount: profile.followerCount ?? 0,
     followingCount: profile.followingCount ?? 0,
   };

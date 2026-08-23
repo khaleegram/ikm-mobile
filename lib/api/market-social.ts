@@ -54,9 +54,19 @@ export const marketSocialApi = {
     return Boolean(response.following);
   },
 
-  async listFollowingIds(): Promise<string[]> {
+  async listFollowingIds(userId?: string): Promise<string[]> {
+    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
     const response = await coreCloudClient.request<{ success: boolean; ids: string[] }>(
-      apiUrl('/social/following'),
+      apiUrl(`/social/following${qs}`),
+      { method: 'GET', requiresAuth: true }
+    );
+    return Array.isArray(response.ids) ? response.ids : [];
+  },
+
+  async listFollowerIds(userId?: string): Promise<string[]> {
+    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    const response = await coreCloudClient.request<{ success: boolean; ids: string[] }>(
+      apiUrl(`/social/followers${qs}`),
       { method: 'GET', requiresAuth: true }
     );
     return Array.isArray(response.ids) ? response.ids : [];

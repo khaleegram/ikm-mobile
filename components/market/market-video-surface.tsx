@@ -1,6 +1,14 @@
-import { useVideoPlayer, VideoView } from "expo-video";
+import { useVideoPlayer, VideoView, type VideoPlayer } from "expo-video";
 import React, { useEffect, useRef } from "react";
 import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
+
+function runOnPlayer(player: VideoPlayer, fn: () => void) {
+  try {
+    fn();
+  } catch {
+    // Native player may already be released during feed recycle / unmount.
+  }
+}
 
 export interface VideoPlaybackSnapshot {
   currentTimeSec: number;
@@ -58,9 +66,11 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
 
   useEffect(() => {
     if (!mountedRef.current) return;
-    videoPlayer.loop = true;
-    videoPlayer.muted = muted;
-    videoPlayer.volume = muted ? 0 : 1;
+    runOnPlayer(videoPlayer, () => {
+      videoPlayer.loop = true;
+      videoPlayer.muted = muted;
+      videoPlayer.volume = muted ? 0 : 1;
+    });
   }, [muted, videoPlayer]);
 
   useEffect(() => {
@@ -69,30 +79,30 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
     // Left the feed slot — reset so next visit starts from the top
     if (!active) {
       wasActiveRef.current = false;
-      try {
+      runOnPlayer(videoPlayer, () => {
         videoPlayer.pause();
         videoPlayer.currentTime = 0;
-      } catch {}
+      });
       firstFrameSentRef.current = false;
       return;
     }
 
     // Still on this post but user paused — keep position
     if (paused) {
-      try {
+      runOnPlayer(videoPlayer, () => {
         videoPlayer.pause();
-      } catch {}
+      });
       return;
     }
 
-    try {
+    runOnPlayer(videoPlayer, () => {
       // Only seek to start when first becoming active (scroll-in), not on resume from pause
       if (!wasActiveRef.current) {
         videoPlayer.currentTime = 0;
       }
       wasActiveRef.current = true;
       videoPlayer.play();
-    } catch {}
+    });
   }, [active, paused, videoPlayer]);
 
   useEffect(() => {
@@ -117,15 +127,17 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      try {
-        videoPlayer.pause();
-      } catch {}
     };
   }, []);
+
+  if (!videoUri) {
+    return <View style={[styles.container, style]} pointerEvents="none" />;
+  }
 
   return (
     <View style={[styles.container, style]} pointerEvents="none">
       <VideoView
+        key={videoUri}
         player={videoPlayer}
         style={StyleSheet.absoluteFill}
         contentFit={contentFit}

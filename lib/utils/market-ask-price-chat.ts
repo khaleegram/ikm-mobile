@@ -6,17 +6,23 @@ import { auth } from '@/lib/firebase/config';
 import { chatApi } from '@/lib/api/chat';
 import { snapshotFromMarketPost } from '@/lib/chat/enrich-inbox-snapshots';
 import {
+  findThreadQueryByPostAndPeer,
+  getInboxItems,
+  getThreadQueryData,
+  migrateChatThreadQuery,
+  patchInboxThread,
+  patchThreadQueryData,
+  replaceInboxThreadId,
+  seedOptimisticThreadRoom,
+  upsertInboxItem,
+} from '@/lib/chat/chat-query-cache';
+import {
   migrateDealRoomQuery,
   navigateToDealRoom,
   prefetchDealRoom,
   seedDealRoomQuery,
 } from '@/lib/chat/prefetch-deal-room';
-import { useChatInboxCache } from '@/lib/stores/chat-inbox-cache';
-import {
-  buildPendingThreadId,
-  chatThreadCache,
-  isPendingThreadId,
-} from '@/lib/stores/chat-thread-cache';
+import { buildPendingThreadId, isPendingThreadId } from '@/lib/chat/thread-id';
 import { haptics } from '@/lib/utils/haptics';
 import { getMarketPostPrimaryImage, getMarketPostVideoCover } from '@/lib/utils/market-media';
 import type { MarketPost } from '@/types';
@@ -28,12 +34,10 @@ type StartPostQuoteChatParams = {
   post: MarketPost;
   buyerId: string;
   sellerName: string;
-  /** Store logo / photo, when the caller already has it — paints the deal room avatar instantly instead of blank. */
   sellerAvatar?: string | null;
   mode: 'ask-price' | 'dm';
   marketLoginRoute: string;
   onBeforeNavigate?: () => void;
-  /** Prefer omitting this — navigate to the real inbox deal room instead of a disconnected sheet. */
   onOpenChat?: (params: { threadId: string; peerId: string }) => void;
 };
 
@@ -54,58 +58,42 @@ function buildAutoText(mode: 'ask-price' | 'dm', sellerName: string): string {
 }
 
 function findCachedThreadId(userId: string, postId: string, peerId: string): string | null {
-  const fromMemory = chatThreadCache.findByPostAndPeer(postId, peerId);
-  const memId = String(fromMemory?.thread?.id || '').trim();
+  const fromQuery = findThreadQueryByPostAndPeer(postId, peerId);
+  const memId = String(fromQuery?.thread?.id || '').trim();
 
-  const inbox = useChatInboxCache.getState().getItems(userId);
+  const inbox = getInboxItems(userId);
   const hit = inbox.find(
     (item) =>
       String(item.postId || '').trim() === postId && String(item.peerId || '').trim() === peerId
   );
   const inboxId = String(hit?.threadId || '').trim();
-  if (inboxId) {
-    chatThreadCache.seedFromInbox(hit!);
-  }
 
-  // Prefer a real UUID over a stale pending: id when both exist.
   const candidates = [memId, inboxId].filter(Boolean);
   const real = candidates.find((id) => id && !isPendingThreadId(id));
   if (real) return real;
   return candidates[0] || null;
 }
 
-function upsertLocalInbox(userId: string, item: ChatInboxItem) {
-  const existing = useChatInboxCache.getState().getItems(userId);
-  const next = [item, ...existing.filter((row) => row.threadId !== item.threadId)];
-  useChatInboxCache.getState().setItems(userId, next);
-  chatThreadCache.seedFromInbox(item);
-}
-
-function appendOptimisticQuote(
-  threadId: string,
-  message: ChatMessage
-): ChatMessage[] {
-  const cached = chatThreadCache.get(threadId);
+function appendOptimisticQuote(threadId: string, message: ChatMessage): ChatMessage[] {
+  const cached = getThreadQueryData(threadId);
   const prior = cached?.messages || [];
   const withoutDup = prior.filter(
     (m) => m.id !== message.id && m.clientMsgId !== message.clientMsgId
   );
   const messages = [...withoutDup, message];
-  chatThreadCache.set(threadId, { messages });
+  patchThreadQueryData(threadId, { messages });
   return messages;
 }
 
-/** Flip a still-pending optimistic quote bubble to a visible failed state instead of leaving it
- * saying "Pending" forever when the background send never lands. */
 function markQuoteFailed(threadId: string, clientMessageId: string) {
-  const cached = chatThreadCache.get(threadId);
+  const cached = getThreadQueryData(threadId);
   if (!cached?.messages?.length) return;
   const messages = cached.messages.map((m) =>
     m.id === clientMessageId || m.clientMsgId === clientMessageId
       ? { ...m, payload: { ...(m.payload || {}), sendStatus: 'failed', needsServerFlush: false } }
       : m
   );
-  chatThreadCache.set(threadId, { messages });
+  patchThreadQueryData(threadId, { messages });
 }
 
 export function flushQuoteInBackground(
@@ -131,13 +119,13 @@ export function flushQuoteInBackground(
       },
     })
     .then((saved) => {
-      const cached = chatThreadCache.get(threadId);
+      const cached = getThreadQueryData(threadId);
       const messages = (cached?.messages || [])
         .filter(
           (m) => m.id !== input.clientMessageId && m.clientMsgId !== input.clientMessageId
         )
         .concat([{ ...saved, payload: { ...(saved.payload || {}), sendStatus: 'sent' } }]);
-      chatThreadCache.set(threadId, { messages });
+      patchThreadQueryData(threadId, { messages });
     })
     .catch((error: any) => {
       showToast(error?.message || 'Failed to send your message', 'error');
@@ -145,7 +133,6 @@ export function flushQuoteInBackground(
     });
 }
 
-/** Resend a quote bubble that's showing "Failed · Tap to retry" — reuses the original quote/body. */
 export function retryQuoteMessage(
   threadId: string,
   message: {
@@ -161,14 +148,13 @@ export function retryQuoteMessage(
   const body = String(message.text || '').trim();
   const quote = message.quoteCard;
 
-  // Flip back to "sending" immediately so the bubble reads Pending, not Failed, while it retries.
-  const cached = chatThreadCache.get(threadId);
+  const cached = getThreadQueryData(threadId);
   const messages = (cached?.messages || []).map((m) =>
     m.id === clientMessageId || m.clientMsgId === clientMessageId
       ? { ...m, payload: { ...(m.payload || {}), sendStatus: 'sending' } }
       : m
   );
-  chatThreadCache.set(threadId, { messages });
+  patchThreadQueryData(threadId, { messages });
 
   flushQuoteInBackground(threadId, {
     body,
@@ -231,12 +217,11 @@ export async function startPostQuoteChat({
       onOpenChat({ threadId: chatId, peerId });
       return;
     }
-    // Same screen as inbox deal rooms — never a disconnected feed-only chat.
     navigateToDealRoom(chatId, peerId);
   };
 
   const openRealRoom = (chatId: string, opts?: { thread?: ChatThread; messages?: ChatMessage[] }) => {
-    const cached = chatThreadCache.get(chatId);
+    const cached = getThreadQueryData(chatId);
     seedDealRoomQuery(chatId, {
       thread: opts?.thread ||
         cached?.thread || {
@@ -279,35 +264,27 @@ export async function startPostQuoteChat({
 
   const existingId = findCachedThreadId(authUserId, postId, posterId);
 
-  // Existing real product room → seed Query, open UUID, prefetch. Never re-send quote.
   if (existingId && !isPendingThreadId(existingId)) {
-    chatThreadCache.set(
-      existingId,
-      {
-        thread: chatThreadCache.get(existingId)?.thread || {
-          id: existingId,
-          postId,
-          buyerId: authUserId,
-          sellerId: posterId,
-          status: 'browsing',
-          postSnapshot,
-        },
-        peer: {
-          id: posterId,
-          displayName: peerLabel,
-          storeName: peerLabel,
-          avatarUrl: sellerAvatar || null,
-        },
-        messages: chatThreadCache.get(existingId)?.messages || [],
+    seedDealRoomQuery(existingId, {
+      thread: getThreadQueryData(existingId)?.thread || {
+        id: existingId,
+        postId,
+        buyerId: authUserId,
+        sellerId: posterId,
+        status: 'browsing',
+        postSnapshot,
       },
-      { notify: false }
-    );
-    const inboxHit = useChatInboxCache
-      .getState()
-      .getItems(authUserId)
-      .find((item) => item.threadId === existingId);
+      peer: {
+        id: posterId,
+        displayName: peerLabel,
+        storeName: peerLabel,
+        avatarUrl: sellerAvatar || null,
+      },
+      messages: getThreadQueryData(existingId)?.messages || [],
+    });
+    const inboxHit = getInboxItems(authUserId).find((item) => item.threadId === existingId);
     if (inboxHit) {
-      useChatInboxCache.getState().patchThread(authUserId, existingId, {
+      patchInboxThread(authUserId, existingId, {
         peerName: peerLabel,
         peerAvatar: sellerAvatar || inboxHit.peerAvatar,
         postSnapshot: {
@@ -321,8 +298,6 @@ export async function startPostQuoteChat({
     return true;
   }
 
-  // No real UUID locally (cold or stale pending:) → resolve on server before navigate.
-  // Ban navigating with pending: when a real room already exists remotely.
   if (!alreadyInFlight) {
     inFlightKeys.add(inFlightKey);
     setTimeout(() => inFlightKeys.delete(inFlightKey), 12_000);
@@ -342,18 +317,16 @@ export async function startPostQuoteChat({
         const pendingLocal =
           existingId && isPendingThreadId(existingId) ? existingId : null;
         if (pendingLocal) {
-          chatThreadCache.migrate(pendingLocal, realId);
+          migrateChatThreadQuery(pendingLocal, realId);
           migrateDealRoomQuery(pendingLocal, realId);
-          useChatInboxCache
-            .getState()
-            .replaceThreadId(authUserId, pendingLocal, realId, {
-              postId,
-              status: thread.status,
-              postSnapshot: mergedSnapshot,
-            });
+          replaceInboxThreadId(authUserId, pendingLocal, realId, {
+            postId,
+            status: thread.status,
+            postSnapshot: mergedSnapshot,
+          });
         }
 
-        chatThreadCache.set(realId, {
+        seedDealRoomQuery(realId, {
           thread: { ...thread, postSnapshot: mergedSnapshot },
           peer: {
             id: posterId,
@@ -362,7 +335,7 @@ export async function startPostQuoteChat({
             avatarUrl: sellerAvatar || null,
           },
         });
-        upsertLocalInbox(authUserId, {
+        upsertInboxItem(authUserId, {
           threadId: realId,
           peerId: posterId,
           peerName: peerLabel,
@@ -389,7 +362,7 @@ export async function startPostQuoteChat({
 
         openRealRoom(realId, {
           thread: { ...thread, postSnapshot: mergedSnapshot },
-          messages: chatThreadCache.get(realId)?.messages,
+          messages: getThreadQueryData(realId)?.messages,
         });
         return true;
       }
@@ -398,14 +371,13 @@ export async function startPostQuoteChat({
     }
   }
 
-  // Last resort: offline / API failure. Only then navigate with pending:.
   const pendingId =
     existingId && isPendingThreadId(existingId)
       ? existingId
       : buildPendingThreadId(postId, posterId);
   const optimistic = buildOptimisticQuote(pendingId);
 
-  chatThreadCache.seedOptimisticRoom({
+  seedOptimisticThreadRoom({
     threadId: pendingId,
     postId,
     buyerId: authUserId,
@@ -414,19 +386,19 @@ export async function startPostQuoteChat({
     peerAvatar: sellerAvatar,
     postSnapshot,
     messages: alreadyInFlight
-      ? chatThreadCache.get(pendingId)?.messages || [optimistic]
+      ? getThreadQueryData(pendingId)?.messages || [optimistic]
       : [optimistic],
   });
   seedDealRoomQuery(pendingId, {
-    thread: chatThreadCache.get(pendingId)?.thread || null,
-    peer: chatThreadCache.get(pendingId)?.peer || null,
-    messages: chatThreadCache.get(pendingId)?.messages || [optimistic],
+    thread: getThreadQueryData(pendingId)?.thread || null,
+    peer: getThreadQueryData(pendingId)?.peer || null,
+    messages: getThreadQueryData(pendingId)?.messages || [optimistic],
   });
 
   if (!alreadyInFlight) {
     inFlightKeys.add(inFlightKey);
     appendOptimisticQuote(pendingId, optimistic);
-    upsertLocalInbox(authUserId, {
+    upsertInboxItem(authUserId, {
       threadId: pendingId,
       peerId: posterId,
       peerName: peerLabel,

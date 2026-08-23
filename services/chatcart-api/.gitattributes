@@ -1,0 +1,2 @@
+# Migration SQL must stay LF so checksums match across dev (Windows) and deploy (Linux).
+migrations/*.sql text eol=lf

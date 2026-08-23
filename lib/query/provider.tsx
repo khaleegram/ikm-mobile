@@ -8,6 +8,7 @@ import {
   queryClient,
   queryPersister,
 } from '@/lib/query/client';
+import { clearLegacyChatCaches } from '@/lib/chat/chat-query-cache';
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -39,6 +40,10 @@ function HydrationGate({ children }: { children: React.ReactNode }) {
  * Holds splash until the disk cache has rehydrated so cold starts feel instant.
  */
 export function AppQueryProvider({ children }: AppQueryProviderProps) {
+  useEffect(() => {
+    clearLegacyChatCaches();
+  }, []);
+
   return (
     <PersistQueryClientProvider
       client={queryClient}

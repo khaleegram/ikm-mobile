@@ -38,12 +38,14 @@ const LIKE_RED = '#FF3B55';
 const TAB_BAR_CLEARANCE = 88;
 
 /** Instagram Reels rail tokens */
-const IG_ICON = 28;
-const IG_RAIL_GAP = 16;
-const IG_RAIL_WIDTH = 48;
-const IG_ICON_SLOT = 32;
+const IG_ICON = 24;
+const IG_RAIL_GAP = 14;
+const IG_RAIL_WIDTH = 44;
+const IG_ICON_SLOT = 28;
 const IG_HIT_SLOP = 8;
 const IG_LABEL_SPACER = 14;
+const IG_AVATAR_RING = 46;
+const IG_AVATAR_INNER = 42;
 
 function LucideIcon({
   name,
@@ -207,6 +209,8 @@ interface PostOverlayProps {
   onFavorite?: () => void;
   muted?: boolean;
   onMuteToggle?: () => void;
+  isPostSaved?: boolean;
+  isPosterFollowed?: boolean;
 }
 
 export const PostOverlay = React.memo(function PostOverlay({
@@ -218,6 +222,8 @@ export const PostOverlay = React.memo(function PostOverlay({
   onFavorite,
   muted = false,
   onMuteToggle,
+  isPostSaved,
+  isPosterFollowed,
 }: PostOverlayProps) {
   const { user } = useUser();
   const { enabled: feedSocialEnabled, followingIdSet, savedIdSet } = useFeedSocial();
@@ -250,12 +256,22 @@ export const PostOverlay = React.memo(function PostOverlay({
     feedSocialEnabled ? null : (post.id ?? null)
   );
 
-  const isFollowing = feedSocialEnabled
-    ? posterId
-      ? followingIdSet.has(posterId)
-      : false
-    : hookFollowing;
-  const isSaved = feedSocialEnabled ? (postId ? savedIdSet.has(postId) : false) : hookSaved;
+  const isFollowing =
+    typeof isPosterFollowed === 'boolean'
+      ? isPosterFollowed
+      : feedSocialEnabled
+        ? posterId
+          ? followingIdSet.has(posterId)
+          : false
+        : hookFollowing;
+  const isSaved =
+    typeof isPostSaved === 'boolean'
+      ? isPostSaved
+      : feedSocialEnabled
+        ? postId
+          ? savedIdSet.has(postId)
+          : false
+        : hookSaved;
   // toggleFollow/toggleMarketSave optimistically update the shared Query cache that both
   // `hookFollowing`/`hookSaved` and the feed-level `followingIdSet`/`savedIdSet` read from,
   // so isFollowing/isSaved above already reflect the pending state instantly. No local
@@ -392,6 +408,21 @@ export const PostOverlay = React.memo(function PostOverlay({
     haptics.medium();
     router.push(`/(market)/buy/${post.id}` as any);
   }, [post.id, user, promptAuth]);
+
+  const handleAddToCart = useCallback(() => {
+    if (!post.id) {
+      showToast('Unable to add to cart.', 'error');
+      return;
+    }
+    if (!user) {
+      promptAuth('Please sign in to use the cart.');
+      return;
+    }
+    haptics.light();
+    void import('@/lib/stores/market-cart').then(({ useMarketCartStore }) => {
+      useMarketCartStore.getState().addPost(post);
+    });
+  }, [post, user, promptAuth]);
 
   const handleShare = useCallback(async () => {
     haptics.medium();
@@ -704,6 +735,16 @@ export const PostOverlay = React.memo(function PostOverlay({
                 {!isOwnPost ? (
                   <TouchableOpacity
                     style={styles.productPinMsg}
+                    onPress={handleAddToCart}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add to cart">
+                    <IconSymbol name="plus.circle.fill" size={15} color="#1A1A1A" />
+                  </TouchableOpacity>
+                ) : null}
+                {!isOwnPost ? (
+                  <TouchableOpacity
+                    style={styles.productPinMsg}
                     onPress={() => void openChat('dm')}
                     activeOpacity={0.85}
                     accessibilityRole="button"
@@ -736,6 +777,11 @@ export const PostOverlay = React.memo(function PostOverlay({
         {post.title?.trim() ? (
           <Text style={styles.productTitle} numberOfLines={2}>
             {post.title.trim()}
+          </Text>
+        ) : null}
+        {post.description?.trim() ? (
+          <Text style={styles.productDescription} numberOfLines={3}>
+            {post.description.trim()}
           </Text>
         ) : null}
         {locationText ? (
@@ -779,13 +825,16 @@ export const PostOverlay = React.memo(function PostOverlay({
   prev.post.comments === next.post.comments &&
   prev.post.posterId === next.post.posterId &&
   prev.post.title === next.post.title &&
+  prev.post.description === next.post.description &&
   prev.post.price === next.post.price &&
   prev.muted === next.muted &&
   prev.onMuteToggle === next.onMuteToggle &&
   prev.onLike === next.onLike &&
   prev.onComment === next.onComment &&
   prev.onShare === next.onShare &&
-  prev.onFavorite === next.onFavorite
+  prev.onFavorite === next.onFavorite &&
+  prev.isPostSaved === next.isPostSaved &&
+  prev.isPosterFollowed === next.isPosterFollowed
 );
 
 const styles = StyleSheet.create({
@@ -801,22 +850,22 @@ const styles = StyleSheet.create({
   },
   avatarWrap: { position: 'relative', marginBottom: 4, alignItems: 'center' },
   avatarRing: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: IG_AVATAR_RING,
+    height: IG_AVATAR_RING,
+    borderRadius: IG_AVATAR_RING / 2,
     padding: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarInnerBorder: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: IG_AVATAR_INNER,
+    height: IG_AVATAR_INNER,
+    borderRadius: IG_AVATAR_INNER / 2,
     borderWidth: 2,
     borderColor: '#000',
     overflow: 'hidden',
   },
-  avatar: { width: '100%', height: '100%', borderRadius: 24 },
+  avatar: { width: '100%', height: '100%', borderRadius: IG_AVATAR_INNER / 2 },
   avatarFallback: { backgroundColor: '#A67C52', alignItems: 'center', justifyContent: 'center' },
   avatarInitial: { color: '#FFFFFF', fontSize: 18, fontWeight: '800' },
   followBadge: {
@@ -889,6 +938,15 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0,0,0,0.5)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
+  },
+  productDescription: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 17,
+    textShadowColor: 'rgba(0,0,0,0.45)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
   locationRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   locationText: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '600' },

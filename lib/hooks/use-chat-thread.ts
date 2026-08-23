@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-// Note: do not add a default `import React` — hooks import above is enough.
 
 import { chatApi } from '@/lib/api/chat';
+import {
+  emptyThreadData,
+  getThreadQueryData,
+  patchInboxThread,
+  patchThreadData,
+  type ChatThreadQueryData,
+} from '@/lib/chat/chat-query-cache';
 import { isPostgresChatBackend } from '@/lib/config/chat-backend';
-import { queryClient as appQueryClient } from '@/lib/query/client';
+import { isPendingThreadId } from '@/lib/chat/thread-id';
+import { mergeThreadMessages } from '@/lib/chat/thread-messages';
 import { queryKeys } from '@/lib/query/keys';
-import { useChatInboxCache } from '@/lib/stores/chat-inbox-cache';
-import { chatThreadCache, mergeThreadMessages } from '@/lib/stores/chat-thread-cache';
 import { buildUserMediaPath } from '@/lib/utils/media-path';
 import { uploadAudio } from '@/lib/utils/image-upload';
 import type { ChatMessage, ChatPeerProfile, ChatThread, ChatOfferStatus } from '@/types/chat';
+
+export type { ChatThreadQueryData } from '@/lib/chat/chat-query-cache';
+export { migrateChatThreadQuery } from '@/lib/chat/chat-query-cache';
 
 function preferStorePeer(
   next: ChatPeerProfile | null | undefined,
@@ -53,7 +61,6 @@ type SendVoiceInput = {
   durationMs: number;
   mime?: string;
   clientMsgId?: string;
-  /** Reuse an existing optimistic bubble id when retrying. */
   optimisticId?: string;
 };
 
@@ -69,7 +76,6 @@ type UseChatThreadResult = {
     body: string,
     clientMsgId?: string
   ) => Promise<ChatMessage | null>;
-  /** Avatar-only peer signal — never gated behind store-name resolution. */
   peerAvatarUrl: string | null;
   sendVoice: (input: SendVoiceInput) => Promise<ChatMessage | null>;
   createOffer: (
@@ -92,15 +98,6 @@ type UseChatThreadResult = {
   usingPostgres: boolean;
 };
 
-/** Server + optimistic thread snapshot owned by TanStack Query. */
-export type ChatThreadQueryData = {
-  thread: ChatThread | null;
-  peer: ChatPeerProfile | null;
-  messages: ChatMessage[];
-  olderCursor: string | null;
-  hasMore: boolean;
-};
-
 const mergeMessages = mergeThreadMessages;
 
 function withOfferStatus(
@@ -116,73 +113,8 @@ function withOfferStatus(
   });
 }
 
-function emptyThreadData(): ChatThreadQueryData {
-  return {
-    thread: null,
-    peer: null,
-    messages: [],
-    olderCursor: null,
-    hasMore: false,
-  };
-}
-
-function seedFromMmkv(threadId: string): ChatThreadQueryData | undefined {
-  const cached = chatThreadCache.get(threadId);
-  if (!cached) return undefined;
-  // Keep peer even when storeName is empty — avatar must still paint in the header.
-  const peer = preferStorePeer(cached.peer ?? null, null);
-  return {
-    thread: cached.thread ?? null,
-    peer,
-    messages: cached.messages ?? [],
-    olderCursor: null,
-    hasMore: false,
-  };
-}
-
-function patchThreadData(
-  prev: ChatThreadQueryData | undefined,
-  patch: Partial<ChatThreadQueryData> & {
-    mergeMessages?: ChatMessage[];
-    replaceMessages?: ChatMessage[];
-  }
-): ChatThreadQueryData {
-  const base = prev ?? emptyThreadData();
-  let messages = base.messages;
-  if (patch.replaceMessages) {
-    messages = patch.replaceMessages;
-  } else if (patch.mergeMessages?.length) {
-    messages = mergeMessages(base.messages, patch.mergeMessages);
-  }
-  return {
-    thread: patch.thread !== undefined ? patch.thread : base.thread,
-    peer: patch.peer !== undefined ? patch.peer : base.peer,
-    messages,
-    olderCursor: patch.olderCursor !== undefined ? patch.olderCursor : base.olderCursor,
-    hasMore: patch.hasMore !== undefined ? patch.hasMore : base.hasMore,
-  };
-}
-
-/** Move Query entry when a pending thread resolves to a real UUID. */
-export function migrateChatThreadQuery(fromThreadId: string, toThreadId: string) {
-  const from = String(fromThreadId || '').trim();
-  const to = String(toThreadId || '').trim();
-  if (!from || !to || from === to) return;
-  const prev = appQueryClient.getQueryData<ChatThreadQueryData>(queryKeys.chat.thread(from));
-  if (prev) {
-    appQueryClient.setQueryData<ChatThreadQueryData>(queryKeys.chat.thread(to), {
-      ...prev,
-      thread: prev.thread ? { ...prev.thread, id: to } : prev.thread,
-      messages: prev.messages.map((m) => ({ ...m, threadId: to })),
-    });
-    appQueryClient.removeQueries({ queryKey: queryKeys.chat.thread(from) });
-  }
-}
-
 /**
  * Deal-room thread: TanStack Query owns the visible snapshot (`queryKeys.chat.thread`).
- * MMKV `chatThreadCache` remains the cold-start seed + cross-screen optimistic bridge
- * (inbox prefetch, ask-price, pending→real migrate) — same split as inbox Query + Zustand.
  */
 export function useChatThread({
   threadId,
@@ -196,49 +128,18 @@ export function useChatThread({
   const loadingOlderRef = useRef(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
-  const isPendingId = Boolean(threadId && String(threadId).startsWith('pending:'));
+  const isPendingId = Boolean(threadId && isPendingThreadId(threadId));
   const queryEnabled = Boolean(threadId && userId && usingPostgres && enabled && !isPendingId);
   const threadKey = useMemo(() => queryKeys.chat.thread(threadId), [threadId]);
-
-  // Seed Query from MMKV so cold opens / pending rooms paint before network.
-  useEffect(() => {
-    if (!threadId || !usingPostgres || !enabled) return;
-    const seed = seedFromMmkv(threadId);
-    if (!seed) return;
-    const existing = queryClient.getQueryData<ChatThreadQueryData>(threadKey);
-    if (!existing) {
-      queryClient.setQueryData(threadKey, seed);
-      return;
-    }
-    // Merge MMKV into Query without wiping newer Query bubbles.
-    queryClient.setQueryData<ChatThreadQueryData>(threadKey, (prev) => {
-      const next = patchThreadData(prev, {
-        thread: prev?.thread || seed.thread,
-        peer: preferStorePeer(seed.peer, prev?.peer) || prev?.peer || seed.peer,
-        mergeMessages: seed.messages,
-      });
-      const prevMsgs = prev?.messages ?? [];
-      const nextMsgs = next.messages ?? [];
-      if (
-        prevMsgs.length === nextMsgs.length &&
-        prevMsgs[nextMsgs.length - 1]?.id === nextMsgs[nextMsgs.length - 1]?.id &&
-        prev?.thread?.id === next.thread?.id &&
-        prev?.peer?.id === next.peer?.id
-      ) {
-        return prev ?? next;
-      }
-      return next;
-    });
-  }, [threadId, usingPostgres, enabled, queryClient, threadKey]);
 
   const query = useQuery({
     queryKey: threadKey,
     enabled: queryEnabled,
     staleTime: 15_000,
-    // Paint from MMKV on the first frame — avoids the center "Loading messages…" flash.
-    initialData: () => (threadId ? seedFromMmkv(threadId) : undefined),
-    initialDataUpdatedAt: () => (threadId && seedFromMmkv(threadId) ? Date.now() - 60_000 : undefined),
-    placeholderData: () => (threadId ? seedFromMmkv(threadId) : undefined),
+    initialData: () => (threadId ? getThreadQueryData(threadId) : undefined),
+    initialDataUpdatedAt: () =>
+      threadId && getThreadQueryData(threadId) ? Date.now() - 60_000 : undefined,
+    placeholderData: () => (threadId ? getThreadQueryData(threadId) : undefined),
     queryFn: async (): Promise<ChatThreadQueryData> => {
       if (!threadId) return emptyThreadData();
       const [meta, page] = await Promise.all([
@@ -246,25 +147,15 @@ export function useChatThread({
         chatApi.getMessages(threadId),
       ]);
       const prev = queryClient.getQueryData<ChatThreadQueryData>(threadKey);
-      const mmkv = chatThreadCache.get(threadId);
-      const merged = mergeMessages(
-        mergeMessages(mmkv?.messages || [], prev?.messages || []),
-        page.messages
-      );
-      const peer = preferStorePeer(meta.peer, prev?.peer || mmkv?.peer || null);
-      const next: ChatThreadQueryData = {
+      const merged = mergeMessages(prev?.messages || [], page.messages);
+      const peer = preferStorePeer(meta.peer, prev?.peer || null);
+      return {
         thread: meta.thread,
         peer,
         messages: merged,
         olderCursor: page.nextCursor,
         hasMore: Boolean(page.hasMore),
       };
-      chatThreadCache.set(
-        threadId,
-        { thread: meta.thread, peer, messages: merged },
-        { notify: false }
-      );
-      return next;
     },
   });
 
@@ -283,41 +174,6 @@ export function useChatThread({
     [threadId, queryClient, threadKey]
   );
 
-  // External MMKV writes (prefetch / ask-price / migrate) → merge into Query.
-  useEffect(() => {
-    if (!threadId || !usingPostgres || !enabled) return;
-    return chatThreadCache.subscribe((id) => {
-      if (id !== threadId) return;
-      const cached = chatThreadCache.get(threadId);
-      if (!cached) return;
-      setThreadData((prev) => {
-        const next = patchThreadData(prev, {
-          thread: cached.thread || prev?.thread || null,
-          peer: preferStorePeer(cached.peer, prev?.peer) || prev?.peer || null,
-          mergeMessages: cached.messages,
-        });
-        const prevMsgs = prev?.messages ?? [];
-        const nextMsgs = next.messages ?? [];
-        if (
-          prevMsgs.length === nextMsgs.length &&
-          prevMsgs[nextMsgs.length - 1]?.id === nextMsgs[nextMsgs.length - 1]?.id &&
-          (prev?.peer?.avatarUrl || '') === (next.peer?.avatarUrl || '')
-        ) {
-          return prev ?? next;
-        }
-        return next;
-      });
-    });
-  }, [threadId, usingPostgres, enabled, setThreadData]);
-
-  // Persist Query snapshot to MMKV without re-notifying (avoids update loops).
-  useEffect(() => {
-    if (!threadId || !usingPostgres || !enabled) return;
-    if (!messages.length && !thread) return;
-    chatThreadCache.set(threadId, { thread, peer, messages }, { notify: false });
-  }, [threadId, thread, peer, messages, usingPostgres, enabled]);
-
-  // WebSocket realtime → Query.
   useEffect(() => {
     if (!threadId || !userId || !usingPostgres || !enabled) return;
     if (isPendingId) return;
@@ -380,7 +236,6 @@ export function useChatThread({
     };
   }, [threadId, userId, usingPostgres, enabled, isPendingId, setThreadData]);
 
-  // Quiet poll when WS is silent (Cloud Run multi-instance).
   useEffect(() => {
     if (!threadId || !userId || !usingPostgres || !enabled) return;
     if (isPendingId) return;
@@ -448,7 +303,6 @@ export function useChatThread({
       const page = await chatApi.getMessages(threadId, cursor, 50);
       setThreadData((prev) => {
         const merged = mergeMessages(prev?.messages || [], page.messages);
-        chatThreadCache.set(threadId, { messages: merged }, { notify: false });
         return patchThreadData(prev, {
           replaceMessages: merged,
           olderCursor: page.nextCursor,
@@ -683,16 +537,10 @@ export function useChatThread({
     if (!threadId || !usingPostgres) return;
     if (isPendingId) return;
     if (userId) {
-      useChatInboxCache.getState().patchThread(userId, threadId, { unreadCount: 0 });
-      queryClient.setQueryData(queryKeys.chat.inbox(userId), (prev: any) => {
-        if (!Array.isArray(prev)) return prev;
-        return prev.map((item: any) =>
-          item?.threadId === threadId ? { ...item, unreadCount: 0 } : item
-        );
-      });
+      patchInboxThread(userId, threadId, { unreadCount: 0 });
     }
     await chatApi.markRead(threadId);
-  }, [threadId, userId, usingPostgres, isPendingId, queryClient]);
+  }, [threadId, userId, usingPostgres, isPendingId]);
 
   const appendMessage = useCallback(
     (message: ChatMessage) => {
