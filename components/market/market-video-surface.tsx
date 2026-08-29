@@ -1,5 +1,5 @@
 import { useVideoPlayer, VideoView, type VideoPlayer } from "expo-video";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { StyleProp, StyleSheet, View, ViewStyle } from "react-native";
 
 function runOnPlayer(player: VideoPlayer, fn: () => void) {
@@ -57,7 +57,11 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   const onFirstFrameRef = useRef(onFirstFrame);
   onFirstFrameRef.current = onFirstFrame;
 
-  const videoPlayer = useVideoPlayer({ uri: videoUri }, (player) => {
+  // Stable source identity — a fresh `{ uri }` each render makes useVideoPlayer
+  // release/recreate the shared object and VideoView then hits a released player.
+  const source = useMemo(() => ({ uri: videoUri }), [videoUri]);
+
+  const videoPlayer = useVideoPlayer(source, (player) => {
     if (!mountedRef.current) return;
     player.loop = true;
     player.muted = muted;
@@ -108,6 +112,7 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   useEffect(() => {
     if (!onPlaybackSnapshotRef.current && !onFirstFrameRef.current) return undefined;
     const interval = setInterval(() => {
+      if (!mountedRef.current) return;
       try {
         const currentTimeSec = Math.max(0, Number(videoPlayer.currentTime || 0));
         const durationSec = Math.max(0, Number(videoPlayer.duration || 0));
@@ -127,8 +132,11 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      runOnPlayer(videoPlayer, () => {
+        videoPlayer.pause();
+      });
     };
-  }, []);
+  }, [videoPlayer]);
 
   if (!videoUri) {
     return <View style={[styles.container, style]} pointerEvents="none" />;
@@ -137,7 +145,6 @@ export const MarketVideoSurface = React.memo(function MarketVideoSurface({
   return (
     <View style={[styles.container, style]} pointerEvents="none">
       <VideoView
-        key={videoUri}
         player={videoPlayer}
         style={StyleSheet.absoluteFill}
         contentFit={contentFit}

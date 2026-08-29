@@ -508,6 +508,8 @@ export const paymentsApi = {
   }): Promise<{
     success: boolean;
     orderId: string;
+    orderIds?: string[];
+    checkoutPaymentId?: string | null;
     dealThreadId?: string | null;
     alreadyExists?: boolean;
     message?: string;
@@ -532,6 +534,8 @@ export const paymentsApi = {
     return coreCloudClient.request<{
       success: boolean;
       orderId: string;
+      orderIds?: string[];
+      checkoutPaymentId?: string | null;
       dealThreadId?: string | null;
       alreadyExists?: boolean;
       message?: string;

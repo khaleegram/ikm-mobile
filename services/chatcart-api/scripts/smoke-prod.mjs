@@ -350,14 +350,26 @@ async function testOrderIdempotency(client, { buyerId, sellerId, postId }) {
 
   const firstId = first.body?.order?.id;
   const secondId = second.body?.order?.id;
-  const lookupId = lookup.body?.order?.id;
+  const lookupId = lookup.body?.order?.id || lookup.body?.orderIds?.[0];
+  const lookupCount = Array.isArray(lookup.body?.orders)
+    ? lookup.body.orders.length
+    : lookupId
+      ? 1
+      : 0;
 
-  if (first.status === 200 && second.status === 200 && firstId && firstId === secondId && lookupId === firstId) {
+  if (
+    first.status === 200 &&
+    second.status === 200 &&
+    firstId &&
+    firstId === secondId &&
+    lookupId === firstId &&
+    lookupCount >= 1
+  ) {
     pass('Order double-commit idempotency', `one Neon row for ref ${ref.slice(0, 24)}…`);
   } else {
     fail(
       'Order double-commit idempotency',
-      `first=${first.status}/${firstId} second=${second.status}/${secondId} lookup=${lookupId}`
+      `first=${first.status}/${firstId} second=${second.status}/${secondId} lookup=${lookupId} count=${lookupCount}`
     );
   }
 

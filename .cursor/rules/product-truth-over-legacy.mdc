@@ -1,0 +1,40 @@
+---
+description: Judge features by what a great product should be, not by what the current backend happens to allow
+alwaysApply: true
+---
+
+# Product truth over legacy shape
+
+This is a startup shipping toward a **great** marketplace — not a museum of whatever was coded years ago.
+
+## When the founder asks about a feature
+
+Answer with **one product truth**, in this order:
+
+1. **What great products do** for this job (buyer/seller UX, money flow, edge cases).
+2. **What this codebase does today** (frontend + backend), honestly.
+3. **The gap** — and whether current shape is good enough to ship, or a bend that will keep hurting.
+
+Do **not**:
+
+- Treat existing schema, Firestore habits, or “we already validate same-seller” as destiny.
+- Default to workarounds that protect old architecture when a clean redesign is feasible.
+- Soften “this should be X” into “given your backend, Y is fine” unless Y is actually the better product.
+
+## Backend is disposable when the product is wrong
+
+The founder has rewritten major backend pieces when the product needed it. Prefer:
+
+- Recommend the **correct** model first (e.g. one checkout charge → N seller orders).
+- Then say what must change to get there.
+- Only keep a bend if it is explicitly interim **and** you say so — never present the bend as “how it’s supposed to be.”
+
+## Feature advice template
+
+When asked “what do you see about X?” / “how should X work?”:
+
+- **Supposed to be:** …
+- **We have:** …
+- **Ship path:** keep / extend / replace (pick one; say why)
+
+Never lock a feature because something is “missing” or “would be hard with current tables” without stating the better target design.

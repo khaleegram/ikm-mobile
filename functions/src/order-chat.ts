@@ -311,19 +311,73 @@ export async function fetchNeonOrderById(orderId: string): Promise<Record<string
   }
 }
 
-export async function fetchNeonOrderByReference(reference: string): Promise<Record<string, any> | null> {
+export async function fetchNeonOrdersByReference(
+  reference: string
+): Promise<{
+  order: Record<string, any> | null;
+  orders: Record<string, any>[];
+  orderIds: string[];
+  checkout: Record<string, any> | null;
+}> {
+  const empty = { order: null, orders: [], orderIds: [], checkout: null };
   const headers = chatInternalHeaders();
   const ref = String(reference || '').trim();
-  if (!headers || !ref) return null;
+  if (!headers || !ref) return empty;
   try {
     const response = await fetch(
       chatApiUrl(`/orders/internal/by-reference/${encodeURIComponent(ref)}`),
       { method: 'GET', headers }
     );
-    if (!response.ok) return null;
+    if (!response.ok) return empty;
     const payload: any = await response.json().catch(() => null);
-    return payload?.order && typeof payload.order === 'object' ? payload.order : null;
+    const orders = Array.isArray(payload?.orders)
+      ? payload.orders.filter((o: any) => o && typeof o === 'object')
+      : payload?.order
+        ? [payload.order]
+        : [];
+    return {
+      order: orders[0] || null,
+      orders,
+      orderIds: orders.map((o: any) => String(o.id || '')).filter(Boolean),
+      checkout: payload?.checkout && typeof payload.checkout === 'object' ? payload.checkout : null,
+    };
   } catch {
+    return empty;
+  }
+}
+
+export async function fetchNeonOrderByReference(reference: string): Promise<Record<string, any> | null> {
+  const result = await fetchNeonOrdersByReference(reference);
+  return result.order;
+}
+
+export async function upsertNeonCheckoutPayment(payload: {
+  id?: string;
+  buyerId: string;
+  paystackReference: string;
+  amount: number;
+  currency?: string;
+  status?: string;
+  cartSessionId?: string | null;
+  lineItems?: unknown[];
+}): Promise<Record<string, any> | null> {
+  const headers = chatInternalHeaders();
+  if (!headers) return null;
+  try {
+    const response = await fetch(chatApiUrl('/checkout-payments/internal/upsert'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      console.warn('upsertNeonCheckoutPayment failed', response.status, errText);
+      return null;
+    }
+    const body: any = await response.json().catch(() => null);
+    return body?.checkout && typeof body.checkout === 'object' ? body.checkout : null;
+  } catch (error) {
+    console.warn('upsertNeonCheckoutPayment error', error);
     return null;
   }
 }

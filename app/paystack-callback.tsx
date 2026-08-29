@@ -298,6 +298,8 @@ export default function PaystackCallbackScreen() {
             0,
             80
           ),
+          lineItems: Array.isArray(pending.lineItems) ? pending.lineItems : undefined,
+          cartSessionId: pending.cartSessionId || undefined,
         });
 
         if (!finalized?.orderId) {
@@ -322,7 +324,15 @@ export default function PaystackCallbackScreen() {
         showToast('Order placed. Payment is held in escrow.', 'success');
         setStatus('done');
         setMessage('Payment confirmed. Redirecting...');
-        router.replace(`/(market)/orders/${finalized.orderId}` as any);
+        const orderIds =
+          Array.isArray((finalized as any).orderIds) && (finalized as any).orderIds.length
+            ? (finalized as any).orderIds
+            : [finalized.orderId];
+        if (orderIds.length > 1) {
+          router.replace('/(market)/orders' as any);
+        } else {
+          router.replace(`/(market)/orders/${orderIds[0]}` as any);
+        }
       } catch (error: any) {
         console.error('Paystack callback error:', error);
         if (cancelled) return;

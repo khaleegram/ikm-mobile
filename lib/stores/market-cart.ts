@@ -16,16 +16,26 @@ export type MarketCartLine = {
   quantity: number;
 };
 
+export type MarketCartSellerGroup = {
+  sellerId: string;
+  lines: MarketCartLine[];
+  itemCount: number;
+  amount: number;
+};
+
 type MarketCartState = {
   lines: MarketCartLine[];
   cartSessionId: string;
   addPost: (post: MarketPost, quantity?: number) => { ok: boolean; reason?: string };
   setQuantity: (postId: string, quantity: number) => void;
   remove: (postId: string) => void;
+  removeSeller: (sellerId: string) => void;
   clear: () => void;
   totalItems: () => number;
   totalAmount: () => number;
-  sellerId: () => string | null;
+  sellerGroups: () => MarketCartSellerGroup[];
+  /** Pending-escrow / payment session key for one seller slice of this cart. */
+  sellerSessionId: (sellerId: string) => string;
 };
 
 function newSessionId(): string {
@@ -37,6 +47,23 @@ function coverForPost(post: MarketPost): string {
     return String(getMarketPostVideoCover(post) || '').trim();
   }
   return String(getMarketPostPrimaryImage(post) || post.images?.[0] || '').trim();
+}
+
+export function groupCartBySeller(lines: MarketCartLine[]): MarketCartSellerGroup[] {
+  const map = new Map<string, MarketCartLine[]>();
+  for (const line of lines) {
+    const sellerId = String(line.sellerId || '').trim();
+    if (!sellerId) continue;
+    const bucket = map.get(sellerId) ?? [];
+    bucket.push(line);
+    map.set(sellerId, bucket);
+  }
+  return [...map.entries()].map(([sellerId, sellerLines]) => ({
+    sellerId,
+    lines: sellerLines,
+    itemCount: sellerLines.reduce((sum, line) => sum + line.quantity, 0),
+    amount: sellerLines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
+  }));
 }
 
 function loadCart(): Pick<MarketCartState, 'lines' | 'cartSessionId'> {
@@ -80,12 +107,6 @@ export const useMarketCartStore = create<MarketCartState>((set, get) => ({
     }
 
     const current = get().lines;
-    const existingSeller = current[0]?.sellerId;
-    if (existingSeller && existingSeller !== sellerId) {
-      showToast('Cart is for one seller at a time. Clear cart or finish checkout first.', 'error');
-      return { ok: false, reason: 'different_seller' };
-    }
-
     const qty = Math.max(1, Math.floor(quantity) || 1);
     const title = String(post.title || post.description || 'Marketplace item').trim().slice(0, 80);
     const coverUri = coverForPost(post);
@@ -93,7 +114,7 @@ export const useMarketCartStore = create<MarketCartState>((set, get) => ({
     const next = existing
       ? current.map((line) =>
           line.postId === postId
-            ? { ...line, quantity: Math.min(99, line.quantity + qty), unitPrice, title, coverUri }
+            ? { ...line, quantity: Math.min(99, line.quantity + qty), unitPrice, title, coverUri, sellerId }
             : line
         )
       : [
@@ -131,6 +152,14 @@ export const useMarketCartStore = create<MarketCartState>((set, get) => ({
     persist(next, sessionId);
   },
 
+  removeSeller: (sellerId) => {
+    const id = String(sellerId || '').trim();
+    const next = get().lines.filter((line) => line.sellerId !== id);
+    const sessionId = next.length === 0 ? newSessionId() : get().cartSessionId;
+    set({ lines: next, cartSessionId: sessionId });
+    persist(next, sessionId);
+  },
+
   clear: () => {
     const sessionId = newSessionId();
     set({ lines: [], cartSessionId: sessionId });
@@ -140,5 +169,9 @@ export const useMarketCartStore = create<MarketCartState>((set, get) => ({
   totalItems: () => get().lines.reduce((sum, line) => sum + line.quantity, 0),
   totalAmount: () =>
     get().lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
-  sellerId: () => get().lines[0]?.sellerId || null,
+  sellerGroups: () => groupCartBySeller(get().lines),
+  sellerSessionId: (sellerId) => {
+    const sid = String(sellerId || '').trim() || 'seller';
+    return `${get().cartSessionId}__${sid}`;
+  },
 }));

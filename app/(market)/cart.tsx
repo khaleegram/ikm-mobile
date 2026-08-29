@@ -22,11 +22,19 @@ import {
 } from '@/lib/api/market-buyer-profile';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { useMyMarketProfile } from '@/lib/hooks/use-my-market-profile';
-import { useMarketCartStore } from '@/lib/stores/market-cart';
+import {
+  displayNameFromProfile,
+  useUsersBatch,
+} from '@/lib/hooks/use-user-identity';
+import {
+  groupCartBySeller,
+  useMarketCartStore,
+} from '@/lib/stores/market-cart';
 import { useTheme } from '@/lib/theme/theme-context';
 import { getLoginRouteForVariant } from '@/lib/utils/auth-routes';
 import { haptics } from '@/lib/utils/haptics';
 import { isValidPhoneNumber } from '@/lib/utils/phone';
+import { toNameCase } from '@/lib/utils/name-case';
 import type { MarketPost } from '@/types';
 
 const ACCENT = '#A67C52';
@@ -41,11 +49,15 @@ export default function MarketCartScreen() {
   const { user } = useUser();
   const { profile } = useMyMarketProfile(user?.uid || null);
   const lines = useMarketCartStore((s) => s.lines);
-  const cartSessionId = useMarketCartStore((s) => s.cartSessionId);
   const setQuantity = useMarketCartStore((s) => s.setQuantity);
   const remove = useMarketCartStore((s) => s.remove);
   const clear = useMarketCartStore((s) => s.clear);
   const totalAmount = useMarketCartStore((s) => s.totalAmount());
+  const cartSessionId = useMarketCartStore((s) => s.cartSessionId);
+
+  const groups = useMemo(() => groupCartBySeller(lines), [lines]);
+  const sellerIds = useMemo(() => groups.map((g) => g.sellerId), [groups]);
+  const { byId: sellersById } = useUsersBatch(sellerIds);
 
   const [phone, setPhone] = useState('');
   const [locationLabel, setLocationLabel] = useState('');
@@ -66,15 +78,56 @@ export default function MarketCartScreen() {
   const syntheticPost = useMemo((): MarketPost | null => {
     if (!lines.length) return null;
     const first = lines[0];
+    const sellerCount = groups.length;
     return {
       id: first.postId,
       posterId: first.sellerId,
-      title: lines.length === 1 ? first.title : `${lines.length} items from seller`,
+      title:
+        lines.length === 1
+          ? first.title
+          : sellerCount > 1
+            ? `${lines.length} items from ${sellerCount} sellers`
+            : `${lines.length} items`,
       price: first.unitPrice,
       images: first.coverUri ? [first.coverUri] : [],
       status: 'active',
     } as MarketPost;
-  }, [lines]);
+  }, [lines, groups.length]);
+
+  const startCheckout = async () => {
+    if (!lines.length) return;
+    if (!isValidPhoneNumber(phone)) {
+      showToast('Enter a valid phone number.', 'error');
+      return;
+    }
+    if (deliveryAddress.length < 5) {
+      showToast('Add a delivery address.', 'error');
+      return;
+    }
+    try {
+      await saveMarketBuyerProfile(user!.uid, {
+        marketBuyerPhone: phone,
+        marketBuyerLocation: toBuyerLocationPayload(deliveryAddress),
+      });
+    } catch {
+      // non-blocking
+    }
+    haptics.medium();
+    setSheetVisible(true);
+  };
+
+  const handlePaymentSuccess = (orderId: string, _dealThreadId?: string | null, orderIds?: string[]) => {
+    const ids = orderIds?.length ? orderIds : orderId ? [orderId] : [];
+    clear();
+    setSheetVisible(false);
+    if (ids.length <= 1 && ids[0]) {
+      showToast('Order placed.', 'success');
+      router.replace(`/(market)/orders/${ids[0]}` as any);
+    } else {
+      showToast(`${ids.length} orders placed — one per seller.`, 'success');
+      router.replace('/(market)/orders' as any);
+    }
+  };
 
   if (!user) {
     return (
@@ -88,28 +141,6 @@ export default function MarketCartScreen() {
       </View>
     );
   }
-
-  const startCheckout = async () => {
-    if (!lines.length || !syntheticPost) return;
-    if (!isValidPhoneNumber(phone)) {
-      showToast('Enter a valid phone number.', 'error');
-      return;
-    }
-    if (deliveryAddress.length < 5) {
-      showToast('Add a delivery address.', 'error');
-      return;
-    }
-    try {
-      await saveMarketBuyerProfile(user.uid, {
-        marketBuyerPhone: phone,
-        marketBuyerLocation: toBuyerLocationPayload(deliveryAddress),
-      });
-    } catch {
-      // non-blocking
-    }
-    haptics.medium();
-    setSheetVisible(true);
-  };
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
@@ -132,7 +163,7 @@ export default function MarketCartScreen() {
           <IconSymbol name="cart" size={48} color={colors.textSecondary} />
           <Text style={[styles.emptyTitle, { color: colors.text }]}>Your cart is empty</Text>
           <Text style={{ color: colors.textSecondary, textAlign: 'center' }}>
-            Add priced items from the same seller, then checkout once.
+            Add priced items from any sellers. One payment creates a separate order per seller.
           </Text>
         </View>
       ) : (
@@ -140,46 +171,82 @@ export default function MarketCartScreen() {
           <KeyboardScreen
             keyboardVerticalOffset={insets.top}
             extraScrollHeight={28}
-            contentContainerStyle={{ padding: 16, paddingBottom: footerHeight + 24, gap: 12 }}>
-            {lines.map((line) => (
-              <View
-                key={line.postId}
-                style={[styles.lineCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                {line.coverUri ? (
-                  <Image source={{ uri: line.coverUri }} style={styles.thumb} contentFit="cover" />
-                ) : (
-                  <View style={[styles.thumb, { backgroundColor: `${ACCENT}22` }]} />
-                )}
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[styles.lineTitle, { color: colors.text }]} numberOfLines={2}>
-                    {line.title}
-                  </Text>
-                  <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>
-                    {formatAmount(line.unitPrice)}
-                  </Text>
-                  <View style={styles.qtyRow}>
-                    <TouchableOpacity
-                      style={[styles.qtyBtn, { borderColor: colors.border }]}
-                      onPress={() => setQuantity(line.postId, line.quantity - 1)}>
-                      <Text style={{ color: colors.text, fontWeight: '800' }}>−</Text>
-                    </TouchableOpacity>
-                    <Text style={{ color: colors.text, fontWeight: '800', minWidth: 20, textAlign: 'center' }}>
-                      {line.quantity}
-                    </Text>
-                    <TouchableOpacity
-                      style={[styles.qtyBtn, { borderColor: colors.border }]}
-                      onPress={() => setQuantity(line.postId, line.quantity + 1)}>
-                      <Text style={{ color: colors.text, fontWeight: '800' }}>+</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => remove(line.postId)} hitSlop={10}>
-                      <IconSymbol name="trash" size={16} color={colors.textSecondary} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
+            contentContainerStyle={{ padding: 16, paddingBottom: footerHeight + 24, gap: 14 }}>
+            {groups.length > 1 ? (
+              <View style={[styles.splitBanner, { backgroundColor: `${ACCENT}14`, borderColor: `${ACCENT}33` }]}>
+                <IconSymbol name="info.circle" size={16} color={ACCENT} />
+                <Text style={[styles.splitBannerText, { color: colors.text }]}>
+                  {groups.length} sellers in cart — one payment, {groups.length} separate escrow orders.
+                </Text>
               </View>
-            ))}
+            ) : null}
 
-            <View style={[styles.lineCard, { backgroundColor: colors.card, borderColor: colors.border, flexDirection: 'column' }]}>
+            {groups.map((group) => {
+              const sellerName = toNameCase(
+                displayNameFromProfile(sellersById[group.sellerId] ?? null, 'Seller')
+              );
+              return (
+                <View key={group.sellerId} style={{ gap: 8 }}>
+                  <View style={styles.sellerHeader}>
+                    <Text style={[styles.sellerName, { color: colors.text }]} numberOfLines={1}>
+                      {sellerName}
+                    </Text>
+                    <Text style={{ color: colors.textSecondary, fontWeight: '700', fontSize: 12 }}>
+                      {formatAmount(group.amount)}
+                    </Text>
+                  </View>
+                  {group.lines.map((line) => (
+                    <View
+                      key={line.postId}
+                      style={[styles.lineCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                      {line.coverUri ? (
+                        <Image source={{ uri: line.coverUri }} style={styles.thumb} contentFit="cover" />
+                      ) : (
+                        <View style={[styles.thumb, { backgroundColor: `${ACCENT}22` }]} />
+                      )}
+                      <View style={{ flex: 1, gap: 6 }}>
+                        <Text style={[styles.lineTitle, { color: colors.text }]} numberOfLines={2}>
+                          {line.title}
+                        </Text>
+                        <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>
+                          {formatAmount(line.unitPrice)}
+                        </Text>
+                        <View style={styles.qtyRow}>
+                          <TouchableOpacity
+                            style={[styles.qtyBtn, { borderColor: colors.border }]}
+                            onPress={() => setQuantity(line.postId, line.quantity - 1)}>
+                            <Text style={{ color: colors.text, fontWeight: '800' }}>−</Text>
+                          </TouchableOpacity>
+                          <Text
+                            style={{
+                              color: colors.text,
+                              fontWeight: '800',
+                              minWidth: 20,
+                              textAlign: 'center',
+                            }}>
+                            {line.quantity}
+                          </Text>
+                          <TouchableOpacity
+                            style={[styles.qtyBtn, { borderColor: colors.border }]}
+                            onPress={() => setQuantity(line.postId, line.quantity + 1)}>
+                            <Text style={{ color: colors.text, fontWeight: '800' }}>+</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => remove(line.postId)} hitSlop={10}>
+                            <IconSymbol name="trash" size={16} color={colors.textSecondary} />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              );
+            })}
+
+            <View
+              style={[
+                styles.lineCard,
+                { backgroundColor: colors.card, borderColor: colors.border, flexDirection: 'column' },
+              ]}>
               <Text style={[styles.sectionLabel, { color: colors.text }]}>Delivery</Text>
               <SmartPhoneField
                 value={phone}
@@ -207,13 +274,26 @@ export default function MarketCartScreen() {
           </KeyboardScreen>
 
           <View
-            style={[styles.footer, { paddingBottom: insets.bottom + 12, borderTopColor: colors.border, backgroundColor: colors.background }]}
+            style={[
+              styles.footer,
+              {
+                paddingBottom: insets.bottom + 12,
+                borderTopColor: colors.border,
+                backgroundColor: colors.background,
+              },
+            ]}
             onLayout={(e) => setFooterHeight(e.nativeEvent.layout.height)}>
             <View>
-              <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>Total</Text>
-              <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800' }}>{formatAmount(totalAmount)}</Text>
+              <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>
+                {groups.length > 1 ? `Total · ${groups.length} orders` : 'Total'}
+              </Text>
+              <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800' }}>
+                {formatAmount(totalAmount)}
+              </Text>
             </View>
-            <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: ACCENT }]} onPress={() => void startCheckout()}>
+            <TouchableOpacity
+              style={[styles.primaryBtn, { backgroundColor: ACCENT }]}
+              onPress={() => void startCheckout()}>
               <Text style={styles.primaryBtnText}>Checkout</Text>
             </TouchableOpacity>
           </View>
@@ -237,12 +317,7 @@ export default function MarketCartScreen() {
           buyerId={user.uid}
           cartLines={lines}
           cartSessionId={cartSessionId}
-          onSuccess={(orderId) => {
-            clear();
-            setSheetVisible(false);
-            showToast('Order placed.', 'success');
-            router.replace(`/(market)/orders/${orderId}` as any);
-          }}
+          onSuccess={handlePaymentSuccess}
         />
       ) : null}
     </View>
@@ -262,6 +337,23 @@ const styles = StyleSheet.create({
   headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '800' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
   emptyTitle: { fontSize: 16, fontWeight: '800' },
+  splitBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+  },
+  splitBannerText: { flex: 1, fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  sellerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+    marginTop: 4,
+  },
+  sellerName: { fontSize: 15, fontWeight: '800', flex: 1, marginRight: 8 },
   lineCard: {
     flexDirection: 'row',
     gap: 12,

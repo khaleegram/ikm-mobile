@@ -36,6 +36,14 @@ export type PendingEscrowCheckout = {
    * `submitted` = gateway/callback reported success — must keep until order exists.
    */
   phase?: 'initialized' | 'submitted';
+  /** Cart lines for multi-item / multi-seller recovery finalize. */
+  lineItems?: Array<{
+    postId: string;
+    quantity: number;
+    unitPrice: number;
+    title?: string;
+  }>;
+  cartSessionId?: string | null;
 };
 
 export type PendingEscrowScope = {

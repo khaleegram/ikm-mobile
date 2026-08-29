@@ -14,6 +14,10 @@ import {
     verifyIdToken,
     getPlatformCommissionRate,
 } from './utils';
+import {
+  buildSellerCheckoutGroups,
+  commitMarketCheckoutOrders,
+} from './market-checkout';
 
 // CORS configuration - allow all origins for mobile/web apps
 const corsHandler = cors({ origin: true });
@@ -1163,20 +1167,6 @@ function parseEscrowLineItems(raw: unknown): {
 }
 
 /**
- * Deterministic Firestore order id from Paystack reference.
- * Concurrent finalize calls for the same payment collide on the same doc inside
- * runTransaction — one creates, the other sees exists — instead of the old
- * TOCTOU race (query outside txn → two order docs for one payment).
- */
-function marketOrderIdFromPaystackReference(reference: string): string {
-  const clean = String(reference || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9_-]/g, '_')
-    .slice(0, 680);
-  return `mkt_${clean || 'unknown'}`;
-}
-
-/**
  * Server-side recovery when Paystack confirms charge.success but the mobile
  * client never reached finalizeMarketEscrowPayment (crash, killed app, etc.).
  * Idempotent: safe if client finalize races the webhook.
@@ -1193,13 +1183,6 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
   const firestore = admin.firestore();
   const orderChat = await import('./order-chat.js');
 
-  const existingNeon = await orderChat.fetchNeonOrderByReference(reference);
-  if (existingNeon?.id) return;
-
-  const orderId = marketOrderIdFromPaystackReference(reference);
-  const orderRef = firestore.collection('orders').doc(orderId);
-  if ((await orderRef.get()).exists) return;
-
   const sessionSnap = await firestore.collection('payment_sessions').doc(reference).get();
   const sessionData = sessionSnap.exists ? sessionSnap.data() || {} : {};
   const meta = {
@@ -1214,7 +1197,8 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
     (source.includes('market') ||
       source.includes('chatcart') ||
       meta.agreedUnitPrice != null ||
-      meta.agreed_unit_price != null);
+      meta.agreed_unit_price != null ||
+      !!parseEscrowLineItems(meta.lineItems));
   if (!isMarketCheckout) return;
 
   const buyerId = asNonEmptyString(
@@ -1270,222 +1254,76 @@ async function tryAutoFinalizeMarketEscrowFromWebhook(input: {
 
   const commissionRate = await getPlatformCommissionRate();
   const cartLineItems = parseEscrowLineItems(meta.lineItems);
-  let orderTotal = 0;
-  let orderItems: Array<{ productId: string; name: string; price: number; quantity: number }> = [];
-  let resolvedSellerId = '';
-  let primaryPostId = postId;
-  let unitPrice = 0;
-  let listedPrice: number | null = null;
-  let itemName = 'Marketplace Item';
 
-  if (cartLineItems && cartLineItems.length > 0) {
-    const sellers = new Set<string>();
-    for (const line of cartLineItems) {
-      const linePostSnap = await firestore.collection('marketPosts').doc(line.postId).get();
-      const linePost = linePostSnap.exists ? linePostSnap.data()! : null;
-      const lineStatus = String(linePost?.status || 'active').toLowerCase();
-      if (linePost && (lineStatus === 'hidden' || lineStatus === 'deleted')) {
-        console.warn('Webhook auto-finalize skipped: cart item unavailable', reference, line.postId);
-        return;
-      }
-      const seller = asNonEmptyString(linePost?.posterId || bodySellerId || meta.sellerId);
-      if (seller) sellers.add(seller);
-      orderItems.push({
-        productId: `market_post_${line.postId}`,
-        name: String(line.title || linePost?.title || linePost?.description || 'Item').slice(0, 70),
-        price: line.unitPrice,
-        quantity: line.quantity,
-      });
-      orderTotal += line.unitPrice * line.quantity;
-    }
-    if (sellers.size !== 1) {
-      console.warn('Webhook auto-finalize skipped: multi-seller cart', reference);
-      return;
-    }
-    resolvedSellerId = [...sellers][0];
-    primaryPostId = cartLineItems[0].postId;
-    unitPrice = cartLineItems[0].unitPrice;
-    itemName =
-      cartLineItems.length === 1 ? orderItems[0].name : `${cartLineItems.length} items`.slice(0, 70);
-  } else {
+  let unitPrice = 0;
+  if (!cartLineItems?.length) {
     const postSnap = await firestore.collection('marketPosts').doc(postId).get();
     const postData = postSnap.exists ? postSnap.data()! : null;
-    const postStatus = String(postData?.status || 'active').toLowerCase();
-    if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
-      console.warn('Webhook auto-finalize skipped: post unavailable', reference, postId);
-      return;
-    }
-
-    listedPrice = Number(postData?.price || 0);
+    const listedPrice = Number(postData?.price || 0);
     unitPrice =
       (Number.isFinite(bodyAgreedUnitPrice) && bodyAgreedUnitPrice > 0
         ? bodyAgreedUnitPrice
-        : null) || (listedPrice > 0 ? listedPrice : null) ||
+        : null) ||
+      (listedPrice > 0 ? listedPrice : null) ||
       0;
-    if (!unitPrice || !(unitPrice > 0)) {
-      console.warn('Webhook auto-finalize skipped: missing unit price', reference);
-      return;
-    }
-
-    orderTotal = unitPrice * quantity;
-    itemName = String(
-      bodyItemTitle || postData?.title || postData?.description || 'Marketplace Item'
-    ).slice(0, 70);
-    orderItems = [
-      {
-        productId: `market_post_${postId}`,
-        name: itemName,
-        price: unitPrice,
-        quantity,
-      },
-    ];
-    resolvedSellerId = asNonEmptyString(postData?.posterId || bodySellerId || meta.sellerId);
   }
 
-  if (Math.abs(orderTotal - paidAmount) > 0.01) {
-    console.warn(
-      'Webhook auto-finalize skipped: amount mismatch',
-      reference,
-      { paidAmount, orderTotal }
-    );
+  const built = await buildSellerCheckoutGroups({
+    firestore,
+    cartLineItems,
+    postId,
+    quantity,
+    unitPrice,
+    itemTitle: bodyItemTitle,
+    bodySellerId,
+  });
+  if (built.error || !built.groups.length) {
+    console.warn('Webhook auto-finalize skipped:', built.error || 'no groups', reference);
     return;
   }
-
-  if (!resolvedSellerId || resolvedSellerId === buyerId) {
-    console.warn('Webhook auto-finalize skipped: invalid seller', reference);
-    return;
-  }
-  const commission = orderTotal * commissionRate;
-  const sellerEarning = orderTotal - commission;
-
-  let dealThreadId: string | null = requestedDealThreadId;
-  try {
-    dealThreadId = await orderChat.ensureDealThreadForOrder({
-      buyerId,
-      postId: primaryPostId,
-      sellerId: resolvedSellerId,
-      threadId: requestedDealThreadId,
+  if (Math.abs(built.checkoutTotal - paidAmount) > 0.01) {
+    console.warn('Webhook auto-finalize skipped: amount mismatch', reference, {
+      paidAmount,
+      orderTotal: built.checkoutTotal,
     });
-  } catch (linkError) {
-    console.error('Webhook auto-finalize deal thread failed', reference, linkError);
+    return;
   }
 
-  const nowIso = new Date().toISOString();
-  const orderPayload: Record<string, any> = {
-    id: orderId,
-    customerId: buyerId,
-    sellerId: resolvedSellerId,
-    postId: primaryPostId,
-    idempotencyKey: reference,
-    items: orderItems,
-    total: orderTotal,
-    shippingPrice: 0,
-    shippingType: 'pickup',
-    status: 'Processing',
-    deliveryAddress: deliveryAddress.trim(),
-    customerInfo: {
-      name: buyerName,
-      email: input.customerEmail || asNonEmptyString(meta.buyerEmail) || '',
-      phone: buyerPhone.trim(),
-    },
-    paymentMethod: 'Paystack Escrow',
-    paymentReference: reference,
-    paystackReference: reference,
-    escrowStatus: 'held',
+  const existing = await orderChat.fetchNeonOrdersByReference(reference);
+  if (
+    existing.orders.length >= built.groups.length &&
+    built.groups.every((g) =>
+      existing.orders.some((o) => asNonEmptyString(o.sellerId || o.seller_id) === g.sellerId)
+    )
+  ) {
+    return;
+  }
+
+  const result = await commitMarketCheckoutOrders({
+    orderChat,
+    firestore,
+    reference,
+    buyerId,
+    buyerName,
+    buyerEmail: input.customerEmail || asNonEmptyString(meta.buyerEmail) || '',
+    buyerPhone,
+    deliveryAddress,
     commissionRate,
-    dealThreadId: dealThreadId || null,
-    chatThreadId: dealThreadId || null,
-    marketMeta: {
-      fromChatId: dealThreadId || requestedDealThreadId,
-      postId: primaryPostId,
-      agreedUnitPrice: unitPrice,
-      listedPrice: listedPrice || null,
-      lineItems: cartLineItems || null,
-      finalizedBy: 'paystack-webhook',
-    },
-    createdAt: nowIso,
-    updatedAt: nowIso,
-    paymentVerifiedAt: nowIso,
-    sellerUnreadCount: 1,
-    buyerUnreadCount: 0,
-  };
+    paidAmount,
+    groups: built.groups,
+    cartLineItems,
+    cartSessionId: asNonEmptyString(meta.cartSessionId) || null,
+    requestedDealThreadId,
+    finalizedBy: 'paystack-webhook',
+    notify: false,
+  });
 
-  try {
-    await orderChat.commitAndMirrorOrder(orderPayload, {
-      bumpPurchaseCount: true,
-      timeline: [
-        {
-          event: 'order_paid',
-          status: 'Processing',
-          text: 'Payment verified',
-          actorId: buyerId,
-          actorRole: 'buyer',
-          createdAt: nowIso,
-        },
-      ],
-    });
-  } catch (commitError) {
-    const raced = await orderChat.fetchNeonOrderByReference(reference);
-    if (raced?.id) return;
-    throw commitError;
-  }
-
-  try {
-    await firestore.collection('transactions').doc(`ledger_${reference}`).set(
-      {
-        id: `ledger_${reference}`,
-        type: 'sale',
-        amount: sellerEarning,
-        commission,
-        commissionRate,
-        orderId,
-        sellerId: resolvedSellerId,
-        customerId: buyerId,
-        description: `Sale from order #${orderId.slice(0, 7)}`,
-        status: 'completed',
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-    const bumpPostIds =
-      cartLineItems && cartLineItems.length > 0
-        ? cartLineItems.map((line) => line.postId)
-        : [primaryPostId];
-    for (const bumpId of bumpPostIds) {
-      await firestore.collection('marketPosts').doc(bumpId).set(
-        {
-          lastBuyerId: buyerId,
-          purchaseCount: FieldValue.increment(1),
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-    await firestore.collection('payment_sessions').doc(reference).set(
-      {
-        status: 'finalized',
-        orderId,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch (mirrorError) {
-    console.warn('Webhook auto-finalize mirror side-effects failed', orderId, mirrorError);
-  }
-
-  try {
-    await orderChat.createSystemMessage({
-      orderId,
-      event: 'order_paid',
-      dealThreadId,
-      customText: `Order confirmed. Payment of NGN ${Number(orderTotal).toLocaleString()} received.`,
-    });
-  } catch {
-    // non-fatal
-  }
-
-  console.log('Webhook auto-finalized market escrow order', { reference, orderId, buyerId });
+  console.log('Webhook auto-finalized market escrow checkout', {
+    reference,
+    checkoutPaymentId: result.checkoutPaymentId,
+    orderIds: result.orderIds,
+    buyerId,
+  });
 }
 
 /**
@@ -1521,37 +1359,7 @@ export const finalizeMarketEscrowPayment = onRequest(
         const bodyItemTitle = String(validation.data.itemTitle || '').trim() || null;
         const bodyBuyerPhone = String(validation.data.buyerPhone || '').trim();
         const firestore = admin.firestore();
-        const orderId = marketOrderIdFromPaystackReference(reference);
-        const orderRef = firestore.collection('orders').doc(orderId);
         const orderChat = await import('./order-chat.js');
-
-        // Idempotent short-circuit: Neon primary, then Firestore mirror.
-        const existingNeon = await orderChat.fetchNeonOrderByReference(reference);
-        if (existingNeon?.id) {
-          return sendResponse(response, {
-            success: true,
-            orderId: existingNeon.id,
-            dealThreadId: existingNeon.dealThreadId || existingNeon.chatThreadId || null,
-            alreadyExists: true,
-            message: 'Order already finalized for this payment',
-          });
-        }
-        const existingSnap = await orderRef.get();
-        if (existingSnap.exists) {
-          const existingData = existingSnap.data() || {};
-          try {
-            await orderChat.dualWriteOrderToPostgres(orderRef.id, { bumpPurchaseCount: true });
-          } catch (syncErr) {
-            console.warn('Legacy FS order Neon backfill failed', orderRef.id, syncErr);
-          }
-          return sendResponse(response, {
-            success: true,
-            orderId: orderRef.id,
-            dealThreadId: existingData.dealThreadId || existingData.chatThreadId || null,
-            alreadyExists: true,
-            message: 'Order already finalized for this payment',
-          });
-        }
 
         // Bind finalize to the initialized payment session so a paid ref cannot be
         // applied to a different product / qty / price than what was charged.
@@ -1588,7 +1396,7 @@ export const finalizeMarketEscrowPayment = onRequest(
         const sessionLineItemsForOrder = parseEscrowLineItems(sessionMeta?.lineItems);
         const cartLineItems = sessionLineItemsForOrder || bodyLineItems;
 
-        // 2. Query/Verify transaction truth cached or via Paystack
+        // Verify transaction truth cached or via Paystack
         let txStatus = '';
         let paidAmount = 0;
         let customerEmail = '';
@@ -1647,7 +1455,6 @@ export const finalizeMarketEscrowPayment = onRequest(
           });
         }
 
-        // Merge gateway + session metadata; session wins product binding fields.
         const gatewayMeta = txMetadata || {};
         txMetadata = {
           ...gatewayMeta,
@@ -1666,14 +1473,16 @@ export const finalizeMarketEscrowPayment = onRequest(
             gatewayMeta.firebaseUid ||
             gatewayMeta.firebase_uid ||
             gatewayMeta.userId,
+          lineItems: sessionMeta.lineItems || gatewayMeta.lineItems,
+          cartSessionId: sessionMeta.cartSessionId || gatewayMeta.cartSessionId,
         };
 
         const txMetadataUid = String(
           txMetadata?.firebaseUid ||
-          txMetadata?.firebase_uid ||
-          txMetadata?.userId ||
-          sessionData?.uid ||
-          ''
+            txMetadata?.firebase_uid ||
+            txMetadata?.userId ||
+            sessionData?.uid ||
+            ''
         ).trim();
 
         if (txMetadataUid && txMetadataUid !== auth.uid && !auth.isAdmin) {
@@ -1700,7 +1509,7 @@ export const finalizeMarketEscrowPayment = onRequest(
           );
         }
         if (metaPostId) postId = metaPostId;
-        if (!postId) {
+        if (!postId && !(cartLineItems && cartLineItems.length)) {
           return sendError(response, 'Missing product for this payment', 400);
         }
 
@@ -1715,194 +1524,113 @@ export const finalizeMarketEscrowPayment = onRequest(
 
         const commissionRate = await getPlatformCommissionRate();
 
-        let orderTotal = 0;
-        let orderItems: {
-          productId: string;
-          name: string;
-          price: number;
-          quantity: number;
-        }[] = [];
-        let resolvedSellerId = '';
-        let listedPrice: number | null = null;
         let unitPrice = 0;
-        let itemName = 'Marketplace Item';
-
-        if (cartLineItems && cartLineItems.length > 0) {
-          const sellers = new Set<string>();
-          for (const line of cartLineItems) {
-            const linePostSnap = await firestore.collection('marketPosts').doc(line.postId).get();
-            const linePost = linePostSnap.exists ? linePostSnap.data()! : null;
-            const lineStatus = String(linePost?.status || 'active').toLowerCase();
-            if (linePost && (lineStatus === 'hidden' || lineStatus === 'deleted')) {
-              return sendError(response, 'One or more cart items are no longer available', 409);
-            }
-            const seller = String(
-              linePost?.posterId || bodySellerId || sessionMeta.sellerId || txMetadata?.sellerId || ''
-            ).trim();
-            if (seller) sellers.add(seller);
-            orderItems.push({
-              productId: `market_post_${line.postId}`,
-              name: String(line.title || linePost?.title || linePost?.description || 'Item').slice(0, 70),
-              price: line.unitPrice,
-              quantity: line.quantity,
-            });
-            orderTotal += line.unitPrice * line.quantity;
-          }
-          if (sellers.size !== 1) {
-            return sendError(response, 'Cart checkout requires items from one seller', 400);
-          }
-          resolvedSellerId = [...sellers][0];
-          postId = cartLineItems[0].postId;
-          unitPrice = cartLineItems[0].unitPrice;
-          itemName =
-            cartLineItems.length === 1
-              ? orderItems[0].name
-              : `${cartLineItems.length} items`.slice(0, 70);
-          const primarySnap = await firestore.collection('marketPosts').doc(postId).get();
-          listedPrice = primarySnap.exists ? Number(primarySnap.data()?.price || 0) : null;
-        } else {
+        if (!cartLineItems?.length) {
           const postSnap = await firestore.collection('marketPosts').doc(postId).get();
           const postData = postSnap.exists ? postSnap.data()! : null;
-          const postStatus = String(postData?.status || 'active').toLowerCase();
-          if (postData && (postStatus === 'hidden' || postStatus === 'deleted')) {
-            return sendError(response, 'This item is no longer available', 409);
-          }
-
-          listedPrice = Number(postData?.price || 0);
+          const listedPrice = Number(postData?.price || 0);
           const sessionAgreed = Number(
             sessionMeta.agreedUnitPrice ?? sessionMeta.agreed_unit_price ?? 0
           );
           const metaAgreed = Number(
             txMetadata?.agreedUnitPrice ?? txMetadata?.agreed_unit_price ?? 0
           );
-          // Session/unit locked at initialize wins over client body (anti-tamper).
           unitPrice =
             (Number.isFinite(sessionAgreed) && sessionAgreed > 0 ? sessionAgreed : null) ||
             (Number.isFinite(metaAgreed) && metaAgreed > 0 ? metaAgreed : null) ||
             (bodyAgreedUnitPrice && bodyAgreedUnitPrice > 0 ? bodyAgreedUnitPrice : null) ||
             (listedPrice > 0 ? listedPrice : null) ||
             0;
-
-          if (!unitPrice || !(unitPrice > 0)) {
-            return sendError(
-              response,
-              'Checkout price missing. Reopen Complete purchase from the deal.',
-              400
-            );
-          }
-
-          orderTotal = unitPrice * quantity;
-          itemName = String(
-            bodyItemTitle ||
-              sessionMeta.itemTitle ||
-              postData?.title ||
-              postData?.description ||
-              'Marketplace Item'
-          ).slice(0, 70);
-          orderItems = [
-            {
-              productId: `market_post_${postId}`,
-              name: itemName,
-              price: unitPrice,
-              quantity,
-            },
-          ];
-          resolvedSellerId = String(
-            postData?.posterId || bodySellerId || sessionMeta.sellerId || txMetadata?.sellerId || ''
-          ).trim();
         }
 
-        if (Math.abs(orderTotal - paidAmount) > 0.01) {
+        const built = await buildSellerCheckoutGroups({
+          firestore,
+          cartLineItems,
+          postId,
+          quantity,
+          unitPrice,
+          itemTitle: bodyItemTitle || String(sessionMeta.itemTitle || '').trim() || null,
+          bodySellerId:
+            bodySellerId ||
+            String(sessionMeta.sellerId || txMetadata?.sellerId || '').trim() ||
+            null,
+        });
+
+        if (built.error) {
+          const status = built.error.includes('no longer available')
+            ? 409
+            : built.error.includes('own item')
+              ? 403
+              : 400;
+          return sendError(response, built.error, status);
+        }
+
+        if (Math.abs(built.checkoutTotal - paidAmount) > 0.01) {
           return sendError(
             response,
-            `Amount mismatch. Paid: ₦${paidAmount}, Order cost: ₦${orderTotal}`,
+            `Amount mismatch. Paid: ₦${paidAmount}, Order cost: ₦${built.checkoutTotal}`,
             400
           );
         }
 
-        if (!resolvedSellerId) {
-          return sendError(response, 'Seller ID missing from post', 400);
-        }
-        if (resolvedSellerId === auth.uid) {
-          return sendError(response, 'You cannot purchase your own item', 403);
-        }
-
-        const commission = orderTotal * commissionRate;
-        const sellerEarning = orderTotal - commission;
-
-        let dealThreadId: string | null = requestedDealThreadId;
-        try {
-          dealThreadId = await orderChat.ensureDealThreadForOrder({
-            buyerId: auth.uid,
-            postId,
-            sellerId: resolvedSellerId,
-            threadId: requestedDealThreadId,
+        const existingLookup = await orderChat.fetchNeonOrdersByReference(reference);
+        if (
+          existingLookup.orders.length >= built.groups.length &&
+          built.groups.every((g) =>
+            existingLookup.orders.some(
+              (o) => String(o.sellerId || o.seller_id || '').trim() === g.sellerId
+            )
+          )
+        ) {
+          const primary = existingLookup.orders[0];
+          return sendResponse(response, {
+            success: true,
+            orderId: primary.id,
+            orderIds: existingLookup.orderIds,
+            checkoutPaymentId:
+              existingLookup.checkout?.id || primary.checkoutPaymentId || null,
+            dealThreadId: primary.dealThreadId || primary.chatThreadId || null,
+            alreadyExists: true,
+            message: 'Order already finalized for this payment',
           });
-        } catch (linkError: any) {
-          console.error('Failed to ensure deal thread before order commit:', linkError);
         }
 
-        const nowIso = new Date().toISOString();
-        const orderPayload: Record<string, any> = {
-          id: orderId,
-          customerId: auth.uid,
-          sellerId: resolvedSellerId,
-          postId,
-          idempotencyKey: reference,
-          items: orderItems,
-          total: orderTotal,
-          shippingPrice: 0,
-          shippingType: 'pickup',
-          status: 'Processing',
-          deliveryAddress: deliveryAddress.trim(),
-          customerInfo: {
-            name: buyerName,
-            email: auth.email || customerEmail,
-            phone: buyerPhone.trim(),
-          },
-          paymentMethod: 'Paystack Escrow',
-          paymentReference: reference,
-          paystackReference: reference,
-          escrowStatus: 'held',
-          commissionRate,
-          dealThreadId: dealThreadId || null,
-          chatThreadId: dealThreadId || null,
-          marketMeta: {
-            fromChatId: dealThreadId || requestedDealThreadId,
-            postId,
-            agreedUnitPrice: unitPrice,
-            listedPrice: listedPrice || null,
-            cartSessionId: validation.data.cartSessionId || sessionMeta.cartSessionId || null,
-            lineItems: cartLineItems || null,
-          },
-          createdAt: nowIso,
-          updatedAt: nowIso,
-          paymentVerifiedAt: nowIso,
-          sellerUnreadCount: 1,
-          buyerUnreadCount: 0,
-        };
-
+        let result;
         try {
-          await orderChat.commitAndMirrorOrder(orderPayload, {
-            bumpPurchaseCount: true,
-            timeline: [
-              {
-                event: 'order_paid',
-                status: 'Processing',
-                text: 'Payment verified',
-                actorId: auth.uid,
-                actorRole: 'buyer',
-                createdAt: nowIso,
-              },
-            ],
+          result = await commitMarketCheckoutOrders({
+            orderChat,
+            firestore,
+            reference,
+            buyerId: auth.uid,
+            buyerName,
+            buyerEmail: auth.email || customerEmail,
+            buyerPhone,
+            deliveryAddress,
+            commissionRate,
+            paidAmount,
+            groups: built.groups,
+            cartLineItems,
+            cartSessionId: validation.data.cartSessionId || sessionMeta.cartSessionId || null,
+            requestedDealThreadId,
+            finalizedBy: 'client',
+            notify: true,
           });
         } catch (commitError: any) {
-          const raced = await orderChat.fetchNeonOrderByReference(reference);
-          if (raced?.id) {
+          if (
+            commitError?.statusCode === 403 ||
+            /cannot purchase your own/i.test(String(commitError?.message || ''))
+          ) {
+            return sendError(response, 'You cannot purchase your own item', 403);
+          }
+          const raced = await orderChat.fetchNeonOrdersByReference(reference);
+          if (raced.orderIds.length) {
             return sendResponse(response, {
               success: true,
-              orderId: raced.id,
-              dealThreadId: raced.dealThreadId || raced.chatThreadId || dealThreadId,
+              orderId: raced.orderIds[0],
+              orderIds: raced.orderIds,
+              checkoutPaymentId: raced.checkout?.id || null,
+              dealThreadId:
+                raced.orders[0]?.dealThreadId || raced.orders[0]?.chatThreadId || null,
               alreadyExists: true,
               message: 'Order already finalized for this payment',
             });
@@ -1910,93 +1638,17 @@ export const finalizeMarketEscrowPayment = onRequest(
           throw commitError;
         }
 
-        try {
-          await firestore.collection('transactions').doc(`ledger_${reference}`).set(
-            {
-              id: `ledger_${reference}`,
-              type: 'sale',
-              amount: sellerEarning,
-              commission: commission,
-              commissionRate,
-              orderId,
-              sellerId: resolvedSellerId,
-              customerId: auth.uid,
-              description: `Sale from order #${orderId.slice(0, 7)}`,
-              status: 'completed',
-              createdAt: FieldValue.serverTimestamp(),
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          );
-          if (cartLineItems && cartLineItems.length > 0) {
-            for (const line of cartLineItems) {
-              await firestore.collection('marketPosts').doc(line.postId).set(
-                {
-                  lastBuyerId: auth.uid,
-                  purchaseCount: FieldValue.increment(1),
-                  updatedAt: FieldValue.serverTimestamp(),
-                },
-                { merge: true }
-              );
-            }
-          } else {
-            await firestore.collection('marketPosts').doc(postId).set(
-              {
-                lastBuyerId: auth.uid,
-                purchaseCount: FieldValue.increment(1),
-                updatedAt: FieldValue.serverTimestamp(),
-              },
-              { merge: true }
-            );
-          }
-          await firestore.collection('payment_sessions').doc(reference).set(
-            {
-              status: 'finalized',
-              orderId,
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } catch (ledgerError) {
-          console.warn('Ledger/post mirror after Neon commit failed', orderId, ledgerError);
-        }
-
-        try {
-          await orderChat.createSystemMessage({
-            orderId,
-            event: 'order_paid',
-            dealThreadId,
-            customText: `Order confirmed. Payment of NGN ${Number(orderTotal).toLocaleString()} received.`,
-          });
-        } catch (sysErr) {
-          console.warn('System message after Neon commit failed', orderId, sysErr);
-        }
-
-        import('./notifications.js').then((mod) => {
-          mod.notifyBuyer({
-            buyerId: auth.uid,
-            event: 'payment_success',
-            orderId,
-            orderSummary: `${itemName} — NGN ${Number(orderTotal).toLocaleString()}`,
-            chatRoomId: dealThreadId,
-          }).catch((e: any) => console.error('Failed to notify buyer:', e));
-
-          if (resolvedSellerId) {
-            mod.notifySeller({
-              sellerId: resolvedSellerId,
-              event: 'new_order',
-              orderId,
-              orderSummary: `${itemName} — NGN ${Number(orderTotal).toLocaleString()}`,
-              chatRoomId: dealThreadId,
-            }).catch((e: any) => console.error('Failed to notify seller:', e));
-          }
-        }).catch(() => {});
-
         return sendResponse(response, {
           success: true,
-          orderId,
-          dealThreadId,
-          message: 'Order created successfully',
+          orderId: result.primaryOrderId,
+          orderIds: result.orderIds,
+          checkoutPaymentId: result.checkoutPaymentId,
+          dealThreadId: result.dealThreadId,
+          alreadyExists: result.alreadyExists,
+          message:
+            result.orderIds.length > 1
+              ? `${result.orderIds.length} orders created successfully`
+              : 'Order created successfully',
         });
       } catch (error: any) {
         console.error('Error in finalizeMarketEscrowPayment:', error);

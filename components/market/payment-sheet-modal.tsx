@@ -89,10 +89,14 @@ interface PaymentSheetModalProps {
   buyerName: string;
   buyerId: string;
   fromChatId?: string | null;
-  /** Same-seller multi-item cart — when set, amount = sum(line.unitPrice * qty). */
+  /** Multi-item cart (any sellers) — amount = sum(line.unitPrice * qty); server splits into N seller orders. */
   cartLines?: MarketCartLine[] | null;
   cartSessionId?: string | null;
-  onSuccess: (orderId: string, dealThreadId?: string | null) => void;
+  onSuccess: (
+    orderId: string,
+    dealThreadId?: string | null,
+    orderIds?: string[]
+  ) => void;
 }
 
 export default function PaymentSheetModal({
@@ -119,6 +123,7 @@ export default function PaymentSheetModal({
   const [errorMessage, setErrorMessage] = useState('');
   const [reference, setReference] = useState('');
   const [createdOrderId, setCreatedOrderId] = useState('');
+  const [createdOrderIds, setCreatedOrderIds] = useState<string[]>([]);
   const [createdDealThreadId, setCreatedDealThreadId] = useState<string | null>(null);
   const [verifyingText, setVerifyingText] = useState('Verifying escrow transaction...');
   const [paystackRetryKey, setPaystackRetryKey] = useState(0);
@@ -268,6 +273,11 @@ export default function PaymentSheetModal({
       if (response && (response.success || response.alreadyExists) && response.orderId) {
         haptics.success();
         setCreatedOrderId(response.orderId);
+        setCreatedOrderIds(
+          Array.isArray(response.orderIds) && response.orderIds.length
+            ? response.orderIds
+            : [response.orderId]
+        );
         setCreatedDealThreadId(response.dealThreadId || fromChatId || null);
         setPaymentState('SUCCESS');
         // Only safe clear: order exists for this payment.
@@ -513,6 +523,15 @@ export default function PaymentSheetModal({
       addressLine,
       createdAtMs: Date.now(),
       phase: 'initialized',
+      lineItems: isCartCheckout
+        ? activeCartLines!.map((line) => ({
+            postId: line.postId,
+            quantity: line.quantity,
+            unitPrice: line.unitPrice,
+            title: line.title,
+          }))
+        : undefined,
+      cartSessionId: cartSessionId || undefined,
     });
 
     setPaymentState('GATEWAY');
@@ -699,7 +718,11 @@ export default function PaymentSheetModal({
   const handleSuccessDone = () => {
     haptics.light();
     setPaymentState('REVIEW');
-    onSuccess(createdOrderId, createdDealThreadId);
+    onSuccess(
+      createdOrderId,
+      createdDealThreadId,
+      createdOrderIds.length ? createdOrderIds : createdOrderId ? [createdOrderId] : []
+    );
   };
 
   const renderContent = () => {

@@ -48,6 +48,10 @@ import {
   ackOrderOutbox,
   failOrderOutbox,
   getOrderByPaystackReference,
+  listOrdersByPaystackReference,
+  listOrdersByCheckoutPaymentId,
+  upsertCheckoutPaymentFromPayload,
+  getCheckoutPaymentByReference,
   getOrderByDealThreadId,
 } from './orders.mjs';
 import {
@@ -992,8 +996,45 @@ app.get('/v1/orders/internal/by-reference/:reference', async (request, reply) =>
     if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
       return reply.code(403).send({ success: false, error: 'Forbidden' });
     }
-    const order = await getOrderByPaystackReference(request.params.reference);
-    return reply.send({ success: true, order });
+    const orders = await listOrdersByPaystackReference(request.params.reference);
+    const checkout = await getCheckoutPaymentByReference(request.params.reference);
+    // Backward compat: `order` = first child; prefer `orders` for multi-seller.
+    return reply.send({
+      success: true,
+      order: orders[0] || null,
+      orders,
+      checkout,
+      orderIds: orders.map((o) => o.id),
+    });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/checkout-payments/internal/upsert', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const checkout = await upsertCheckoutPaymentFromPayload(request.body || {});
+    return reply.send({ success: true, checkout });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/checkout-payments/internal/by-reference/:reference', async (request, reply) => {
+  try {
+    const secret = asString(request.headers['x-chat-internal-secret']);
+    if (!config.chatInternalSecret || secret !== config.chatInternalSecret) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    const checkout = await getCheckoutPaymentByReference(request.params.reference);
+    const orders = checkout?.id
+      ? await listOrdersByCheckoutPaymentId(checkout.id)
+      : await listOrdersByPaystackReference(request.params.reference);
+    return reply.send({ success: true, checkout, orders, orderIds: orders.map((o) => o.id) });
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
   }

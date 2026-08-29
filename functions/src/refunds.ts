@@ -320,7 +320,7 @@ export async function processOrderRefund(
     });
 
     if (paymentRef) {
-      const lookupRef = firestore.collection('refund_lookups').doc(paymentRef);
+      const lookupRef = firestore.collection('refund_lookups').doc(`${paymentRef}__${orderId}`);
       tx.set(
         lookupRef,
         {
@@ -331,10 +331,31 @@ export async function processOrderRefund(
         },
         { merge: true }
       );
+      // Also keep a pointer on the parent ref for webhook discovery (last refund wins for lookup;
+      // webhook also matches by orderId in refund entry / order-scoped docs).
+      tx.set(
+        firestore.collection('refund_lookups').doc(paymentRef),
+        {
+          orderId,
+          refundId,
+          paymentReference: paymentRef,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
 
-      const saleRef = firestore.collection('transactions').doc(`ledger_${paymentRef}`);
+      const saleRef = firestore.collection('transactions').doc(`ledger_${orderId}`);
+      const legacySaleRef = firestore.collection('transactions').doc(`ledger_${paymentRef}`);
       tx.set(
         saleRef,
+        {
+          refundStatus: 'pending',
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      tx.set(
+        legacySaleRef,
         {
           refundStatus: 'pending',
           updatedAt: FieldValue.serverTimestamp(),
@@ -705,9 +726,14 @@ async function applyRefundProcessedState(params: {
   );
 
   if (params.paymentRef) {
-    const saleRef = firestore.collection('transactions').doc(`ledger_${params.paymentRef}`);
-    const saleSnap = await saleRef.get();
-    if (saleSnap.exists) {
+    const orderLedgerId = `ledger_${params.orderId}`;
+    const saleRefs = [
+      firestore.collection('transactions').doc(orderLedgerId),
+      firestore.collection('transactions').doc(`ledger_${params.paymentRef}`),
+    ];
+    for (const saleRef of saleRefs) {
+      const saleSnap = await saleRef.get();
+      if (!saleSnap.exists) continue;
       const sale = saleSnap.data() || {};
       const prevRefunded = Number(sale.refundedSellerAmount) || 0;
       const nextRefunded = roundMoney(prevRefunded + (sellerAmtForLedger || 0));

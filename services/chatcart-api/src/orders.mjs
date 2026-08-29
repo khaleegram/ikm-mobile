@@ -91,6 +91,23 @@ function mapOrderRow(row) {
     sellerAcceptedAt: row.seller_accepted_at || undefined,
     preparingAt: row.preparing_at || undefined,
     paymentVerifiedAt: row.payment_verified_at || undefined,
+    checkoutPaymentId: row.checkout_payment_id || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapCheckoutPaymentRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    buyerId: row.buyer_id,
+    paystackReference: row.paystack_reference,
+    amount: asNumber(row.amount, 0),
+    currency: row.currency || 'NGN',
+    status: row.status,
+    cartSessionId: row.cart_session_id || undefined,
+    lineItems: Array.isArray(row.line_items) ? row.line_items : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -144,6 +161,8 @@ async function upsertOrderWithDb(db, payload = {}) {
     payload.paystackReference || payload.paystack_reference || payload.paymentReference || payload.payment_reference
   ) || null;
   const idempotencyKey = asString(payload.idempotencyKey || payload.idempotency_key) || null;
+  const checkoutPaymentId =
+    asString(payload.checkoutPaymentId || payload.checkout_payment_id) || null;
 
   await db.query(
     `INSERT INTO orders (
@@ -156,7 +175,7 @@ async function upsertOrderWithDb(db, payload = {}) {
        availability_status, wait_time_days, wait_time_expires_at,
        availability_reason, buyer_wait_response, dispute, notes, refunds,
        market_meta, last_message, seller_unread_count, buyer_unread_count,
-       seller_accepted_at, preparing_at, payment_verified_at, raw,
+       seller_accepted_at, preparing_at, payment_verified_at, checkout_payment_id, raw,
        created_at, updated_at
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7::jsonb,$8,
@@ -168,8 +187,8 @@ async function upsertOrderWithDb(db, payload = {}) {
        $28,$29,$30,
        $31,$32,$33::jsonb,$34::jsonb,$35::jsonb,
        $36::jsonb,$37::jsonb,$38,$39,
-       $40,$41,$42,$43::jsonb,
-       COALESCE($44, now()), COALESCE($45, now())
+       $40,$41,$42,$43,$44::jsonb,
+       COALESCE($45, now()), COALESCE($46, now())
      )
      ON CONFLICT (id) DO UPDATE SET
        customer_id = EXCLUDED.customer_id,
@@ -213,6 +232,7 @@ async function upsertOrderWithDb(db, payload = {}) {
        seller_accepted_at = EXCLUDED.seller_accepted_at,
        preparing_at = EXCLUDED.preparing_at,
        payment_verified_at = EXCLUDED.payment_verified_at,
+       checkout_payment_id = COALESCE(EXCLUDED.checkout_payment_id, orders.checkout_payment_id),
        raw = EXCLUDED.raw,
        updated_at = COALESCE(EXCLUDED.updated_at, now())`,
     [
@@ -260,6 +280,7 @@ async function upsertOrderWithDb(db, payload = {}) {
       asDate(payload.sellerAcceptedAt || payload.seller_accepted_at),
       asDate(payload.preparingAt || payload.preparing_at),
       asDate(payload.paymentVerifiedAt || payload.payment_verified_at),
+      checkoutPaymentId,
       JSON.stringify(payload.raw || payload),
       asDate(payload.createdAt || payload.created_at) || new Date(),
       asDate(payload.updatedAt || payload.updated_at) || new Date(),
@@ -501,15 +522,112 @@ export async function failOrderOutbox(ids = [], errorMessage = '') {
   return { failed: rowCount || 0 };
 }
 
+export async function listOrdersByPaystackReference(reference) {
+  const db = requirePool();
+  const ref = asString(reference);
+  if (!ref) return [];
+  const { rows } = await db.query(
+    `SELECT * FROM orders
+     WHERE paystack_reference = $1
+        OR payment_reference = $1
+        OR idempotency_key = $1
+        OR idempotency_key LIKE $2
+     ORDER BY created_at ASC`,
+    [ref, `${ref}__%`]
+  );
+  return rows.map(mapOrderRow);
+}
+
 export async function getOrderByPaystackReference(reference) {
+  const orders = await listOrdersByPaystackReference(reference);
+  return orders[0] || null;
+}
+
+export async function listOrdersByCheckoutPaymentId(checkoutPaymentId) {
+  const db = requirePool();
+  const id = asString(checkoutPaymentId);
+  if (!id) return [];
+  const { rows } = await db.query(
+    `SELECT * FROM orders WHERE checkout_payment_id = $1 ORDER BY created_at ASC`,
+    [id]
+  );
+  return rows.map(mapOrderRow);
+}
+
+export async function upsertCheckoutPaymentFromPayload(payload = {}) {
+  const db = requirePool();
+  const paystackReference = asString(
+    payload.paystackReference || payload.paystack_reference || payload.reference
+  );
+  if (!paystackReference) {
+    const err = new Error('paystackReference is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const buyerId = asString(payload.buyerId || payload.buyer_id || payload.customerId);
+  if (!buyerId) {
+    const err = new Error('buyerId is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await ensureUser(buyerId);
+
+  const id =
+    asString(payload.id) ||
+    `chk_${paystackReference.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 680)}`;
+  const amount = asNumber(payload.amount, 0);
+  const currency = asString(payload.currency) || 'NGN';
+  const status = asString(payload.status) || 'paid';
+  const cartSessionId = asString(payload.cartSessionId || payload.cart_session_id) || null;
+  const lineItems = Array.isArray(payload.lineItems)
+    ? payload.lineItems
+    : Array.isArray(payload.line_items)
+      ? payload.line_items
+      : [];
+
+  await db.query(
+    `INSERT INTO checkout_payments (
+       id, buyer_id, paystack_reference, amount, currency, status,
+       cart_session_id, line_items, created_at, updated_at
+     ) VALUES (
+       $1,$2,$3,$4,$5,$6,$7,$8::jsonb, COALESCE($9, now()), COALESCE($10, now())
+     )
+     ON CONFLICT (id) DO UPDATE SET
+       amount = EXCLUDED.amount,
+       currency = EXCLUDED.currency,
+       status = EXCLUDED.status,
+       cart_session_id = COALESCE(EXCLUDED.cart_session_id, checkout_payments.cart_session_id),
+       line_items = EXCLUDED.line_items,
+       updated_at = now()`,
+    [
+      id,
+      buyerId,
+      paystackReference,
+      amount,
+      currency,
+      status,
+      cartSessionId,
+      JSON.stringify(lineItems),
+      asDate(payload.createdAt || payload.created_at) || new Date(),
+      asDate(payload.updatedAt || payload.updated_at) || new Date(),
+    ]
+  );
+
+  const { rows } = await db.query(`SELECT * FROM checkout_payments WHERE id = $1 LIMIT 1`, [id]);
+  return mapCheckoutPaymentRow(rows[0]);
+}
+
+export async function getCheckoutPaymentByReference(reference) {
   const db = requirePool();
   const ref = asString(reference);
   if (!ref) return null;
   const { rows } = await db.query(
-    `SELECT * FROM orders WHERE paystack_reference = $1 OR payment_reference = $1 OR idempotency_key = $1 LIMIT 1`,
-    [ref]
+    `SELECT * FROM checkout_payments WHERE paystack_reference = $1 OR id = $2 LIMIT 1`,
+    [ref, `chk_${ref.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 680)}`]
   );
-  return mapOrderRow(rows[0]);
+  return mapCheckoutPaymentRow(rows[0]);
 }
 
 export async function listOrdersForUser(userId, { role = 'all', limit = 40, cursor = null } = {}) {
