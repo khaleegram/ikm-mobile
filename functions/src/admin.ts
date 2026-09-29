@@ -69,6 +69,7 @@ export const resolveDispute = onRequest(
 
         await orderRef.update({
           disputeResolution: 'refund',
+          disputeStatus: 'resolved_refund',
           refundAmount: amount ?? (Number(order.total) || 0),
           disputeResolvedAt: FieldValue.serverTimestamp(),
           disputeResolvedBy: auth.uid,
@@ -98,7 +99,8 @@ export const resolveDispute = onRequest(
       }
 
       await orderRef.update({
-        status: 'Processing',
+        status: 'Completed',
+        disputeStatus: 'resolved_release',
         disputeResolution: 'release',
         refundAmount: 0,
         disputeResolvedAt: FieldValue.serverTimestamp(),
@@ -117,7 +119,7 @@ export const resolveDispute = onRequest(
       await createOrderTimelineEvent({
         orderId,
         event: 'dispute_resolved',
-        status: 'Processing',
+        status: 'Completed',
         text: 'Dispute resolved — escrow released',
         actorId: auth.uid,
         actorRole: 'system',

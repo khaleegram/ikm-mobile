@@ -4,6 +4,7 @@
  */
 import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { pendingLedgerFields } from './escrow';
 
 function asNonEmptyString(value: unknown): string {
   return String(value ?? '').trim();
@@ -363,7 +364,10 @@ export async function commitMarketCheckoutOrders(input: {
           paymentReference: reference,
           checkoutPaymentId: checkout?.id || checkoutPaymentId,
           description: `Sale from order #${orderId.slice(0, 7)}`,
-          status: 'completed',
+          // Earned by the seller, but NOT withdrawable until escrow releases.
+          // Writing 'completed' here was how sellers could withdraw money for
+          // orders that had never been delivered.
+          ...pendingLedgerFields(),
           createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         },
@@ -383,7 +387,7 @@ export async function commitMarketCheckoutOrders(input: {
             customerId: buyerId,
             paymentReference: reference,
             aliasOf: `ledger_${orderId}`,
-            status: 'completed',
+            ...pendingLedgerFields(),
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           },
@@ -409,7 +413,7 @@ export async function commitMarketCheckoutOrders(input: {
         orderId,
         event: 'order_paid',
         dealThreadId,
-        customText: `Order confirmed. Payment of NGN ${Number(childTotal).toLocaleString()} received.`,
+        customText: `Money held safely — NGN ${Number(childTotal).toLocaleString()} received.`,
       });
     } catch {
       // non-fatal

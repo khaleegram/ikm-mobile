@@ -11,6 +11,7 @@ admin.initializeApp();
 // Export modules
 export * from './admin';
 export * from './dashboard';
+export * from './disputes';
 // feed-algorithm + market CF modules retired — market feed/posts/likes/comments/chat
 // live on chatcart-api (Neon). Do not re-export them; deployed leftovers should be
 // deleted on the next functions deploy (`firebase functions:delete …`).

@@ -37,8 +37,8 @@ export const submitReview = onRequest(async (request, response) => {
         return sendError(response, 'Only the buyer can leave a review', 403);
       }
 
-      if (order.status !== 'Completed') {
-        return sendError(response, 'Order must be completed before leaving a review', 400);
+      if (order.status !== 'Completed' && order.status !== 'Received') {
+        return sendError(response, 'Leave a review after you confirm delivery', 400);
       }
 
       const existingReviewSnap = await firestore

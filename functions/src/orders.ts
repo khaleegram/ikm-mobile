@@ -2,6 +2,7 @@ import * as admin from 'firebase-admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { defineBoolean } from 'firebase-functions/params';
 import cors = require('cors');
 import {
     requireAuth,
@@ -19,6 +20,13 @@ import {
     dualWriteOrderToPostgres,
 } from './order-chat';
 import { paystackSecret, processOrderRefund } from './refunds';
+import {
+    isEscrowHeld,
+    isEscrowSettled,
+    releaseOrderEscrow,
+    type ReleaseEscrowResult,
+    type ReleaseSource,
+} from './escrow';
 
 const corsHandler = cors({ origin: true });
 
@@ -48,6 +56,75 @@ function buildOrderSummary(order: any): string {
   const total = Number(data.total || 0);
   const extra = data.items?.length > 1 ? ` +${data.items.length - 1} more` : '';
   return `${item}${extra} — NGN ${total.toLocaleString()}`;
+}
+
+/**
+ * Release escrow and tell everyone about it. Every path that pays a seller goes
+ * through here — buyer confirmation, the auto-release timer, and admins resolving
+ * a dispute — so the ledger, the Neon mirror and the chat all agree.
+ */
+async function releaseEscrowAndAnnounce(params: {
+  orderId: string;
+  source: ReleaseSource;
+  event: string;
+  text: string;
+  actorId?: string;
+  actorRole?: 'buyer' | 'seller' | 'system' | 'admin';
+  note?: string;
+  notifyBuyerOnComplete?: boolean;
+}): Promise<ReleaseEscrowResult> {
+  const result = await releaseOrderEscrow({
+    orderId: params.orderId,
+    source: params.source,
+    actorId: params.actorId,
+    actorRole: params.actorRole,
+    note: params.note,
+  });
+
+  if (result.outcome !== 'released' || !result.order) return result;
+
+  const order = result.order;
+  const dealThreadId = order.dealThreadId || order.chatThreadId || null;
+  const summary = buildOrderSummary(order);
+
+  // Throws on Neon failure — callers decide whether that is fatal.
+  await dualWriteOrderToPostgres(params.orderId);
+
+  createSystemMessage({
+    orderId: params.orderId,
+    event: params.event,
+    dealThreadId,
+  }).catch((e) => console.error('Failed to create system message:', e));
+
+  createOrderTimelineEvent({
+    orderId: params.orderId,
+    event: params.event,
+    status: 'Completed',
+    text: params.text,
+    actorId: params.actorId,
+    actorRole: params.actorRole,
+  }).catch((e) => console.error('Failed to create timeline event:', e));
+
+  notifySeller({
+    sellerId: String(order.sellerId || ''),
+    event: 'escrow_released',
+    orderId: params.orderId,
+    orderSummary: summary,
+    chatRoomId: dealThreadId,
+  }).catch((e) => console.error('Failed to notify seller:', e));
+
+  if (params.notifyBuyerOnComplete) {
+    notifyBuyer({
+      buyerId: String(order.customerId || ''),
+      event: 'order_delivered',
+      orderId: params.orderId,
+      orderSummary: summary,
+      extra: 'Delivery confirmed automatically. The seller has been paid.',
+      chatRoomId: dealThreadId,
+    }).catch((e) => console.error('Failed to notify buyer:', e));
+  }
+
+  return result;
 }
 
 export const updateOrderStatus = onRequest(
@@ -88,6 +165,23 @@ export const updateOrderStatus = onRequest(
 
       if (sellerOnly.includes(status) && !isSeller && !auth.isAdmin) {
         return sendError(response, 'Only the seller can perform this action', 403);
+      }
+
+      // Completing an order is what moves money to the seller, so it goes through
+      // the escrow module instead of the generic status write below.
+      if (status === 'Completed') {
+        const release = await releaseEscrowAndAnnounce({
+          orderId,
+          source: auth.isAdmin ? 'admin' : 'buyer',
+          actorId: auth.uid,
+          actorRole: isBuyer ? 'buyer' : isSeller ? 'seller' : 'system',
+          event: 'buyer_confirmed',
+          text: 'Buyer confirmed receipt',
+        });
+        if (release.outcome !== 'released' && release.outcome !== 'already_released') {
+          return sendError(response, `Cannot complete order: ${release.outcome}`, 400);
+        }
+        return sendResponse(response, { success: true, escrow: release.outcome });
       }
 
       // Cancel → real Paystack refund when escrow still held
@@ -163,14 +257,13 @@ export const updateOrderStatus = onRequest(
           updateData.status = 'Received';
           updateData.receivedAt = now;
           break;
-        case 'Completed':
-          updateData.status = 'Completed';
-          updateData.escrowStatus = 'released';
-          updateData.fundsReleasedAt = now;
-          break;
+        // 'Completed' is handled above: it releases escrow through ./escrow.
         case 'Disputed':
           updateData.status = 'Disputed';
           updateData.escrowStatus = 'held';
+          updateData.autoReleaseDate = FieldValue.delete();
+          updateData.disputeOpenedAt = now;
+          updateData.disputeStatus = 'open';
           break;
         default:
           updateData.status = status;
@@ -388,7 +481,7 @@ export const markOrderAsSent = onRequest(async (request, response) => {
         orderId,
         event,
         dealThreadId: order.dealThreadId || order.chatThreadId || null,
-        customText: 'Seller marked order as shipped.',
+        customText: 'Seller sent your item.',
         photoUrl: photoUrl || null,
       }).catch((e) => console.error('Failed to create system message:', e));
 
@@ -458,45 +551,20 @@ export const markOrderAsReceived = onRequest(async (request, response) => {
         return sendError(response, `Cannot confirm receipt in ${order.status} status`, 400);
       }
 
-      const now = FieldValue.serverTimestamp();
-
-      await orderRef.update({
-        status: 'Completed',
-        escrowStatus: 'released',
-        fundsReleasedAt: now,
-        receivedAt: now,
-        updatedAt: now,
-      });
-      await dualWriteOrderToPostgres(orderId);
-
-      const event = 'buyer_confirmed';
-      const summary = buildOrderSummary(order);
-
-      createSystemMessage({
+      const release = await releaseEscrowAndAnnounce({
         orderId,
-        event,
-        dealThreadId: order.dealThreadId || order.chatThreadId || null,
-      }).catch((e) =>
-        console.error('Failed to create system message:', e)
-      );
-
-      createOrderTimelineEvent({
-        orderId,
-        event,
-        status: 'Completed',
-        text: 'Buyer confirmed receipt',
+        source: auth.isAdmin ? 'admin' : 'buyer',
         actorId: auth.uid,
-        actorRole: 'buyer',
-      }).catch((e) => console.error('Failed to create timeline event:', e));
+        actorRole: auth.isAdmin ? 'admin' : 'buyer',
+        event: 'buyer_confirmed',
+        text: 'Buyer confirmed receipt',
+      });
 
-      notifySeller({
-        sellerId: order.sellerId,
-        event: 'escrow_released',
-        orderId,
-        orderSummary: summary,
-      }).catch((e) => console.error('Failed to notify seller:', e));
+      if (release.outcome !== 'released' && release.outcome !== 'already_released') {
+        return sendError(response, `Cannot confirm receipt: ${release.outcome}`, 400);
+      }
 
-      return sendResponse(response, { success: true });
+      return sendResponse(response, { success: true, escrow: release.outcome });
     } catch (error: any) {
       return sendError(response, error.message || 'Internal server error', 500);
     }
@@ -623,8 +691,8 @@ export const markOrderAsNotAvailable = onRequest(async (request, response) => {
       const dealThreadId = order.dealThreadId || order.chatThreadId || null;
       const summary = buildOrderSummary(order);
       const customText = hasWait
-        ? `Seller needs about ${Math.floor(days)} day(s) before shipping${reason ? `: ${reason}` : ''}. Reply in chat or respond on the order.`
-        : `Seller marked this item unavailable${reason ? `: ${reason}` : ''}. You can cancel for a refund or chat to resolve.`;
+        ? `Seller needs about ${Math.floor(days)} day(s) before sending it${reason ? `: ${reason}` : ''}. Reply in chat or respond on the order.`
+        : `Seller can't supply this item${reason ? `: ${reason}` : ''}. You can cancel for a refund or chat to sort it out.`;
 
       await createSystemMessage({
         orderId,
@@ -704,7 +772,7 @@ export const respondToAvailabilityCheck = onRequest(
             orderId,
             event: 'buyer_accepted_wait',
             dealThreadId,
-            customText: 'Buyer agreed to wait. Seller can ship when ready.',
+            customText: 'Buyer agreed to wait. Send it when ready.',
           });
           await notifySeller({
             sellerId: String(order.sellerId || ''),
@@ -810,7 +878,7 @@ export const remindUnshippedOrders = onSchedule(
             event: 'shipment_reminder',
             orderId: doc.id,
             orderSummary: summary,
-            extra: `${summary} still needs shipping (~${hoursWaiting}h since purchase). Mark shipped, tell the buyer you need time, or mark unavailable.`,
+            extra: `${summary} still hasn't been sent (~${hoursWaiting}h since purchase). Mark it as sent, tell the buyer you need time, or say you can't supply it.`,
             chatRoomId: dealThreadId,
           });
 
@@ -818,7 +886,7 @@ export const remindUnshippedOrders = onSchedule(
             orderId: doc.id,
             event: 'shipment_reminder',
             dealThreadId,
-            customText: `Reminder: order still awaiting shipment (${hoursWaiting}h). Seller — update the buyer in chat.`,
+            customText: `Reminder: this order hasn't been sent yet (${hoursWaiting}h). Seller — update the buyer in chat.`,
           });
 
           await doc.ref.update({
@@ -837,6 +905,232 @@ export const remindUnshippedOrders = onSchedule(
   }
 );
 
+/**
+ * Automatic money movement runs behind explicit switches, because both directions
+ * are irreversible.
+ *
+ * Release and refund are deliberately separate. They are not equally safe:
+ *   - Release only ever pays a seller for an order they actually shipped, after the
+ *     buyer's hold window has passed. Enabling it is the intended product behaviour.
+ *   - Refund sends the buyer's money back and cancels a paid order. That is
+ *     destructive and should be triggered deliberately, not silently in a batch.
+ *
+ * Values live in functions/.env and are deployed by the Firebase CLI.
+ */
+const escrowAutoRelease = defineBoolean('ESCROW_AUTO_RELEASE_ENABLED', {
+  default: true,
+  description: 'Release escrow automatically once the hold window after shipping has passed.',
+});
+const escrowAutoRefund = defineBoolean('ESCROW_AUTO_REFUND_ENABLED', {
+  default: false,
+  description: 'Refund and cancel paid orders the seller never accepted or shipped.',
+});
+
+const AUTO_MAX_PER_PASS = 25;
+
+/**
+ * Release escrow for orders whose auto-release clock has run out.
+ *
+ * `markOrderAsSent` has always stamped `autoReleaseDate` (48h). Nothing ever read
+ * it, so an order whose buyer simply stopped opening the app held the seller's
+ * money indefinitely. This is that missing timer.
+ *
+ * Queried on the single `autoReleaseDate` field so no composite index is required;
+ * status and escrow state are checked in code.
+ */
+async function releaseDueEscrow(
+  limit: number,
+  dryRun: boolean
+): Promise<{ released: number; skipped: number }> {
+  const firestore = admin.firestore();
+  const nowTs = admin.firestore.Timestamp.now();
+  let released = 0;
+  let skipped = 0;
+
+  const snap = await firestore
+    .collection('orders')
+    .where('autoReleaseDate', '<=', nowTs)
+    .limit(limit * 4)
+    .get();
+
+  for (const doc of snap.docs) {
+    if (released + skipped >= limit) break;
+    const order = doc.data() || {};
+    const status = String(order.status || '');
+
+    if (!['Sent', 'Received'].includes(status)) continue;
+    if (!isEscrowHeld(order.escrowStatus)) continue;
+    if (String(order.disputeStatus || '') === 'open') {
+      skipped++;
+      continue;
+    }
+    if (dryRun) {
+      released++;
+      continue;
+    }
+
+    try {
+      const result = await releaseEscrowAndAnnounce({
+        orderId: doc.id,
+        source: 'auto',
+        actorRole: 'system',
+        event: 'escrow_auto_released',
+        text: 'Buyer did not confirm receipt within the hold window. Escrow released to the seller.',
+        note: 'auto-release window elapsed',
+        notifyBuyerOnComplete: true,
+      });
+      if (result.outcome === 'released') released++;
+      else skipped++;
+    } catch (err) {
+      skipped++;
+      console.warn('releaseDueEscrow failed for', doc.id, err);
+    }
+  }
+
+  return { released, skipped };
+}
+
+/**
+ * Refund orders the seller ignored, and orders whose agreed wait window lapsed.
+ *
+ * Safety rail: an order is only auto-cancelled when there is NO evidence the goods
+ * were dispatched. A seller who posts the parcel and forgets to tap "Accepted"
+ * must not have a delivered order refunded out from under them — that loss would
+ * land on the seller, not the platform.
+ */
+async function cancelIgnoredOrders(
+  limit: number,
+  dryRun: boolean
+): Promise<{ cancelled: number; skipped: number }> {
+  const firestore = admin.firestore();
+  let cancelled = 0;
+  let skipped = 0;
+
+  const nowMs = Date.now();
+  const acceptCutoff = admin.firestore.Timestamp.fromMillis(nowMs - 24 * 60 * 60 * 1000);
+
+  const [paidSnap, processingSnap] = await Promise.all([
+    firestore
+      .collection('orders')
+      .where('status', '==', 'Paid')
+      .where('createdAt', '<=', acceptCutoff)
+      .limit(limit * 2)
+      .get(),
+    firestore
+      .collection('orders')
+      .where('status', '==', 'Processing')
+      .where('createdAt', '<=', acceptCutoff)
+      .limit(limit * 2)
+      .get(),
+  ]);
+
+  // Orders whose agreed wait window has passed without shipment.
+  const waitSnap = await firestore
+    .collection('orders')
+    .where('waitTimeExpiresAt', '<=', admin.firestore.Timestamp.now())
+    .limit(limit * 2)
+    .get();
+
+  const candidates = [...paidSnap.docs, ...processingSnap.docs, ...waitSnap.docs];
+  const seen = new Set<string>();
+
+  for (const doc of candidates) {
+    if (cancelled + skipped >= limit) break;
+    if (seen.has(doc.id)) continue;
+    seen.add(doc.id);
+
+    const order = doc.data() || {};
+    // Never touch money that already moved.
+    if (isEscrowSettled(order.escrowStatus)) continue;
+    // Shipment evidence means this order is not "ignored" — leave it alone.
+    if (order.sentAt || order.shippedAt) continue;
+    if (String(order.disputeStatus || '') === 'open') continue;
+
+    const status = String(order.status || '');
+    const waiting = String(order.availabilityStatus || '') === 'waiting_restock';
+    const expiredWait =
+      waiting &&
+      order.waitTimeExpiresAt?.toMillis?.() &&
+      Number(order.waitTimeExpiresAt.toMillis()) <= nowMs;
+
+    const ignored = ['Paid', 'Processing'].includes(status) && !order.sellerAcceptedAt;
+    if (!ignored && !expiredWait) continue;
+
+    const reason = expiredWait
+      ? 'Auto-cancelled: seller did not ship within the agreed wait window'
+      : 'Auto-cancelled: seller did not accept within 24 hours';
+
+    if (dryRun) {
+      cancelled++;
+      continue;
+    }
+
+    try {
+      await processOrderRefund(
+        { orderId: doc.id, reason, actorId: 'system', actorRole: 'system', cancelOrder: true },
+        { secretKey: paystackSecret.value() }
+      );
+
+      const summary = buildOrderSummary(order);
+      notifyBuyer({
+        buyerId: order.customerId,
+        event: 'order_cancelled',
+        orderId: doc.id,
+        orderSummary: summary,
+        extra: 'Refund to your payment method is processing.',
+        chatRoomId: order.dealThreadId || order.chatThreadId || null,
+      }).catch(() => {});
+
+      notifySeller({
+        sellerId: order.sellerId,
+        event: 'refund_requested',
+        orderId: doc.id,
+        orderSummary: summary,
+        chatRoomId: order.dealThreadId || order.chatThreadId || null,
+      }).catch(() => {});
+
+      await dualWriteOrderToPostgres(doc.id);
+      cancelled++;
+    } catch (err) {
+      skipped++;
+      console.warn('cancelIgnoredOrders refund failed for', doc.id, err);
+    }
+  }
+
+  return { cancelled, skipped };
+}
+
+/**
+ * Escrow upkeep. Runs every 15 minutes.
+ *
+ * Release and refund are gated independently:
+ *   ESCROW_AUTO_RELEASE_ENABLED (default true)  — pays sellers for shipped orders.
+ *   ESCROW_AUTO_REFUND_ENABLED  (default false) — refunds orders the seller ignored.
+ */
+export const escrowMaintenance = onSchedule(
+  { schedule: 'every 15 minutes', timeZone: 'Africa/Lagos' },
+  async () => {
+    const releaseLive = escrowAutoRelease.value();
+    const refundLive = escrowAutoRefund.value();
+
+    const released = await releaseDueEscrow(AUTO_MAX_PER_PASS, !releaseLive);
+    const cancelled = await cancelIgnoredOrders(AUTO_MAX_PER_PASS, !refundLive);
+
+    console.log(
+      `escrowMaintenance: ` +
+        `release=${releaseLive ? 'LIVE' : 'dry-run'}(${released.released} released, ${released.skipped} skipped) ` +
+        `refund=${refundLive ? 'LIVE' : 'dry-run'}(${cancelled.cancelled} refunded, ${cancelled.skipped} skipped)`
+    );
+  }
+);
+
+/**
+ * Admin-triggered refund sweep for orders the seller ignored.
+ *
+ * Previously callable by anyone: it was `invoker: 'public'` with no auth check, so
+ * a stranger who found the URL could fire real Paystack refunds across every stale
+ * order. It now requires an admin, and an explicit `dryRun` body flag for preview.
+ */
 export const autoAcceptExpiredOrders = onRequest(
   { secrets: [paystackSecret], invoker: 'public' },
   async (request, response) => {
@@ -846,69 +1140,21 @@ export const autoAcceptExpiredOrders = onRequest(
         return sendError(response, 'Method not allowed', 405);
       }
 
-      const firestore = admin.firestore();
-      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
-      const staleSnap = await firestore
-        .collection('orders')
-        .where('status', '==', 'Paid')
-        .where('createdAt', '<=', admin.firestore.Timestamp.fromDate(cutoff))
-        .get();
-
-      // Also cover market orders that land in Processing without seller accept
-      const staleProcessing = await firestore
-        .collection('orders')
-        .where('status', '==', 'Processing')
-        .where('createdAt', '<=', admin.firestore.Timestamp.fromDate(cutoff))
-        .get();
-
-      const docs = [...staleSnap.docs, ...staleProcessing.docs];
-      let cancelled = 0;
-
-      for (const doc of docs) {
-        const order = doc.data() || {};
-        // Skip if seller already accepted timestamps exist for Processing that moved on
-        if (order.sellerAcceptedAt) continue;
-        if (order.escrowStatus === 'released' || order.escrowStatus === 'refunded') continue;
-
-        try {
-          await processOrderRefund(
-            {
-              orderId: doc.id,
-              reason: 'Auto-cancelled: seller did not accept within 24 hours',
-              actorId: 'system',
-              actorRole: 'system',
-              cancelOrder: true,
-            },
-            { secretKey: paystackSecret.value() }
-          );
-
-          const summary = buildOrderSummary(order);
-          notifyBuyer({
-            buyerId: order.customerId,
-            event: 'order_cancelled',
-            orderId: doc.id,
-            orderSummary: summary,
-            extra: 'Refund to your payment method is processing.',
-            chatRoomId: order.dealThreadId || order.chatThreadId || null,
-          }).catch(() => {});
-
-          notifySeller({
-            sellerId: order.sellerId,
-            event: 'refund_requested',
-            orderId: doc.id,
-            orderSummary: summary,
-            chatRoomId: order.dealThreadId || order.chatThreadId || null,
-          }).catch(() => {});
-
-          await dualWriteOrderToPostgres(doc.id);
-          cancelled++;
-        } catch (err) {
-          console.warn('autoAcceptExpiredOrders refund failed for', doc.id, err);
-        }
+      const auth = await requireAuth(request.headers.authorization || null);
+      if (!auth.isAdmin) {
+        return sendError(response, 'Admin only', 403);
       }
 
-      return sendResponse(response, { success: true, cancelled });
+      const dryRun = request.body?.dryRun === true;
+      const limit = Math.min(AUTO_MAX_PER_PASS, Number(request.body?.limit) || AUTO_MAX_PER_PASS);
+      const result = await cancelIgnoredOrders(limit, dryRun);
+
+      return sendResponse(response, {
+        success: true,
+        dryRun,
+        cancelled: result.cancelled,
+        skipped: result.skipped,
+      });
     } catch (error: any) {
       return sendError(response, error.message || 'Internal server error', 500);
     }

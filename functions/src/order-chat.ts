@@ -13,25 +13,25 @@ import { notifyNewMessage } from './notifications';
 const corsHandler = cors({ origin: true });
 
 const chatApiBaseUrl = defineString('CHAT_API_BASE_URL', {
-  default: 'https://chatcart-api-723822682554.us-central1.run.app/v1',
+  default: 'https://chatcart-production.up.railway.app/v1',
 });
 const chatInternalSecret = defineString('CHAT_INTERNAL_SECRET', {
   default: '',
 });
 
 const SYSTEM_MESSAGES: Record<string, string> = {
-  order_paid: 'Order confirmed. Payment received.',
-  seller_accepted: 'Seller accepted the order.',
+  order_paid: 'Money held safely.',
+  seller_accepted: 'Seller accepted your order.',
   seller_preparing: 'Seller is preparing your order.',
-  order_shipped: 'Seller marked order as shipped.',
-  order_delivered: 'Order delivered.',
+  order_shipped: 'Seller sent your item.',
+  order_delivered: 'Buyer confirmed they got it.',
   buyer_confirmed: 'Buyer confirmed receipt. Order completed.',
   order_cancelled: 'Order cancelled.',
   dispute_opened: 'A dispute has been opened for this order.',
   dispute_resolved: 'Dispute resolved.',
-  escrow_released: 'Payment released to seller.',
-  refund_requested: 'Refund is processing to the original payment method.',
-  refund_processed: 'Refund processed.',
+  escrow_released: 'Money released to seller.',
+  refund_requested: 'Refund on the way to the original payment method.',
+  refund_processed: 'Refunded.',
 };
 
 function chatInternalHeaders(): Record<string, string> | null {
@@ -119,6 +119,8 @@ const DATE_FIELDS = new Set([
   'fundsReleasedAt',
   'autoReleaseDate',
   'waitTimeExpiresAt',
+  'disputeOpenedAt',
+  'disputeResolvedAt',
 ]);
 
 /** Convert a JSON order payload into Firestore-friendly fields. */
@@ -820,7 +822,7 @@ export const createOrderTimelineEvent = async (input: {
   status: string;
   text: string;
   actorId?: string;
-  actorRole?: 'buyer' | 'seller' | 'system';
+  actorRole?: 'buyer' | 'seller' | 'system' | 'admin';
   metadata?: Record<string, unknown>;
 }): Promise<void> => {
   const firestore = admin.firestore();

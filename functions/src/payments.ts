@@ -11,13 +11,18 @@ import {
     requireAuth,
     sendError,
     sendResponse,
-    verifyIdToken,
     getPlatformCommissionRate,
 } from './utils';
 import {
   buildSellerCheckoutGroups,
   commitMarketCheckoutOrders,
 } from './market-checkout';
+import { getSellerReleasableEarnings } from './escrow';
+import {
+  finalizePayoutTransfer,
+  handleTransferWebhookEvent,
+  initiatePayoutTransfer,
+} from './payouts';
 
 // CORS configuration - allow all origins for mobile/web apps
 const corsHandler = cors({ origin: true });
@@ -402,6 +407,16 @@ export const paystackWebhook = onRequest(
           return sendResponse(response, { success: true, handled: event });
         }
 
+        // Payout transfer lifecycle webhooks
+        if (event.startsWith('transfer.')) {
+          try {
+            await handleTransferWebhookEvent(event, data);
+          } catch (transferErr) {
+            console.error('Transfer webhook handling failed:', transferErr);
+          }
+          return sendResponse(response, { success: true, handled: event });
+        }
+
         const reference = asNonEmptyString(data?.reference);
         const status = asNonEmptyString(data?.status).toLowerCase() || 'unknown';
         const amountNgn = Number(data?.amount || 0) / 100;
@@ -468,12 +483,11 @@ export const verifyPaymentAndCreateOrder = onRequest(
         return sendError(response, 'Method not allowed', 405);
       }
 
-      let auth: { uid: string; email?: string; isAdmin?: boolean } | null = null;
-      try {
-        auth = await verifyIdToken(request.headers.authorization || null);
-      } catch {
-        auth = null;
-      }
+      // Checkout requires an account. Guests browse and build a cart; they sign in
+      // to pay. Guest orders used to be created here and were a dead end: nobody
+      // could sign in as `guest_<email>`, so the buyer could never confirm receipt
+      // and their escrow could never be released.
+      const auth = await requireAuth(request.headers.authorization || null);
 
       const validation = verifyPaymentSchema.safeParse(request.body);
       if (!validation.success) {
@@ -495,47 +509,19 @@ export const verifyPaymentAndCreateOrder = onRequest(
       const paystackSecretKey = getPaystackSecretKey(paystackSecret.value());
       const firestore = admin.firestore();
 
-      let finalCustomerId = auth?.uid;
-      let isGuestOrder = false;
+      const finalCustomerId = auth.uid;
 
-      if (!finalCustomerId) {
-        if (!customerInfo?.email) {
-          return sendError(response, 'Email is required for guest checkout');
-        }
-        isGuestOrder = true;
-        const emailKey = customerInfo.email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-        const guestId = `guest_${emailKey}`;
-        const guestUserRef = firestore.collection('users').doc(guestId);
-        const guestUserDoc = await guestUserRef.get();
-
-        if (!guestUserDoc.exists) {
-          await guestUserRef.set({
-            email: customerInfo.email.toLowerCase(),
-            displayName: customerInfo.name || `${customerInfo.firstName || ''} ${customerInfo.lastName || ''}`.trim(),
-            firstName: customerInfo.firstName || '',
-            lastName: customerInfo.lastName || '',
-            phone: customerInfo.phone || '',
-            role: 'buyer',
-            isGuest: true,
-            createdAt: FieldValue.serverTimestamp(),
-          });
-        }
-        finalCustomerId = guestId;
-      } else {
-        if (auth) {
-          const userDoc = await firestore.collection('users').doc(finalCustomerId).get();
-          if (!userDoc.exists) {
-            await firestore.collection('users').doc(finalCustomerId).set({
-              email: auth.email || customerInfo?.email || '',
-              displayName: customerInfo?.name || `${customerInfo?.firstName || ''} ${customerInfo?.lastName || ''}`.trim(),
-              firstName: customerInfo?.firstName || '',
-              lastName: customerInfo?.lastName || '',
-              phone: customerInfo?.phone || '',
-              role: 'buyer',
-              createdAt: FieldValue.serverTimestamp(),
-            });
-          }
-        }
+      const userDoc = await firestore.collection('users').doc(finalCustomerId).get();
+      if (!userDoc.exists) {
+        await firestore.collection('users').doc(finalCustomerId).set({
+          email: auth.email || customerInfo?.email || '',
+          displayName: customerInfo?.name || `${customerInfo?.firstName || ''} ${customerInfo?.lastName || ''}`.trim(),
+          firstName: customerInfo?.firstName || '',
+          lastName: customerInfo?.lastName || '',
+          phone: customerInfo?.phone || '',
+          role: 'buyer',
+          createdAt: FieldValue.serverTimestamp(),
+        });
       }
 
       const existingOrderQuery = await firestore
@@ -585,8 +571,10 @@ export const verifyPaymentAndCreateOrder = onRequest(
             total: 0,
             status: 'Paid',
             deliveryAddress,
-            customerInfo: { ...customerInfo, isGuest: isGuestOrder },
-            escrowStatus: 'completed',
+            customerInfo: { ...customerInfo },
+            escrowStatus: 'released',
+            // Free orders have no money to hold or release.
+            isFreeOrder: true,
             paymentReference: reference,
             idempotencyKey,
             shippingType: shippingType || 'delivery',
@@ -641,7 +629,7 @@ export const verifyPaymentAndCreateOrder = onRequest(
           total,
           status: 'Paid',
           deliveryAddress,
-          customerInfo: { ...customerInfo, isGuest: isGuestOrder },
+          customerInfo: { ...customerInfo },
           escrowStatus: 'held',
           paymentReference: reference,
           idempotencyKey,
@@ -678,7 +666,7 @@ export const verifyPaymentAndCreateOrder = onRequest(
         mod.createSystemMessage({
           orderId: orderRef.id,
           event: 'order_paid',
-          customText: `Order confirmed. Payment of NGN ${Number(total).toLocaleString()} received.`,
+          customText: `Money held safely — NGN ${Number(total).toLocaleString()} received.`,
         }).catch((e: any) => console.error('Failed to create system message:', e));
 
         mod.createOrderTimelineEvent({
@@ -867,43 +855,28 @@ export const requestPayout = onRequest(
         return sendError(response, `Minimum payout is ₦${minimumPayout.toLocaleString()}`, 400);
       }
 
-      // Check for existing pending payout request to prevent double-draw
+      // Check for existing pending payout request to prevent double-draw.
+      // `pending_otp` also counts — that transfer exists on Paystack and is only
+      // waiting for an OTP, so the money is already committed.
       const pendingPayoutsSnapshot = await firestore.collection('payouts')
         .where('sellerId', '==', auth.uid)
         .where('status', '==', 'pending')
         .get();
 
-      if (!pendingPayoutsSnapshot.empty) {
+      const pendingOtpSnapshot = await firestore.collection('payouts')
+        .where('sellerId', '==', auth.uid)
+        .where('status', '==', 'pending_otp')
+        .get();
+
+      if (!pendingPayoutsSnapshot.empty || !pendingOtpSnapshot.empty) {
         return sendError(response, 'You already have a pending payout request. Please wait for it to be processed.', 400);
       }
 
-      // Calculate earnings server-side to verify balance
-      let totalEarnings = 0;
-      const transactionsSnapshot = await firestore.collection('transactions')
-        .where('sellerId', '==', auth.uid)
-        .where('type', '==', 'sale')
-        .where('status', '==', 'completed')
-        .get();
-
-      if (!transactionsSnapshot.empty) {
-        transactionsSnapshot.forEach(doc => {
-          totalEarnings += doc.data().amount || 0;
-        });
-      } else {
-        // Fallback: calculate from completed orders
-        const ordersSnapshot = await firestore.collection('orders')
-          .where('sellerId', '==', auth.uid)
-          .where('status', '==', 'Completed')
-          .get();
-        const commissionRate = await getPlatformCommissionRate();
-        ordersSnapshot.forEach(doc => {
-          const order = doc.data();
-          const orderTotal = order.total || 0;
-          const orderCommissionRate = order.commissionRate || commissionRate;
-          const commission = orderTotal * orderCommissionRate;
-          totalEarnings += (orderTotal - commission);
-        });
-      }
+      // Calculate earnings server-side to verify balance.
+      // Only RELEASED orders count — money still in escrow is not withdrawable,
+      // even though the sale ledger entry already exists for it.
+      const earnings = await getSellerReleasableEarnings(auth.uid);
+      const totalEarnings = earnings.releasable;
 
       const completedPayoutsSnapshot = await firestore.collection('payouts')
         .where('sellerId', '==', auth.uid)
@@ -918,6 +891,9 @@ export const requestPayout = onRequest(
       // Sum any currently pending payouts (already fetched)
       let pendingPayoutsSum = 0;
       pendingPayoutsSnapshot.forEach(doc => {
+        pendingPayoutsSum += doc.data().amount || 0;
+      });
+      pendingOtpSnapshot.forEach(doc => {
         pendingPayoutsSum += doc.data().amount || 0;
       });
 
@@ -946,7 +922,9 @@ export const requestPayout = onRequest(
 
       const expectedProcessingDate = addBusinessDays(new Date(), payoutProcessingDays);
 
-      await firestore.collection('payouts').add({
+      const payoutRef = firestore.collection('payouts').doc();
+
+      await payoutRef.set({
         sellerId: auth.uid,
         amount,
         bankName: userData.payoutDetails.bankName,
@@ -959,7 +937,32 @@ export const requestPayout = onRequest(
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      return sendResponse(response, { success: true });
+      // Execute the payout immediately. A human was only ever in this loop to
+      // press "send" on the Paystack dashboard.
+      const transfer = await initiatePayoutTransfer({
+        payoutId: payoutRef.id,
+        sellerId: auth.uid,
+        amountNgn: amount,
+        secretKey: getPaystackSecretKey(paystackSecret.value()),
+      });
+
+      if (!transfer.ok) {
+        return sendError(
+          response,
+          transfer.message || 'Payout could not be sent to your bank account',
+          502
+        );
+      }
+
+      return sendResponse(response, {
+        success: true,
+        payoutId: payoutRef.id,
+        status: transfer.status,
+        requiresOtp: Boolean(transfer.requiresOtp),
+        message: transfer.requiresOtp
+          ? 'Paystack requires an OTP to release this transfer'
+          : 'Payout sent to your bank account',
+      });
     } catch (error: any) {
       return sendError(response, error.message || 'Internal server error', 500);
     }
@@ -967,20 +970,78 @@ export const requestPayout = onRequest(
 });
 
 /**
- * Cancel payout request
+ * Cancel payout request.
+ *
+ * Only safe before a transfer exists at Paystack. Once a transfer has been
+ * initiated the money is moving, so cancelling the record would leave the ledger
+ * claiming the seller was never paid while Paystack has already paid them.
  */
-export const cancelPayoutRequest = onRequest(async (request, response) => {
+export const cancelPayoutRequest = onRequest(
+  { secrets: [paystackSecret] },
+  async (request, response) => {
   return corsHandler(request, response, async () => {
     try {
       await requireAuth(request.headers.authorization || null);
       const { payoutId } = request.body;
-      await admin.firestore().collection('payouts').doc(payoutId).update({ status: 'cancelled', cancelledAt: FieldValue.serverTimestamp() });
+
+      const payoutRef = admin.firestore().collection('payouts').doc(payoutId);
+      const payoutSnap = await payoutRef.get();
+      if (!payoutSnap.exists) return sendError(response, 'Payout not found', 404);
+
+      const payout = payoutSnap.data() || {};
+      const status = String(payout.status || '');
+      if (status === 'completed') {
+        return sendError(response, 'This payout has already been paid and cannot be cancelled', 409);
+      }
+      if (payout.transferCode || status === 'pending_otp') {
+        return sendError(
+          response,
+          'This payout is already being sent to your bank and can no longer be cancelled',
+          409
+        );
+      }
+
+      await payoutRef.update({ status: 'cancelled', cancelledAt: FieldValue.serverTimestamp() });
       return sendResponse(response, { success: true });
     } catch (error: any) {
       return sendError(response, error.message, 500);
     }
   });
 });
+
+/**
+ * Release a payout Paystack is holding for an OTP (admin only).
+ *
+ * Only needed while the account still has transfer OTP enabled. Turning that
+ * setting off in the Paystack dashboard removes this step entirely.
+ */
+export const finalizePayout = onRequest(
+  { secrets: [paystackSecret] },
+  async (request, response) => {
+    return corsHandler(request, response, async () => {
+      try {
+        if (request.method !== 'POST') return sendError(response, 'Method not allowed', 405);
+        await requireAdmin(request.headers.authorization || null);
+
+        const { payoutId, otp } = request.body || {};
+        if (!payoutId || !otp) {
+          return sendError(response, 'payoutId and otp are required', 400);
+        }
+
+        const result = await finalizePayoutTransfer({
+          payoutId,
+          otp: String(otp),
+          secretKey: getPaystackSecretKey(paystackSecret.value()),
+        });
+
+        if (!result.ok) return sendError(response, result.message || 'Could not finalize payout', 502);
+        return sendResponse(response, { success: true });
+      } catch (error: any) {
+        return sendError(response, error.message || 'Internal server error', 500);
+      }
+    });
+  }
+);
 
 /**
  * Get all payouts (admin only)
@@ -1692,63 +1753,16 @@ export const calculateSellerEarnings = onRequest(
         }
 
         const firestore = admin.firestore();
-        const commissionRate = await getPlatformCommissionRate();
 
-        let totalEarnings = 0;
-        let totalOrders = 0;
-        let commissionPaid = 0;
-
-        // Try to calculate from transactions collection first
-        const transactionsSnapshot = await firestore.collection('transactions')
-          .where('sellerId', '==', sellerId)
-          .where('type', '==', 'sale')
-          .get();
-
-        if (!transactionsSnapshot.empty) {
-          transactionsSnapshot.forEach(doc => {
-            const transaction = doc.data();
-            const status = String(transaction.status || '');
-            const refundStatus = String(transaction.refundStatus || '');
-            // Exclude fully refunded or refund-in-flight sales from payoutable earnings
-            if (status === 'refunded' || refundStatus === 'refunded' || refundStatus === 'pending') {
-              return;
-            }
-            if (status !== 'completed') return;
-
-            const gross = Number(transaction.amount) || 0;
-            const refundedSeller = Number(transaction.refundedSellerAmount) || 0;
-            const net = Math.max(0, gross - refundedSeller);
-            if (net <= 0) return;
-
-            totalEarnings += net;
-            const commissionGross = Number(transaction.commission) || 0;
-            const commissionShare =
-              gross > 0 ? commissionGross * (net / gross) : commissionGross;
-            commissionPaid += commissionShare;
-            totalOrders++;
-          });
-        } else {
-          // Fallback: Calculate from completed orders only (exclude cancelled / refunded escrow)
-          const ordersSnapshot = await firestore.collection('orders')
-            .where('sellerId', '==', sellerId)
-            .where('status', '==', 'Completed')
-            .get();
-
-          ordersSnapshot.forEach(doc => {
-            const order = doc.data();
-            if (order.escrowStatus === 'refunded' || order.escrowStatus === 'refund_pending') {
-              return;
-            }
-            const orderTotal = order.total || 0;
-            const orderCommissionRate = order.commissionRate || commissionRate;
-            const commission = orderTotal * orderCommissionRate;
-            const sellerEarning = orderTotal - commission;
-
-            totalEarnings += sellerEarning;
-            commissionPaid += commission;
-            totalOrders++;
-          });
-        }
+        // Withdrawable balance. Releasability comes from each order's escrow state,
+        // never from the ledger's own status flag — that flag used to be written as
+        // 'completed' the moment the buyer paid, which let sellers withdraw money
+        // for orders that had never been delivered.
+        const earnings = await getSellerReleasableEarnings(sellerId);
+        const totalEarnings = earnings.releasable;
+        const totalOrders = earnings.releasableOrders;
+        const commissionPaid = earnings.commission;
+        const pendingEscrow = earnings.pendingEscrow;
 
         // Get pending payouts
         const pendingPayoutsSnapshot = await firestore.collection('payouts')
@@ -1756,8 +1770,18 @@ export const calculateSellerEarnings = onRequest(
           .where('status', '==', 'pending')
           .get();
 
+        // Transfers Paystack is holding for an OTP are committed money too.
+        const pendingOtpPayoutsSnapshot = await firestore.collection('payouts')
+          .where('sellerId', '==', sellerId)
+          .where('status', '==', 'pending_otp')
+          .get();
+
         let pendingPayouts = 0;
         pendingPayoutsSnapshot.forEach(doc => {
+          const payout = doc.data();
+          pendingPayouts += payout.amount || 0;
+        });
+        pendingOtpPayoutsSnapshot.forEach(doc => {
           const payout = doc.data();
           pendingPayouts += payout.amount || 0;
         });
@@ -1781,6 +1805,9 @@ export const calculateSellerEarnings = onRequest(
           earnings: {
             totalEarnings,
             availableBalance,
+            // Earned but still in escrow — surfaced so the seller can see money
+            // that exists but is not yet withdrawable.
+            pendingEscrow,
             pendingPayouts,
             totalPayouts,
             commissionPaid,

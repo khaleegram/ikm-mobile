@@ -12,6 +12,7 @@ import {
   sendError,
   sendResponse,
 } from './utils';
+import { isEscrowReleased } from './escrow';
 
 export const paystackSecret = defineSecret('PAYSTACK_SECRET_KEY');
 
@@ -178,7 +179,8 @@ export async function processOrderRefund(
     const commissionRate = Number(order.commissionRate);
     const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0.05;
 
-    if (escrowStatus === 'released') {
+    // isEscrowReleased also covers the legacy 'completed' value free orders used.
+    if (isEscrowReleased(escrowStatus)) {
       const err: any = new Error(
         'Cannot refund: escrow already released to the seller. Open a dispute or contact support.'
       );

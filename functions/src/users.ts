@@ -1,5 +1,4 @@
 import * as admin from 'firebase-admin';
-import { FieldValue } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
 import cors = require('cors');
 import {
@@ -10,34 +9,6 @@ import {
 } from './utils';
 
 const corsHandler = cors({ origin: true });
-
-/**
- * Link guest orders to account
- */
-export const linkGuestOrdersToAccount = onRequest(async (request, response) => {
-  return corsHandler(request, response, async () => {
-    try {
-      if (request.method !== 'POST') return sendError(response, 'Method not allowed', 405);
-      const auth = await requireAuth(request.headers.authorization || null);
-      const { email } = request.body;
-      if (!email) return sendError(response, 'Email is required');
-
-      const firestore = admin.firestore();
-      const guestId = `guest_${email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`;
-      
-      const ordersSnapshot = await firestore.collection('orders').where('customerId', '==', guestId).get();
-      if (ordersSnapshot.empty) return sendResponse(response, { success: true, count: 0 });
-
-      const batch = firestore.batch();
-      ordersSnapshot.docs.forEach(doc => batch.update(doc.ref, { customerId: auth.uid, isGuest: false, updatedAt: FieldValue.serverTimestamp() }));
-      await batch.commit();
-
-      return sendResponse(response, { success: true, count: ordersSnapshot.size });
-    } catch (error: any) {
-      return sendError(response, error.message, 500);
-    }
-  });
-});
 
 /**
  * Get customers (seller view)
