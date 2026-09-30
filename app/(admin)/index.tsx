@@ -102,6 +102,7 @@ export default function AdminDashboard() {
     { title: 'Manage Products', icon: 'cube.box.fill', route: '/(admin)/products', color: colors.info, description: 'Review and manage products' },
     { title: 'Reports & Analytics', icon: 'doc.text.fill', route: '/(admin)/reports', color: colors.accent, description: 'Platform insights and metrics' },
     { title: 'Dispute cases', icon: 'exclamationmark.triangle.fill', route: '/(admin)/disputes', color: colors.error, description: 'Refund or release frozen escrow' },
+    { title: 'Promo campaigns', icon: 'tag.fill', route: '/(admin)/promos', color: lightBrown, description: 'Start, cap or pause a discount code' },
     { title: 'Security & Access', icon: 'shield.fill', route: '/(admin)/security', color: colors.error, description: 'Security settings and logs' },
     { title: 'Platform Settings', icon: 'gearshape.fill', route: '/(admin)/settings', color: colors.warning, description: 'Configure platform settings' },
   ];

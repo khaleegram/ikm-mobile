@@ -151,6 +151,8 @@ const MAPPING = {
   'trash': 'delete-outline',
   'minus': 'remove',
   'plus': 'add',
+  'square': 'check-box-outline-blank',
+  'checkmark.square.fill': 'check-box',
   'arrow.up': 'arrow-upward',
   'arrow.down': 'arrow-downward',
   'arrow.left': 'arrow-back',

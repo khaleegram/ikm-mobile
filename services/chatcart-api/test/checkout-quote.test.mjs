@@ -381,6 +381,23 @@ test('creating the same charge twice does not double the subsidy', { skip: SKIP 
   assert.equal(redemptions[0].c, 1, 'one redemption row, so the budget is not spent twice');
 });
 
+test('a campaign code cannot be renamed once orders may carry it', { skip: SKIP }, async () => {
+  // The failure this pins: orders store the code in `promo_code`. Renaming it would
+  // leave every existing order pointing at a code that no longer exists, and support
+  // with nothing to look up. The admin screen says it is immutable, so the server has
+  // to be the one that means it.
+  const campaign = await makeCampaign();
+  await assert.rejects(
+    () => promo.updateCampaign(campaign.id, { code: 'ZZCQRENAMED' }),
+    /cannot be changed/i
+  );
+  // Changing anything else still works, and sending the same code back is not a rename.
+  const renamed = await promo.updateCampaign(campaign.id, { name: 'Still fine' });
+  assert.equal(renamed.code, campaign.code);
+  const same = await promo.updateCampaign(campaign.id, { code: campaign.code });
+  assert.equal(same.code, campaign.code);
+});
+
 test('the order keeps a link back to the deal room it was bought from', { skip: SKIP }, async () => {
   // Without this the purchase is invisible in the chat it came from: the deal room
   // looks an order up by thread, so an order with no thread simply does not appear.

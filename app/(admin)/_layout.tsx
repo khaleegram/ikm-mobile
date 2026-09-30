@@ -123,6 +123,7 @@ export default function AdminTabLayout() {
       />
       {/* Hidden screens - accessible via dashboard or settings */}
       <Tabs.Screen name="reports" options={{ href: null }} />
+      <Tabs.Screen name="promos" options={{ href: null }} />
       <Tabs.Screen name="disputes" options={{ href: null }} />
       <Tabs.Screen name="security" options={{ href: null }} />
       <Tabs.Screen name="users/[id]" options={{ href: null }} />

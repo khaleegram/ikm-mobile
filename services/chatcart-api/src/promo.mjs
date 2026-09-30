@@ -560,6 +560,17 @@ export async function updateCampaign(id, patch, { updatedBy = null } = {}) {
   const existing = await getCampaign(id);
   if (!existing) throw httpError('That campaign does not exist', 404, 'NOT_FOUND');
 
+  // Orders carry the code in `promo_code`, so renaming it would leave those orders
+  // pointing at a code that no longer exists — and support with no way to trace them.
+  // Refused here rather than only in the admin UI, which is not a guard.
+  if (patch.code != null && normaliseCode(patch.code) !== existing.code) {
+    throw httpError(
+      'A campaign code cannot be changed once it exists. Create a new campaign instead.',
+      400,
+      'CODE_IMMUTABLE'
+    );
+  }
+
   const check = validateCampaign({ ...existing, ...patch });
   if (!check.ok) throw httpError(check.problems.join('; '), 400, 'INVALID_CAMPAIGN');
 

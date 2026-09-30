@@ -105,4 +105,14 @@ export const queryKeys = {
     quote: (cartSignature: string, code: string | null) =>
       ['checkout', 'quote', cartSignature, code || ''] as const,
   },
+
+  promo: {
+    /** Root for operator-side campaign state, so one invalidation covers the screen. */
+    all: ['promo', 'admin'] as const,
+    campaigns: (includeArchived: boolean) =>
+      ['promo', 'admin', 'campaigns', includeArchived ? 'with-archived' : 'active'] as const,
+    campaign: (campaignId: string | null | undefined) =>
+      ['promo', 'admin', 'campaign', normalizeId(campaignId)] as const,
+    reconciliation: () => ['promo', 'admin', 'reconciliation'] as const,
+  },
 } as const;
