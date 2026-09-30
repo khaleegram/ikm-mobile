@@ -1,10 +1,10 @@
 # Checkout, commission and subsidy model
 
-Status: **the pricing engine, the campaign layer and checkout are switched over.** The
-deal checkout now charges through `chatcart-api`, which prices the cart, applies any
-campaign, and writes the order, the redemption and the platform's liability in one
-transaction. What remains is operational: the Paystack secret on Railway and the
-webhook URL. See §12 for exactly what exists.
+Status: **the pricing engine, the campaign layer and checkout are switched over and
+deployed.** The deal checkout charges through `chatcart-api`, which prices the cart,
+applies any campaign, and writes the order, the redemption and the platform's
+liability in one transaction. The service is live with a Paystack test key. What
+remains is the webhook switch, and it is last on purpose — see §12.
 
 One correction to how this document was built from: **the Awoof promo is not a
 product feature, it is one campaign an operator runs.** A campaign is a row — its
@@ -655,7 +655,7 @@ for a rejected code or exhausted ticket — saying why, and when it resets.
 | **Reserved-balance reconciliation (§6.3)** | Medium | Blocks issuance when unfundable | **Enforced at the point of charge.** `quoteCheckout` refuses a cart whose subsidy the campaign cannot fund, so an unfundable discount is never advertised or charged. `reconcileReservedBalance()` still is not called before issuance |
 | Promo release window (7 days) | Small | Distinct from the 48h normal path | **Built and stored on the order.** Per-campaign `releaseWindowDays` becomes `orders.release_window_days`; the shipped → released transition still reads the default, so that is what remains |
 | Referral tracking, order-completion gated, incremental milestones | Medium | Most farmed surface | **Built.** `referrals.mjs`, one-time increments, distinct-identity checks |
-| Identity ladder (phone vs BVN/bank) | **Large** | External provider, per-check cost | **Schema and storage built, provider not chosen.** Keyed hashing, and `IDENTITY_HASH_SECRET` is not set on Railway yet, so a verification call returns 503 in production |
+| Identity ladder (phone vs BVN/bank) | **Large** | External provider, per-check cost | **Schema and storage built, provider not chosen.** Keyed hashing, and `IDENTITY_HASH_SECRET` is now set on Railway, so the ladder works — the KYC provider itself is still unchosen |
 | Fraud matching (BVN/bank hard, device/IP soft) | Medium | | **Partly built.** BVN/NIN/bank enforced by unique indexes; device/IP table has no writer |
 | Risk score + manual review queue | Medium | Gates promo payouts | **Queue built, not wired.** `payout_reviews` + admin endpoints; the first-promo-payout rule is not yet called from the payout path |
 | Metrics: subsidy label through every report | Small | Non-optional | **Partly built.** `getPromoReport()` labels per campaign and nets the subsidy; `scripts/investor-metrics.mjs` does not read it yet |
@@ -686,10 +686,12 @@ plainly:
 - The marketplace cart path still charges through the Cloud Functions. It has not been
   switched, and until it is, a promo code only applies on the deal checkout.
 
-The remaining work is operational, not coding: `PAYSTACK_SECRET_KEY` and
-`IDENTITY_HASH_SECRET` on the Railway service, and pointing the Paystack webhook at
-`/v1/payments/webhook`. Until the secret is set, `chatcart-api` cannot take a charge at
-all, so nothing is live in production yet.
+The remaining work is one operational step, and it is deliberately last: point the
+Paystack dashboard webhook at `/v1/payments/webhook`. It has to happen in the same
+step that moves the marketplace cart off the Cloud Functions, because until then
+`refund.*` and `transfer.*` events for Firestore orders would arrive at `chatcart-api`,
+which has never seen them. A Paystack **test** key is set on the service, so the next
+useful move is a test-mode checkout to prove the flow before a live key replaces it.
 
 ## 13. Decisions
 

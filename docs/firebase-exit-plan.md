@@ -126,11 +126,13 @@ Still to do in Phase 0:
 
 ### Phase 1 — Payments and escrow (do this with the Paystack decision)
 
-**Code complete. Not yet switched on.** Every module is written and the API boots
-with the new routes registered. The deal checkout now uses them — that part *is*
-switched on in the app — but the API cannot take a charge until the Paystack secret
-exists in its environment, so nothing is live in production yet. The Cloud Functions
-are untouched and still authoritative for the marketplace cart.
+**Code complete and deployed.** Every module is written, the deal checkout uses it,
+and the API is live with a Paystack **test** key and a generated `IDENTITY_HASH_SECRET`.
+Two things are deliberately not done: the Paystack dashboard webhook is still pointed
+at the old Cloud Function (switching it before the marketplace cart moves would send
+`refund.*`/`transfer.*` for Firestore orders to a backend that has never seen them),
+and no real test-mode charge has been run through the flow yet. The Cloud Functions
+remain authoritative for the marketplace cart.
 
 | Step | State |
 |---|---|
@@ -145,7 +147,7 @@ are untouched and still authoritative for the marketplace cart.
 | Route registration + raw-body webhook | **Done** — `src/index.mjs` (13 routes; webhook in its own scope so the HMAC sees the exact bytes Paystack sent) |
 | Staff gate | **Done** — `requireAdmin()` in `auth.mjs`, reads `users.role` from the database rather than trusting the token |
 | Deal checkout switched to the API | **Done** — the deal checkout sends the cart (never an amount), the API prices it, and the review sheet itemises the server's figures. `POST /v1/checkout/quote` for the breakdown, `/v1/payments/initialize` to charge, `/v1/payments/checkout/finalize` to build the orders. The legacy Cloud Function path is untouched and still serves the marketplace cart |
-| Railway env + dashboard webhook switch | Not started — set `PAYSTACK_SECRET_KEY` (and `IDENTITY_HASH_SECRET` for the identity ladder), then point the Paystack webhook at `/v1/payments/webhook` |
+| Railway env + dashboard webhook switch | **Secrets set and deployed** — `PAYSTACK_SECRET_KEY` (test mode) and `IDENTITY_HASH_SECRET` are on the service, and the money layer is deployed and healthy. **The webhook is deliberately still on the Cloud Function:** the marketplace cart charges through Firebase, so `refund.*` and `transfer.*` for those orders would arrive at `chatcart-api`, which has never seen a Firestore order. Switch the dashboard URL in the same step that moves the cart |
 
 Four design decisions taken during the port, all deliberate:
 
