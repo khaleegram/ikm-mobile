@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   FlatList,
   Modal,
+  Platform,
   StyleSheet,
   Switch,
   Text,
@@ -334,7 +335,14 @@ export default function AdminPromosScreen() {
 
   /** The one number that says whether promo money can still be given away (§6.3). */
   const funding = reconciliation.data;
-  const fundingWarning = funding && funding.success !== false && funding.balanceKnown === false;
+  const balanceUnreadable =
+    Boolean(funding) && funding?.success !== false && funding?.balanceKnown === false;
+  const shortfallKobo = Number(funding?.shortfallKobo || 0);
+  const underfunded =
+    Boolean(funding) &&
+    funding?.success !== false &&
+    funding?.balanceKnown === true &&
+    funding?.fundable === false;
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: insets.top + 8 }]}>
@@ -348,7 +356,7 @@ export default function AdminPromosScreen() {
         </TouchableOpacity>
       </View>
 
-      {fundingWarning ? (
+      {balanceUnreadable ? (
         <View
           style={[
             styles.banner,
@@ -358,6 +366,23 @@ export default function AdminPromosScreen() {
           <Text style={[styles.bannerText, { color: colors.text }]}>
             The payouts balance could not be read, so promos are being refused at checkout
             until it can. Switching one on will not make it apply.
+          </Text>
+        </View>
+      ) : null}
+
+      {underfunded ? (
+        <View
+          style={[
+            styles.banner,
+            { backgroundColor: '#B91C1C18', borderColor: '#B91C1C44' },
+          ]}>
+          <IconSymbol name="exclamationmark.triangle.fill" size={16} color="#B91C1C" />
+          <Text style={[styles.bannerText, { color: colors.text }]}>
+            Held escrow, committed payouts and unspent promo budget add up to{' '}
+            {naira(koboToNaira(funding?.requiredKobo))}, but the Paystack balance is{' '}
+            {naira(koboToNaira(funding?.availableBalanceKobo))}
+            {shortfallKobo > 0 ? ` — short by ${naira(koboToNaira(shortfallKobo))}` : ''}. Promos
+            are refused at checkout until that gap is closed.
           </Text>
         </View>
       ) : null}
@@ -497,7 +522,16 @@ export default function AdminPromosScreen() {
         onRequestClose={() => setFormOpen(false)}
         presentationStyle="pageSheet">
         <View style={{ flex: 1, backgroundColor: colors.background }}>
-          <View style={[styles.header, { borderBottomColor: colors.border, paddingTop: insets.top + 8 }]}>
+          <View
+            style={[
+              styles.header,
+              {
+                borderBottomColor: colors.border,
+                // A page sheet already clears the status bar on iOS; a full-screen modal
+                // on Android does not.
+                paddingTop: Platform.OS === 'ios' ? 12 : insets.top + 8,
+              },
+            ]}>
             <TouchableOpacity
               onPress={() => setFormOpen(false)}
               style={styles.headerBtn}
