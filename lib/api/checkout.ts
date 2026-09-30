@@ -72,6 +72,8 @@ export type InitializeCheckoutInput = {
   shippingPrice?: number;
   deliveryFeePaidBy?: string | null;
   deliveryAddress?: string;
+  /** The deal room this checkout came from, so the order links back to its chat. */
+  dealThreadId?: string | null;
   customerInfo?: Record<string, unknown>;
   idempotencyKey?: string;
 };
@@ -95,6 +97,8 @@ export type FinalizeCheckoutInput = {
   shippingPrice?: number;
   deliveryFeePaidBy?: string | null;
   deliveryAddress?: string;
+  /** The deal room this checkout came from, so the order links back to its chat. */
+  dealThreadId?: string | null;
   customerInfo?: Record<string, unknown>;
   idempotencyKey?: string;
 };
@@ -170,6 +174,7 @@ export async function initializeCheckout(
       shippingPrice: input.shippingPrice ?? 0,
       deliveryFeePaidBy: input.deliveryFeePaidBy ?? null,
       deliveryAddress: input.deliveryAddress,
+      dealThreadId: input.dealThreadId ?? null,
       customerInfo: input.customerInfo,
       idempotencyKey: input.idempotencyKey,
     },
@@ -189,6 +194,7 @@ export async function finalizeCheckoutOrder(
       shippingPrice: input.shippingPrice ?? 0,
       deliveryFeePaidBy: input.deliveryFeePaidBy ?? null,
       deliveryAddress: input.deliveryAddress,
+      dealThreadId: input.dealThreadId ?? null,
       customerInfo: input.customerInfo,
       idempotencyKey: input.idempotencyKey,
     },

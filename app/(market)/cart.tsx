@@ -12,6 +12,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
 import PaymentSheetModal from '@/components/market/payment-sheet-modal';
+import {
+  CheckoutBreakdown,
+  LiveOfferChips,
+  PromoCodeField,
+} from '@/components/market/checkout-pricing';
 import { showToast } from '@/components/toast';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { SmartPhoneField } from '@/components/ui/smart-phone-field';
@@ -20,7 +25,9 @@ import {
   saveMarketBuyerProfile,
   toBuyerLocationPayload,
 } from '@/lib/api/market-buyer-profile';
+import type { CheckoutCartItem } from '@/lib/api/checkout';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { useCheckoutQuote } from '@/lib/hooks/use-checkout-quote';
 import { useMyMarketProfile } from '@/lib/hooks/use-my-market-profile';
 import {
   displayNameFromProfile,
@@ -62,6 +69,7 @@ export default function MarketCartScreen() {
   const [phone, setPhone] = useState('');
   const [locationLabel, setLocationLabel] = useState('');
   const [sheetVisible, setSheetVisible] = useState(false);
+  const [appliedCode, setAppliedCode] = useState<string | null>(null);
   const [footerHeight, setFooterHeight] = useState(120);
 
   useEffect(() => {
@@ -94,6 +102,42 @@ export default function MarketCartScreen() {
     } as MarketPost;
   }, [lines, groups.length]);
 
+  // The cart, shaped for the server. Every line is priced by the server, so the total
+  // the buyer agrees to is the total the gateway takes — including any campaign.
+  const cartItems: CheckoutCartItem[] = useMemo(
+    () =>
+      lines.map((line) => ({
+        id: line.postId,
+        sellerId: line.sellerId,
+        name: line.title,
+        price: line.unitPrice,
+        quantity: line.quantity,
+      })),
+    [lines]
+  );
+
+  const quote = useCheckoutQuote({
+    cartItems,
+    code: appliedCode,
+    enabled: Boolean(user) && cartItems.length > 0,
+  });
+
+  const quoteData = quote.data && quote.data.eligible ? quote.data : null;
+  const payableNaira = quoteData ? quoteData.display.totalKobo / 100 : null;
+  const promoError = useMemo(() => {
+    if (!appliedCode) return null;
+    if (quote.isFetching && !quote.data) return null;
+    if (quote.data && !quote.data.eligible) {
+      return quote.data.promo?.message || 'That code cannot be used on this cart';
+    }
+    if (quoteData && !quoteData.chargeable) {
+      return quoteData.reason === 'BUDGET_EXHAUSTED'
+        ? 'This offer has been fully claimed'
+        : 'This offer is not available right now';
+    }
+    return quote.error ? 'Could not check that code. Try again.' : null;
+  }, [appliedCode, quote.data, quote.isFetching, quote.error, quoteData]);
+
   const startCheckout = async () => {
     if (!lines.length) return;
     // Guests build a cart freely; paying is what requires an account. Handled here
@@ -109,6 +153,16 @@ export default function MarketCartScreen() {
     }
     if (deliveryAddress.length < 5) {
       showToast('Add a delivery address.', 'error');
+      return;
+    }
+    if (promoError) {
+      showToast('Remove or fix the promo code first.', 'error');
+      return;
+    }
+    // Charging is done from the server's total, so a cart with no price yet is held
+    // back rather than guessed at.
+    if (!payableNaira) {
+      showToast('Still pricing your cart. Try again in a moment.', 'error');
       return;
     }
     try {
@@ -176,8 +230,7 @@ export default function MarketCartScreen() {
             ) : null}
 
             {groups.map((group) => {
-              const sellerName = toNameCase(
-                displayNameFromProfile(sellersById[group.sellerId] ?? null, 'Seller')
+              const sellerName = toNameCase(                displayNameFromProfile(sellersById[group.sellerId] ?? null, 'Seller')
               );
               return (
                 <View key={group.sellerId} style={{ gap: 8 }}>
@@ -265,6 +318,38 @@ export default function MarketCartScreen() {
                 style={[styles.input, { color: colors.text, borderColor: colors.border }]}
               />
             </View>
+
+            <View style={[styles.lineCard, { backgroundColor: colors.card, borderColor: colors.border, flexDirection: 'column' }]}>
+              <Text style={[styles.sectionLabel, { color: colors.text }]}>Promo code</Text>
+              <PromoCodeField
+                appliedCode={appliedCode}
+                onApply={(code) => {
+                  haptics.light();
+                  setAppliedCode(code);
+                }}
+                onClear={() => {
+                  haptics.light();
+                  setAppliedCode(null);
+                }}
+                isChecking={quote.isFetching && Boolean(appliedCode)}
+                error={appliedCode ? promoError : null}
+                message={quoteData?.promo?.message || null}
+              />
+              {!appliedCode && (
+                <View style={{ marginTop: 10 }}>
+                  <LiveOfferChips
+                    onPick={(code) => {
+                      haptics.light();
+                      setAppliedCode(code);
+                    }}
+                  />
+                </View>
+              )}
+            </View>
+
+            {quoteData ? (
+              <CheckoutBreakdown display={quoteData.display} quote={quote.data ?? null} itemCount={cartItems.length} />
+            ) : null}
           </KeyboardScreen>
 
           <View
@@ -284,11 +369,14 @@ export default function MarketCartScreen() {
                   : 'One payment'}
               </Text>
               <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800' }}>
-                {formatAmount(totalAmount)}
+                {formatAmount(payableNaira ?? totalAmount)}
               </Text>
             </View>
             <TouchableOpacity
-              style={[styles.primaryBtn, { backgroundColor: ACCENT }]}
+              style={[
+                styles.primaryBtn,
+                { backgroundColor: ACCENT, opacity: user && (!payableNaira || promoError) ? 0.5 : 1 },
+              ]}
               onPress={() => void startCheckout()}>
               <Text style={styles.primaryBtnText}>{user ? 'Checkout' : 'Sign in to checkout'}</Text>
             </TouchableOpacity>
@@ -303,6 +391,11 @@ export default function MarketCartScreen() {
           post={syntheticPost}
           unitPrice={lines[0]?.unitPrice || 0}
           quantity={1}
+          // The server's total for the whole cart, and the cart itself so the charge
+          // is priced and re-priced server-side.
+          pricedTotalNaira={payableNaira ?? undefined}
+          cartItems={cartItems}
+          promoCode={appliedCode}
           deliveryAddress={deliveryAddress}
           deliveryState=""
           deliveryCity=""

@@ -44,6 +44,16 @@ export type PendingEscrowCheckout = {
     title?: string;
   }>;
   cartSessionId?: string | null;
+  /**
+   * Which backend priced this charge. A payment made through `chatcart-api` must be
+   * finalized by `chatcart-api`; sending it to the Cloud Function instead would
+   * create a Firestore order and leave the paid session with no order in Neon.
+   */
+  paymentBackend?: 'firebase' | 'chatcart';
+  /** The code this charge was priced under, so a recovery finalize applies it too. */
+  promoCode?: string | null;
+  /** The cart, exactly as sent to `chatcart-api`, for a recovery finalize. */
+  cartItems?: Array<{ id: string; sellerId: string; name: string; price: number; quantity: number }>;
 };
 
 export type PendingEscrowScope = {

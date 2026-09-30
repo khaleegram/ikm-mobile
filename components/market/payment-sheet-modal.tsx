@@ -18,6 +18,7 @@ import {
   inspectCharge,
   type CheckoutCartItem,
 } from '@/lib/api/checkout';
+import { useCheckoutQuote } from '@/lib/hooks/use-checkout-quote';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { haptics } from '@/lib/utils/haptics';
@@ -165,13 +166,38 @@ export default function PaymentSheetModal({
   const derivedTotal = isCartCheckout
     ? activeCartLines!.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0)
     : safeUnitPrice * Math.max(1, Number(quantity) || 1);
-  // When the sheet has already been priced, that number is the one that is charged.
-  // Falling back to `unitPrice × quantity` would take a different amount than the
-  // breakdown the buyer just agreed to.
+
+  /**
+   * Ask the server what this cart costs, when the caller has not already.
+   *
+   * Without this a single-item buy would open the gateway on `price × quantity` — a
+   * figure that leaves out Buyer Protection, and so is lower than the charge the
+   * server is about to create. The amount shown and the amount taken have to be the
+   * same number.
+   */
+  const newPathQuote = useCheckoutQuote({
+    cartItems: cartItems ?? [],
+    code: promoCode,
+    enabled: visible && useNewCheckout && pricedTotalNaira == null,
+  });
+  const quotedTotalNaira =
+    newPathQuote.data && newPathQuote.data.eligible
+      ? newPathQuote.data.display.totalKobo / 100
+      : null;
+  // Shown as a figure rather than the word "Active" once it is actually being
+  // charged, so the total on screen is explained rather than just larger.
+  const quotedProtectionKobo =
+    newPathQuote.data && newPathQuote.data.eligible
+      ? newPathQuote.data.display.protectionKobo
+      : null;
+
+  // The server's price, from whichever source has it. Falling back to
+  // `unitPrice × quantity` is only correct on the legacy path, where that *is* the
+  // price the Cloud Function charges.
   const total =
     typeof pricedTotalNaira === 'number' && pricedTotalNaira > 0
       ? pricedTotalNaira
-      : derivedTotal;
+      : quotedTotalNaira ?? derivedTotal;
   const primaryPostId = isCartCheckout
     ? String(activeCartLines![0].postId)
     : String(post.id || '').trim();
@@ -313,6 +339,7 @@ export default function PaymentSheetModal({
               cartItems: cartItems!,
               total,
               deliveryAddress: finalizeDelivery,
+              dealThreadId: finalizeDealThread,
               customerInfo: { name: buyerName, phone: finalizePhone },
               idempotencyKey: `ikm_${postId}_${buyerId}`,
             });
@@ -585,6 +612,8 @@ export default function PaymentSheetModal({
         reference: defaultRef,
         code: promoCode,
         deliveryAddress,
+        // So the order links back to the chat it was bought from.
+        dealThreadId: fromChatId,
         customerInfo: {
           name: buyerName,
           phone: buyerPhone,
@@ -615,6 +644,11 @@ export default function PaymentSheetModal({
         createdAtMs: Date.now(),
         phase: 'initialized',
         cartSessionId: cartSessionId || undefined,
+        // So a cold-start recovery finalizes this through the backend that priced it,
+        // with the same cart and the same code.
+        paymentBackend: 'chatcart',
+        promoCode: promoCode ?? null,
+        cartItems: cartItems!,
       });
 
       setPaymentState('GATEWAY');
@@ -688,6 +722,7 @@ export default function PaymentSheetModal({
           }))
         : undefined,
       cartSessionId: cartSessionId || undefined,
+      paymentBackend: 'firebase',
     });
 
     setPaymentState('GATEWAY');
@@ -923,7 +958,9 @@ export default function PaymentSheetModal({
               )}
               <View style={styles.row}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Buyer protection</Text>
-                <Text style={[styles.value, { color: '#10B981', fontWeight: '800' }]}>Active</Text>
+                <Text style={[styles.value, { color: '#10B981', fontWeight: '800' }]}>
+                  {quotedProtectionKobo != null ? formatNgn(quotedProtectionKobo / 100) : 'Active'}
+                </Text>
               </View>
               <View style={styles.divider} />
               <View style={styles.row}>

@@ -706,6 +706,18 @@ export default function MarketBuyScreen() {
           buyerName={profile?.displayName || user.displayName || user.email || 'Market Buyer'}
           buyerId={user.uid}
           fromChatId={chatId}
+          // One line, so this checkout is priced and charged by the API rather than by
+          // a Cloud Function. Without it the marketplace cart would still create
+          // Firestore orders, and the webhook could not move without stranding refunds.
+          cartItems={[
+            {
+              id: String(post.id),
+              sellerId: String(post.posterId || offerSellerId || '').trim(),
+              name: String(post.title || post.description || 'Item').slice(0, 80),
+              price: lockedPrice,
+              quantity: numericQuantity,
+            },
+          ]}
           onSuccess={(orderId, dealThreadId) => {
             setPaymentModalVisible(false);
             if (dealThreadId) {

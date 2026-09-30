@@ -6,6 +6,7 @@ import { collection, doc, getDocs, limit, query, serverTimestamp, setDoc, where 
 
 import { showToast } from '@/components/toast';
 import { paymentsApi } from '@/lib/api/payments';
+import { finalizeCheckoutOrder } from '@/lib/api/checkout';
 import { useUser } from '@/lib/firebase/auth/use-user';
 import { firestore } from '@/lib/firebase/config';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -284,23 +285,39 @@ export default function PaystackCallbackScreen() {
           throw new Error('Pending checkout is missing the product id. Contact support with your reference.');
         }
 
-        const finalized = await paymentsApi.finalizeMarketEscrowPayment({
-          reference: verifiedReference,
-          postId,
-          quantity: Math.max(1, Number(pending.quantity) || 1),
-          deliveryAddress: pending.deliveryAddress,
-          buyerPhone: pending.buyerPhone,
-          dealThreadId: pending.fromChatId,
-          chatId: pending.fromChatId,
-          agreedUnitPrice: Number(pending.finalPrice) || undefined,
-          sellerId: pending.post?.posterId || null,
-          itemTitle: String(pending.post?.title || pending.post?.description || 'Marketplace Item').slice(
-            0,
-            80
-          ),
-          lineItems: Array.isArray(pending.lineItems) ? pending.lineItems : undefined,
-          cartSessionId: pending.cartSessionId || undefined,
-        });
+        const finalized =
+          pending.paymentBackend === 'chatcart'
+            ? await finalizeCheckoutOrder({
+                reference: verifiedReference,
+                // The cart and the code as they were when the charge was priced, so a
+                // recovery finalize creates the same orders at the same price.
+                cartItems: Array.isArray(pending.cartItems) ? pending.cartItems : [],
+                total: Number(pending.finalPrice) || Number(pending.amount) || 0,
+                code: pending.promoCode ?? null,
+                deliveryAddress: pending.deliveryAddress,
+                dealThreadId: pending.fromChatId,
+                customerInfo: { name: pending.buyerName, phone: pending.buyerPhone },
+                idempotencyKey: `ikm_${postId}_${pending.buyerId}`,
+              }).then((result) => ({
+                orderId: result.orderId || undefined,
+                orderIds: result.orderIds,
+              }))
+            : await paymentsApi.finalizeMarketEscrowPayment({
+                reference: verifiedReference,
+                postId,
+                quantity: Math.max(1, Number(pending.quantity) || 1),
+                deliveryAddress: pending.deliveryAddress,
+                buyerPhone: pending.buyerPhone,
+                dealThreadId: pending.fromChatId,
+                chatId: pending.fromChatId,
+                agreedUnitPrice: Number(pending.finalPrice) || undefined,
+                sellerId: pending.post?.posterId || null,
+                itemTitle: String(
+                  pending.post?.title || pending.post?.description || 'Marketplace Item'
+                ).slice(0, 80),
+                lineItems: Array.isArray(pending.lineItems) ? pending.lineItems : undefined,
+                cartSessionId: pending.cartSessionId || undefined,
+              });
 
         if (!finalized?.orderId) {
           throw new Error('Order creation failed after payment. Tap Retry — do not pay again.');

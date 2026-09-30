@@ -381,6 +381,25 @@ test('creating the same charge twice does not double the subsidy', { skip: SKIP 
   assert.equal(redemptions[0].c, 1, 'one redemption row, so the budget is not spent twice');
 });
 
+test('the order keeps a link back to the deal room it was bought from', { skip: SKIP }, async () => {
+  // Without this the purchase is invisible in the chat it came from: the deal room
+  // looks an order up by thread, so an order with no thread simply does not appear.
+  const result = await payments.createOrdersForCharge({
+    buyerId: BUYER,
+    reference: 'zz_cq_ref_thread',
+    chargeAmount: 0,
+    cartItems: [{ id: 'zz_cq_p4', sellerId: SELLER_A, name: 'Thing', price: 4000, quantity: 1 }],
+    dealThreadId: 'zz_cq_thread_1',
+    idempotencyKey: 'zz_cq_idem_thread',
+    buyerEmail: 'zz_cq_buyer@test.local',
+    source: 'test',
+  });
+  const { rows } = await pool.query(`SELECT deal_thread_id FROM orders WHERE id = $1`, [
+    result.created[0].orderId,
+  ]);
+  assert.equal(rows[0].deal_thread_id, 'zz_cq_thread_1');
+});
+
 test('a cart with no code writes no subsidy at all', { skip: SKIP }, async () => {
   const result = await payments.createOrdersForCharge({
     buyerId: BUYER,

@@ -174,6 +174,7 @@ export async function initializeTransaction({
   deliveryFeePaidBy,
   discountCode,
   promoCode = null,
+  dealThreadId = null,
   idempotencyKey,
   callerEmail,
 }) {
@@ -226,6 +227,7 @@ export async function initializeTransaction({
     ...(shippingPrice != null ? { shippingPrice } : {}),
     ...(deliveryFeePaidBy ? { deliveryFeePaidBy } : {}),
     ...(discountCode ? { discountCode } : {}),
+    ...(dealThreadId ? { dealThreadId } : {}),
     ...(idempotencyKey ? { idempotencyKey } : {}),
     // The code travels with the session so the webhook rebuilds the order at the
     // discounted price even if the client never returns.
@@ -433,6 +435,7 @@ export async function createOrdersForCharge({
   deliveryFeePaidBy,
   discountCode,
   promoCode = null,
+  dealThreadId = null,
   idempotencyKey,
   checkoutPaymentId = null,
   buyerEmail = null,
@@ -554,11 +557,11 @@ export async function createOrdersForCharge({
            items_subtotal_kobo, discount_kobo, protection_kobo, commission_kobo,
            commission_bps, seller_payout_kobo, buyer_total_kobo, platform_liability_kobo,
            funding_source, promo_type, promo_code, release_window_days,
-           idempotency_key
+           idempotency_key, deal_thread_id
          ) VALUES (
            $1,$2,$3,'Paid',$4::jsonb,$5,$6,$7,$8,$9::jsonb,$10,$11,'Paystack',$12,'held',$13,
            now() + ($14 || ' days')::interval,$15, now(), 0, 0, $16::jsonb,
-           $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
+           $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
          )`,
         [
           orderId,
@@ -601,6 +604,9 @@ export async function createOrdersForCharge({
           // created orders and only the unique index stopped them, by erroring rather
           // than reporting `alreadyExists`.
           childKey,
+          // The deal room an order belongs to. Without it a purchase made inside a
+          // chat no longer links back to that chat, and the room shows no order.
+          str(dealThreadId) || null,
         ]
       );
 
@@ -737,8 +743,9 @@ export async function finalizeCheckout({ uid, email, body = {} }) {
     shippingPrice: body.shippingPrice,
     deliveryFeePaidBy: body.deliveryFeePaidBy,
     discountCode: body.discountCode,
-    // Whatever the session priced the charge with. Read from the session rather than
-    // the body, so finalize applies the same code the buyer actually paid under.
+    // What the session recorded when the charge was priced, so a finalize from the
+    // client or from the webhook links the order to the same deal room.
+    dealThreadId: str(body.dealThreadId) || (await dealThreadForReference(reference)),
     promoCode: await promoCodeForReference(truth.reference || reference),
     idempotencyKey: str(body.idempotencyKey) || null,
     buyerEmail: email,
@@ -766,6 +773,19 @@ async function promoCodeForReference(reference) {
   const meta = rows[0]?.metadata;
   if (!meta || typeof meta !== 'object') return null;
   return str(meta.promoCode) || str(meta.discountCode) || null;
+}
+
+/** The deal room a charge was initialized from, so the order links back to its chat. */
+async function dealThreadForReference(reference) {
+  const ref = str(reference);
+  if (!ref) return null;
+  const { rows } = await pool.query(
+    `SELECT metadata FROM payment_sessions WHERE reference = $1`,
+    [ref]
+  );
+  const meta = rows[0]?.metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  return str(meta.dealThreadId || meta.chatId) || null;
 }
 
 // ─── Webhook ───────────────────────────────────────────────────────────────
@@ -868,6 +888,7 @@ export async function autoFinalizeFromCharge({ reference, amountNgn, customerEma
     // The session recorded the code when the charge was priced, so the webhook
     // rebuilds the same order — discount included — without the client.
     promoCode: str(meta.promoCode) || str(meta.discountCode) || null,
+    dealThreadId: str(meta.dealThreadId || meta.chatId) || null,
     idempotencyKey: str(meta.idempotencyKey) || null,
     buyerEmail: str(session.email) || customerEmail,
     source: 'webhook-auto-finalize',

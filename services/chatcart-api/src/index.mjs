@@ -1463,6 +1463,7 @@ app.post('/v1/payments/initialize', async (request, reply) => {
       shippingPrice: body.shippingPrice,
       deliveryFeePaidBy: body.deliveryFeePaidBy,
       discountCode: body.discountCode,
+      dealThreadId: body.dealThreadId || body.chatId,
       idempotencyKey: body.idempotencyKey,
     });
     return reply.send(result);
