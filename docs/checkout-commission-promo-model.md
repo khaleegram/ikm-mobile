@@ -1,10 +1,10 @@
 # Checkout, commission and subsidy model
 
 Status: **the pricing engine, the campaign layer and checkout are switched over and
-deployed.** The deal checkout charges through `chatcart-api`, which prices the cart,
-applies any campaign, and writes the order, the redemption and the platform's
-liability in one transaction. The service is live with a Paystack test key. What
-remains is the webhook switch, and it is last on purpose — see §12.
+deployed.** The deal checkout, the marketplace cart and the single-item buy page all
+charge through `chatcart-api`, which prices the cart, applies any campaign, and writes
+the order, the redemption and the platform's liability in one transaction. The service
+is live with a Paystack test key. What remains is the webhook switch — see §12.
 
 One correction to how this document was built from: **the Awoof promo is not a
 product feature, it is one campaign an operator runs.** A campaign is a row — its
@@ -683,15 +683,18 @@ plainly:
   decision 7 called for A/B testing this rather than assuming it; it is now live on
   the deal path, so if it moves conversion badly it is a campaign/config decision to
   revisit, not a code change.
-- The marketplace cart path still charges through the Cloud Functions. It has not been
-  switched, and until it is, a promo code only applies on the deal checkout.
+- The marketplace cart and the single-item buy page now charge through `chatcart-api`
+  too, so a promo code applies everywhere, not only on the deal checkout. Nothing in
+  the app creates a charge through the Cloud Functions any more; the functions remain
+  deployed but unused.
 
-The remaining work is one operational step, and it is deliberately last: point the
-Paystack dashboard webhook at `/v1/payments/webhook`. It has to happen in the same
-step that moves the marketplace cart off the Cloud Functions, because until then
-`refund.*` and `transfer.*` events for Firestore orders would arrive at `chatcart-api`,
-which has never seen them. A Paystack **test** key is set on the service, so the next
-useful move is a test-mode checkout to prove the flow before a live key replaces it.
+One operational step is left, and it is deliberately last: point the Paystack
+dashboard webhook at `/v1/payments/webhook`. Until that switch, a refund or payout is
+confirmed by the old Cloud Function's webhook, and a charge made through
+`chatcart-api` has no webhook behind it — the client-driven finalize still builds the
+orders, but a buyer who pays and closes the app is only rescued once the webhook is
+live. A Paystack **test** key is set on the service, so the next useful move is a
+test-mode purchase to prove the flow before a live key replaces it.
 
 ## 13. Decisions
 
