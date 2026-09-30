@@ -23,6 +23,19 @@ export const config = {
   mediaPresignTtlSec: Number(process.env.MEDIA_PRESIGN_TTL_SEC || 3600),
   firebaseStorageBucket: process.env.FIREBASE_STORAGE_BUCKET || '',
   chatInternalSecret: process.env.CHAT_INTERNAL_SECRET || '',
+  // Paystack: the money rail. The secret is the live or test key depending on
+  // which environment this instance is; the API never inspects the prefix.
+  paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || '',
+  paystackBaseUrl: (process.env.PAYSTACK_BASE_URL || 'https://api.paystack.co').replace(/\/$/, ''),
+  // Paystack charges 1.5% + NGN 100, capped at NGN 2,000, with the flat fee waived
+  // when the charged amount is under NGN 2,500. Held as integers in kobo.
+  paystackFeePercent: Number(process.env.PAYSTACK_FEE_PERCENT || 1.5),
+  paystackFeeFlatKobo: Number(process.env.PAYSTACK_FEE_FLAT_KOBO || 10000),
+  paystackFeeWaiverKobo: Number(process.env.PAYSTACK_FEE_WAIVER_KOBO || 250000),
+  paystackFeeCapKobo: Number(process.env.PAYSTACK_FEE_CAP_KOBO || 200000),
+  // Keyed hashing for BVN/NIN/bank identifiers. Without it, storing an eleven-digit
+  // BVN hashed but unsalted is reversible by enumeration.
+  identityHashSecret: process.env.IDENTITY_HASH_SECRET || '',
   // Calls: TURN relay. Cloudflare is used because the account already holds the media bucket.
   turnKeyId: process.env.TURN_KEY_ID || '',
   turnApiToken: process.env.TURN_API_TOKEN || '',
@@ -52,4 +65,20 @@ export function isR2Configured() {
       config.r2Bucket &&
       config.mediaCdnUrl
   );
+}
+
+export function isPaystackConfigured() {
+  return Boolean(config.paystackSecretKey && config.paystackBaseUrl);
+}
+
+/**
+ * Identity hashing needs its own secret.
+ *
+ * A BVN is eleven digits. Hashing one unsalted is not anonymisation — the whole
+ * keyspace is small enough to enumerate, so a leaked column would hand over every
+ * customer's BVN. Keyed hashing with a server-held secret is what makes the stored
+ * value useless to anyone who only has the database.
+ */
+export function isIdentityHashConfigured() {
+  return Boolean(config.identityHashSecret);
 }

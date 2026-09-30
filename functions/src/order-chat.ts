@@ -403,18 +403,39 @@ export async function dualWriteOrderToPostgres(
   const bumpPurchaseCount = Boolean(options.bumpPurchaseCount || raw.neonSyncBumpPurchaseCount);
   const data = stripSyncBookkeeping(raw);
 
-  await commitOrderPrimary(
-    {
-      id: orderId,
-      ...data,
-      postId: data.postId || data.marketMeta?.postId,
-    },
-    {
-      bumpPurchaseCount,
-      // FS already has the doc — do not create a redundant outbox row.
-      enqueueFirestoreMirror: false,
-    }
-  );
+  try {
+    await commitOrderPrimary(
+      {
+        id: orderId,
+        ...data,
+        postId: data.postId || data.marketMeta?.postId,
+      },
+      {
+        bumpPurchaseCount,
+        // FS already has the doc — do not create a redundant outbox row.
+        enqueueFirestoreMirror: false,
+      }
+    );
+  } catch (error: any) {
+    // The Firestore mutation already happened before this call, so a Neon failure
+    // leaves the two stores diverged: Firestore is ahead of the write primary.
+    // Record the marker the reverse drain looks for, then rethrow so the caller
+    // still fails loudly. Without this, divergence is invisible and never repaired.
+    const marker: Record<string, any> = {
+      needsNeonSync: true,
+      neonSyncError: String(error?.message || error),
+      neonSyncFailedAt: FieldValue.serverTimestamp(),
+    };
+    if (bumpPurchaseCount) marker.neonSyncBumpPurchaseCount = true;
+
+    await orderRef
+      .set(marker, { merge: true })
+      .catch((markerError) =>
+        console.error('Failed to record Neon sync marker for', orderId, markerError)
+      );
+
+    throw error;
+  }
 
   // Clear any legacy reverse-sync markers.
   if (raw.needsNeonSync || raw.neonSyncBumpPurchaseCount) {

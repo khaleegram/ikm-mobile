@@ -94,4 +94,15 @@ export const queryKeys = {
     list: (userId: string | null | undefined) =>
       ['notifications', normalizeId(userId)] as const,
   },
+
+  checkout: {
+    // Offers are read on every sheet open, so they are cached briefly rather than
+    // refetched each time — but short enough that toggling a campaign off in admin
+    // takes effect while a buyer is still on the screen.
+    livePromos: () => ['checkout', 'promos', 'live'] as const,
+    // Keyed by the cart and the code, so a keystroke re-prices and a stale price is
+    // never shown for a different cart.
+    quote: (cartSignature: string, code: string | null) =>
+      ['checkout', 'quote', cartSignature, code || ''] as const,
+  },
 } as const;

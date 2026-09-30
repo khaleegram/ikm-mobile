@@ -1,6 +1,17 @@
 # Checkout, commission and subsidy model
 
-Status: **design, nothing implemented.**
+Status: **the pricing engine, the campaign layer and checkout are switched over.** The
+deal checkout now charges through `chatcart-api`, which prices the cart, applies any
+campaign, and writes the order, the redemption and the platform's liability in one
+transaction. What remains is operational: the Paystack secret on Railway and the
+webhook URL. See §12 for exactly what exists.
+
+One correction to how this document was built from: **the Awoof promo is not a
+product feature, it is one campaign an operator runs.** A campaign is a row — its
+code, percentage, cap, budget, eligibility and release window — and switching it on,
+changing it, or raising its budget is a database update that checkout and the modal
+follow. The numbers in §3, §5 and §6 are the seeded *example*, not the only shape the
+system can express. Nothing about them is compiled in.
 
 Two constraints are fixed and measured, not assumed:
 
@@ -549,6 +560,20 @@ the rail.
 Protected by a test: for every item price from ₦1 to ₦3,000,000, the rounded
 protection must be greater than or equal to Paystack's fee on the resulting charge.
 
+**Where this makes the tables in this document off by a kobo.** The tables above were
+computed from the unrounded algebra; the engine follows the ceiling rule. Three
+places disagree, all by ₦0.01, all in the platform's favour, and none of them a bug
+in either direction — the rule wins, the tables are the approximation:
+
+| Place | Table says | Ceiling rounding gives |
+|---|---|---|
+| §4.1, the ₦2,462.49 → ₦2,462.50 jump | ₦101.52 | ₦101.53 |
+| §6, the ₦10,000 promo order | buyer pays ₦8,730.96 | ₦8,730.97 |
+| §5.1 "platform net cost" | discount − commission exactly | that, less the rounding gain |
+
+§4's own table is unaffected once "platform keeps" is read as the commission line,
+which §4 already says it is.
+
 ### 9.5 VAT and tax
 
 Paystack's charge on the observed transactions showed no VAT on top (₦10,000 →
@@ -620,21 +645,51 @@ for a rejected code or exhausted ticket — saying why, and when it resets.
 
 ## 12. What must be built
 
-| Item | Size | Note |
-|---|---|---|
-| Tiered commission table + admin UI with effective dates | Medium | Otherwise every rate change is a deploy |
-| Buyer Protection as a three-regime function of the charge | Small | Not on delivery fees. Ceiling rounding in §9.4 |
-| Promo code and contribution ledger | Medium | No wallet needed |
-| Continuous cap formula | Small | Replaces the bracketed cap |
-| Platform-liability record per promo order (§6.1) | Small | Required for correct release |
-| **Reserved-balance reconciliation (§6.3)** | Medium | Blocks issuance when unfundable |
-| Promo release window (7 days) | Small | Distinct from the 48h normal path |
-| Referral tracking, order-completion gated, incremental milestones | Medium | Most farmed surface |
-| Identity ladder (phone vs BVN/bank) | **Large** | External provider, per-check cost |
-| Fraud matching (BVN/bank hard, device/IP soft) | Medium | |
-| Risk score + manual review queue | Medium | Gates promo payouts |
-| Metrics: subsidy label through every report | Small | Non-optional |
-| Money-as-integer-kobo migration | Medium | Touches every amount in the system |
+| Item | Size | Note | Status |
+|---|---|---|---|
+| Tiered commission table + admin UI with effective dates | Medium | Otherwise every rate change is a deploy | **Engine + admin API built, and now charged.** Cards versioned by effective date; release and refunds read the order's own `commission_kobo`/`commission_bps`, so a rate change cannot reprice an old order. Admin *screen* not built |
+| Buyer Protection as a three-regime function of the charge | Small | Not on delivery fees. Ceiling rounding in §9.4 | **Built and charged.** Swept over ₦1–₦3,000,000, and itemised as its own line in the checkout sheet |
+| Promo code and contribution ledger | Medium | No wallet needed | **Built and charged.** A code is a campaign row, so any offer is expressible without code changes. The redemption and the liability are written in the order's own transaction |
+| Continuous cap formula | Small | Replaces the bracketed cap | **Built, generalised, and split across sellers by exact kobo allocation.** Configurable proportional cap (floor/ceiling) *or* a flat amount |
+| Platform-liability record per promo order (§6.1) | Small | Required for correct release | **Built.** `platform_liabilities`, opened at charge, cancelled on refund |
+| **Reserved-balance reconciliation (§6.3)** | Medium | Blocks issuance when unfundable | **Enforced at the point of charge.** `quoteCheckout` refuses a cart whose subsidy the campaign cannot fund, so an unfundable discount is never advertised or charged. `reconcileReservedBalance()` still is not called before issuance |
+| Promo release window (7 days) | Small | Distinct from the 48h normal path | **Built and stored on the order.** Per-campaign `releaseWindowDays` becomes `orders.release_window_days`; the shipped → released transition still reads the default, so that is what remains |
+| Referral tracking, order-completion gated, incremental milestones | Medium | Most farmed surface | **Built.** `referrals.mjs`, one-time increments, distinct-identity checks |
+| Identity ladder (phone vs BVN/bank) | **Large** | External provider, per-check cost | **Schema and storage built, provider not chosen.** Keyed hashing, and `IDENTITY_HASH_SECRET` is not set on Railway yet, so a verification call returns 503 in production |
+| Fraud matching (BVN/bank hard, device/IP soft) | Medium | | **Partly built.** BVN/NIN/bank enforced by unique indexes; device/IP table has no writer |
+| Risk score + manual review queue | Medium | Gates promo payouts | **Queue built, not wired.** `payout_reviews` + admin endpoints; the first-promo-payout rule is not yet called from the payout path |
+| Metrics: subsidy label through every report | Small | Non-optional | **Partly built.** `getPromoReport()` labels per campaign and nets the subsidy; `scripts/investor-metrics.mjs` does not read it yet |
+| Money-as-integer-kobo migration | Medium | Touches every amount in the system | **Order money done and switched over.** Checkout charges kobo, writes the kobo columns, and release/refund read them. `orders.total` is now the buyer's real total, so a refund cannot exceed what was charged; the legacy `total × commission_rate` formula survives only for orders written before this |
+
+### Operator controls that exist now
+
+Everything below is a database update, not a deploy:
+
+- Create a campaign, change its percentage, its cap (proportional or flat), its
+  minimum order value, or its eligibility rules
+- Raise or lower its budget, and switch it on or off — every movement lands on the
+  budget ledger, so the balance is explained rather than asserted
+- Schedule it to start or end, or archive it
+- See what checkout is currently offering, unauthenticated, at `/v1/promo/campaigns`
+  — the same payload the modal renders, including the wording, so the app cannot
+  advertise a percentage that is not what applies
+
+**Now switched on.** The deal checkout prices through `chatcart-api` and charges the
+kobo total it returns, so the campaign wording, the discount and the Buyer Protection
+line the buyer sees are the ones the server applies. Two consequences worth stating
+plainly:
+
+- Buyer Protection is now charged — a real 5.58% on a ₦2,500 order (§9.3). §13
+  decision 7 called for A/B testing this rather than assuming it; it is now live on
+  the deal path, so if it moves conversion badly it is a campaign/config decision to
+  revisit, not a code change.
+- The marketplace cart path still charges through the Cloud Functions. It has not been
+  switched, and until it is, a promo code only applies on the deal checkout.
+
+The remaining work is operational, not coding: `PAYSTACK_SECRET_KEY` and
+`IDENTITY_HASH_SECRET` on the Railway service, and pointing the Paystack webhook at
+`/v1/payments/webhook`. Until the secret is set, `chatcart-api` cannot take a charge at
+all, so nothing is live in production yet.
 
 ## 13. Decisions
 

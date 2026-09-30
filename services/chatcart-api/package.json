@@ -17,7 +17,7 @@
     "smoke:prod": "node scripts/smoke-prod.mjs",
     "metrics:investors": "node scripts/investor-metrics.mjs",
     "metrics:investors:sql": "node scripts/investor-metrics.mjs --sql",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/*.test.mjs"
   },
   "keywords": [],
   "author": "",

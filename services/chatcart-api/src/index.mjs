@@ -108,6 +108,45 @@ import {
   peerOf,
 } from './calls.mjs';
 import { touchPresence } from './chat-presence.mjs';
+import { requireAdmin } from './auth.mjs';
+import { createRateCard, listRateCards, resolveRateCard } from './commission.mjs';
+import {
+  archiveCampaign,
+  createCampaign,
+  decidePayoutReview,
+  describeCampaign,
+  ensureBaselineTicket,
+  getCampaign,
+  getPromoReport,
+  listBudgetLedger,
+  listCampaigns,
+  listLiveCampaigns,
+  listPendingPayoutReviews,
+  promoStatusFor,
+  quotePromoOrder,
+  recordVerifiedIdentity,
+  reconcileReservedBalance,
+  setCampaignEnabled,
+  updateCampaign,
+} from './promo.mjs';
+import { createReferral, getReferralProgress } from './referrals.mjs';
+import {
+  cancelPayout,
+  finalizeCheckout,
+  finalizePayout,
+  getChargeTruth,
+  getSellerEarnings,
+  groupCartBySeller,
+  handlePaystackWebhook,
+  initializeTransaction,
+  listBanks,
+  listPayouts,
+  requestPayout,
+  resolveAccount,
+  savePayoutDetails,
+  verifyTransaction,
+} from './payments.mjs';
+import { quoteCheckout } from './checkout-quote.mjs';
 
 const app = Fastify({ logger: true });
 
@@ -1342,6 +1381,623 @@ app.post('/v1/orders/internal/timeline', async (request, reply) => {
     }
     const result = await appendTimelineEvent(request.body || {});
     return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Price a cart, for the buyer's breakdown before paying.
+ *
+ * Read-only and side-effect free: it charges nothing and records nothing, so the
+ * sheet can call it on every keystroke of a promo code. The numbers it returns are
+ * the same ones the charge is built from, because it runs the same function — which
+ * is the only way the total on screen can be the total that is taken.
+ */
+app.post('/v1/checkout/quote', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const body = request.body || {};
+    const cartItems = body.cartItems;
+    if (!Array.isArray(cartItems) || !cartItems.length) {
+      return reply.code(400).send({ success: false, error: 'A cart is required' });
+    }
+
+    const groups = groupCartBySeller(cartItems);
+    const quote = await quoteCheckout({
+      buyerId: auth.uid,
+      groups,
+      shippingKobo: Math.round(Number(body.shippingPrice || 0) * 100),
+      deliveryFeePaidBy: body.deliveryFeePaidBy || null,
+      code: body.code || null,
+    });
+
+    if (!quote.ok) {
+      return reply.send({ success: true, eligible: false, promo: quote.promo });
+    }
+
+    // A campaign that cannot fund the order is reported as not applicable rather
+    // than as an error: nothing is broken, the offer is simply unavailable.
+    const chargeable = quote.budget?.ok !== false;
+
+    return reply.send({
+      success: true,
+      eligible: true,
+      chargeable,
+      reason: chargeable ? null : quote.budget?.reason || null,
+      display: quote.display,
+      promo: quote.promo
+        ? {
+            code: quote.promo.campaign?.code || null,
+            name: quote.promo.campaign?.name || null,
+            message: quote.promo.message,
+            requiresTicket: quote.promo.requiresTicket,
+            discountKobo: quote.promo.discountKobo,
+          }
+        : null,
+      totals: quote.totals,
+    });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// ─── Payments & payouts ────────────────────────────────────────────────────
+
+app.post('/v1/payments/initialize', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const body = request.body || {};
+    const result = await initializeTransaction({
+      uid: auth.uid,
+      callerEmail: auth.email,
+      email: body.email,
+      amountNgn: body.amount,
+      callbackUrl: body.callbackUrl,
+      metadata: body.metadata,
+      reference: body.reference,
+      cartItems: body.cartItems,
+      deliveryAddress: body.deliveryAddress,
+      customerInfo: body.customerInfo,
+      shippingType: body.shippingType,
+      shippingPrice: body.shippingPrice,
+      deliveryFeePaidBy: body.deliveryFeePaidBy,
+      discountCode: body.discountCode,
+      idempotencyKey: body.idempotencyKey,
+    });
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/payments/verify', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const body = request.body || {};
+    const result = await verifyTransaction({
+      uid: auth.uid,
+      isAdmin: false,
+      reference: body.reference,
+      expectedAmount: body.expectedAmount,
+      expectedEmail: body.expectedEmail,
+    });
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/payments/checkout/finalize', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await finalizeCheckout({
+      uid: auth.uid,
+      email: auth.email,
+      body: request.body || {},
+    });
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/payments/transactions/:reference', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const row = await getChargeTruth(request.params.reference);
+    if (!row) return reply.code(404).send({ success: false, error: 'Unknown reference' });
+    if (row.uid && row.uid !== auth.uid) {
+      return reply.code(403).send({ success: false, error: 'Forbidden' });
+    }
+    return reply.send({ success: true, transaction: row });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Paystack webhook.
+ *
+ * Registered in its own scope because the signature is an HMAC over the exact bytes
+ * Paystack sent. Parsing and re-serialising the JSON would change those bytes, so
+ * this route keeps the raw buffer instead.
+ */
+await app.register(async (instance) => {
+  instance.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => {
+    req.rawBody = body;
+    try {
+      done(null, body && body.length ? JSON.parse(body.toString('utf8')) : {});
+    } catch (error) {
+      done(error, undefined);
+    }
+  });
+
+  instance.post('/v1/payments/webhook', async (request, reply) => {
+    try {
+      const result = await handlePaystackWebhook({
+        rawBody: request.rawBody,
+        signature: request.headers['x-paystack-signature'],
+        payload: request.body,
+      });
+      return reply.send(result);
+    } catch (error) {
+      // A bad signature is a forgery and must not be retried. Anything else is our
+      // own failure, so it returns 5xx for Paystack to retry.
+      const code = error?.code === 'BAD_SIGNATURE' ? 401 : error?.statusCode || 500;
+      return reply.code(code).send({ success: false, error: error.message });
+    }
+  });
+});
+
+app.get('/v1/payments/banks', async (_request, reply) => {
+  try {
+    const banks = await listBanks();
+    return reply.send({ success: true, banks });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/payments/resolve-account', async (request, reply) => {
+  try {
+    await requireAuth(request.headers.authorization);
+    const result = await resolveAccount(
+      request.query?.accountNumber,
+      request.query?.bankCode
+    );
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// ─── Seller payouts ────────────────────────────────────────────────────────
+
+app.post('/v1/seller/payout-details', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await savePayoutDetails(auth.uid, request.body || {});
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/seller/payouts', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await listPayouts({ sellerId: auth.uid, limit: request.query?.limit });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/seller/payouts', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await requestPayout({
+      sellerId: auth.uid,
+      amountNgn: request.body?.amount,
+    });
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/seller/payouts/:payoutId/cancel', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await cancelPayout({
+      sellerId: auth.uid,
+      payoutId: request.params.payoutId,
+    });
+    return reply.send(result);
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/seller/payouts/:payoutId/finalize', async (request, reply) => {
+  try {
+    await requireAuth(request.headers.authorization);
+    const result = await finalizePayout({
+      payoutId: request.params.payoutId,
+      otp: request.body?.otp,
+    });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/seller/earnings', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await getSellerEarnings(auth.uid);
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/admin/payouts', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const result = await listPayouts({
+      sellerId: request.query?.sellerId,
+      limit: request.query?.limit,
+    });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// ─── Commission rate card (§3, §12) ────────────────────────────────────────
+//
+// The reason this is an endpoint rather than a constant: without it, every rate
+// change is a deploy. Cards are versioned by effective date so a change never
+// reprices an order that was already placed.
+
+app.get('/v1/admin/commission/rate-cards', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const [cards, current] = await Promise.all([listRateCards(), resolveRateCard()]);
+    return reply.send({
+      success: true,
+      current: {
+        id: current.id,
+        name: current.name,
+        effectiveFrom: current.effectiveFrom,
+        tiers: current.tiers,
+        isDefault: current.isDefault,
+      },
+      cards,
+    });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/admin/commission/rate-cards', async (request, reply) => {
+  try {
+    const admin = await requireAdmin(request.headers.authorization);
+    const { tiers, name, effectiveFrom, note } = request.body || {};
+    const card = await createRateCard({
+      tiers,
+      name,
+      effectiveFrom,
+      note,
+      createdBy: admin.uid,
+    });
+    return reply.send({ success: true, card });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * What an item would be charged, without placing an order.
+ *
+ * Exists so the seller UI can show the band before a listing is priced — the §3.1
+ * cliff is invisible until it is spelled out, and it is exactly where sellers will
+ * otherwise price into a worse outcome.
+ */
+app.get('/v1/commission/quote', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const itemsSubtotalKobo = Number(request.query?.itemsSubtotalKobo);
+    const shippingKobo = Number(request.query?.shippingKobo || 0);
+    if (!Number.isInteger(itemsSubtotalKobo) || itemsSubtotalKobo < 0) {
+      return reply.code(400).send({
+        success: false,
+        error: 'itemsSubtotalKobo must be an integer number of kobo',
+      });
+    }
+
+    const result = await quotePromoOrder({
+      buyerId: auth.uid,
+      sellerId: request.query?.sellerId || auth.uid,
+      itemsSubtotalKobo,
+      shippingKobo,
+      code: request.query?.code || null,
+      referralAmountKobo: request.query?.referralAmountKobo || null,
+    });
+
+    if (!result.quote) {
+      return reply.send({ success: true, eligible: false, promo: result.promo });
+    }
+    return reply.send({
+      success: true,
+      eligible: true,
+      promo: result.promo,
+      budget: result.budget,
+      quote: result.quote,
+    });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// ─── Promo tickets and budget (§5.2, §5.3, §6.3) ───────────────────────────
+
+app.get('/v1/promo/status', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    // The baseline ticket is created on first look, so the top band is reachable
+    // on a first order without a separate enrolment step.
+    await ensureBaselineTicket(auth.uid);
+    const status = await promoStatusFor(auth.uid);
+    return reply.send({ success: true, ...status });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/referrals/me', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const progress = await getReferralProgress(auth.uid);
+    return reply.send({ success: true, ...progress });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/referrals/claim', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const result = await createReferral({
+      referrerId: request.body?.referrerId,
+      refereeId: auth.uid,
+      code: request.body?.code,
+    });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// ─── Identity (§8.1, §8.2) ────────────────────────────────────────────────
+
+/**
+ * Store the buyer's verified identity for the top band.
+ *
+ * Raw documents are hashed on the way in and never stored — an eleven-digit BVN is
+ * enumerable, so a plain digest would not be anonymisation (§14.8).
+ */
+app.post('/v1/identity/verify', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const { bvn, nin, bankAccount } = request.body || {};
+    const result = await recordVerifiedIdentity({
+      userId: auth.uid,
+      bvn,
+      nin,
+      bankAccount,
+    });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+// ─── Admin: promo, budget, review queue (§10, §12) ─────────────────────────
+
+// ─── Promo campaigns: the toggle, the budget, the code (§5, §12) ────────────
+//
+// A campaign is configuration an operator owns. Everything about its shape, its
+// budget and whether it is on lives in a row, so none of it needs a deploy.
+
+app.get('/v1/admin/promo/campaigns', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const campaigns = await listCampaigns({
+      includeArchived: request.query?.includeArchived === 'true',
+    });
+    return reply.send({ success: true, campaigns });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/admin/promo/campaigns', async (request, reply) => {
+  try {
+    const admin = await requireAdmin(request.headers.authorization);
+    const campaign = await createCampaign(request.body || {}, { createdBy: admin.uid });
+    return reply.send({ success: true, campaign });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/admin/promo/campaigns/:id', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const campaign = await getCampaign(request.params?.id);
+    if (!campaign) return reply.code(404).send({ success: false, error: 'No such campaign' });
+    const ledger = await listBudgetLedger({ campaignId: campaign.id, limit: 50 });
+    return reply.send({ success: true, campaign, ledger });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/** Change anything about a campaign, including its budget. */
+app.patch('/v1/admin/promo/campaigns/:id', async (request, reply) => {
+  try {
+    const admin = await requireAdmin(request.headers.authorization);
+    const campaign = await updateCampaign(request.params?.id, request.body || {}, {
+      updatedBy: admin.uid,
+    });
+    return reply.send({ success: true, campaign });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/** The switch an operator reaches for most. */
+app.post('/v1/admin/promo/campaigns/:id/enabled', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const enabled = request.body?.enabled !== false;
+    const campaign = await setCampaignEnabled(request.params?.id, enabled);
+    return reply.send({ success: true, campaign });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/admin/promo/campaigns/:id/archive', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const campaign = await archiveCampaign(request.params?.id);
+    return reply.send({ success: true, campaign });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/admin/promo/report', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const [report, budget] = await Promise.all([
+      getPromoReport({
+        since: request.query?.since ? new Date(request.query.since) : null,
+        until: request.query?.until ? new Date(request.query.until) : new Date(),
+      }),
+      reconcileReservedBalance(),
+    ]);
+    return reply.send({ success: true, report, reconciliation: budget });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * The reserved-balance check on its own (§6.3).
+ *
+ * Worth reading alone, because it is the one number that says whether promo
+ * issuance can continue at all.
+ */
+app.get('/v1/admin/promo/reconciliation', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const result = await reconcileReservedBalance();
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * The campaigns live right now, for the checkout modal.
+ *
+ * Public and unauthenticated on purpose: the modal has to show the real, current
+ * offer before anyone signs in, and it must be whatever the operator configured
+ * rather than a value baked into the app.
+ */
+app.get('/v1/promo/campaigns', async (_request, reply) => {
+  try {
+    const campaigns = await listLiveCampaigns();
+    return reply.send({
+      success: true,
+      campaigns: campaigns.map((campaign) => ({
+        code: campaign.code,
+        name: campaign.name,
+        description: campaign.description,
+        discountBps: campaign.discountBps,
+        capBps: campaign.capBps,
+        capFloorKobo: campaign.capFloorKobo,
+        capCeilingKobo: campaign.capCeilingKobo,
+        capFlatKobo: campaign.capFlatKobo,
+        minOrderKobo: campaign.minOrderKobo,
+        firstOrderOnly: campaign.firstOrderOnly,
+        requiresTicket: campaign.requiresTicket,
+        ticketThresholdKobo: campaign.ticketThresholdKobo,
+        endsAt: campaign.endsAt,
+        // The wording the modal shows, so the app never has to infer it — and can
+        // never advertise a percentage that is not what actually applies.
+        display: describeCampaign(campaign),
+      })),
+    });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/** Check a code without pricing an order — what the modal does as you type. */
+app.post('/v1/promo/validate', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const code = request.body?.code;
+    const itemsSubtotalKobo = Number(request.body?.itemsSubtotalKobo || 0);
+    const result = await quotePromoOrder({
+      buyerId: auth.uid,
+      sellerId: request.body?.sellerId || auth.uid,
+      itemsSubtotalKobo,
+      shippingKobo: Number(request.body?.shippingKobo || 0),
+      code,
+    });
+    if (!result.quote) {
+      return reply.send({ success: true, valid: false, reason: result.promo });
+    }
+    return reply.send({
+      success: true,
+      valid: true,
+      discountKobo: result.quote.discountKobo,
+      buyerTotalKobo: result.quote.buyerTotalKobo,
+      quote: result.quote,
+      budget: result.budget,
+    });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/admin/payout-reviews', async (request, reply) => {
+  try {
+    await requireAdmin(request.headers.authorization);
+    const result = await listPendingPayoutReviews({ limit: request.query?.limit });
+    return reply.send({ success: true, ...result });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/admin/payout-reviews/:id', async (request, reply) => {
+  try {
+    const admin = await requireAdmin(request.headers.authorization);
+    const result = await decidePayoutReview({
+      reviewId: request.params?.id,
+      decision: request.body?.decision,
+      note: request.body?.note,
+      decidedBy: admin.uid,
+    });
+    return reply.send({ success: true, review: result });
   } catch (error) {
     return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
   }

@@ -11,6 +11,13 @@ import {
 } from 'react-native';
 import { PaystackCheckout } from '@/components/market/paystack-checkout';
 import { canStartNewEscrowPayment, paymentsApi } from '@/lib/api/payments';
+import type { EscrowPaymentInspectStatus } from '@/lib/api/payments';
+import {
+  finalizeCheckoutOrder,
+  initializeCheckout,
+  inspectCharge,
+  type CheckoutCartItem,
+} from '@/lib/api/checkout';
 import { useTheme } from '@/lib/theme/theme-context';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { haptics } from '@/lib/utils/haptics';
@@ -80,6 +87,15 @@ interface PaymentSheetModalProps {
   /** Agreed unit price (accepted offer or listed). Must match what the buyer pays. */
   unitPrice: number;
   quantity: number;
+  /**
+   * The server's total for this cart, in naira. When present this is what is charged,
+   * instead of `unitPrice × quantity` — the point being that the amount taken is the
+   * one the server quoted, not one this screen added up.
+   */
+  pricedTotalNaira?: number;
+  /** The cart, so the server can price and re-price the charge itself. */
+  cartItems?: CheckoutCartItem[] | null;
+  promoCode?: string | null;
   deliveryAddress: string;
   deliveryState: string;
   deliveryCity: string;
@@ -105,6 +121,9 @@ export default function PaymentSheetModal({
   post,
   unitPrice,
   quantity,
+  pricedTotalNaira,
+  cartItems = null,
+  promoCode = null,
   deliveryAddress,
   deliveryState,
   deliveryCity,
@@ -134,15 +153,79 @@ export default function PaymentSheetModal({
       ? cartLines.filter((line) => line.postId && line.unitPrice > 0 && line.quantity > 0)
       : null;
   const isCartCheckout = Boolean(activeCartLines && activeCartLines.length > 0);
-  const total = isCartCheckout
+  /**
+   * Charge through `chatcart-api` when the cart is known.
+   *
+   * This is the switch to the new money path: the server prices the order, charges it,
+   * and builds one order per seller with the commission, Buyer Protection and any
+   * discount recorded in the same transaction. Without a cart there is nothing for the
+   * server to price, so the legacy path is used unchanged.
+   */
+  const useNewCheckout = Array.isArray(cartItems) && cartItems.length > 0;
+  const derivedTotal = isCartCheckout
     ? activeCartLines!.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0)
     : safeUnitPrice * Math.max(1, Number(quantity) || 1);
+  // When the sheet has already been priced, that number is the one that is charged.
+  // Falling back to `unitPrice × quantity` would take a different amount than the
+  // breakdown the buyer just agreed to.
+  const total =
+    typeof pricedTotalNaira === 'number' && pricedTotalNaira > 0
+      ? pricedTotalNaira
+      : derivedTotal;
   const primaryPostId = isCartCheckout
     ? String(activeCartLines![0].postId)
     : String(post.id || '').trim();
   const postId = String(cartSessionId || primaryPostId || post.id || '').trim();
   const finalizeAttemptRef = useRef(false);
   const pendingResumeCheckedRef = useRef(false);
+
+  /**
+   * Ask what the gateway says about a reference.
+   *
+   * On the new path this reads the API's own charge record, which the webhook also
+   * writes — so it still knows about a charge that was paid while the app was dead.
+   * A reference the gateway has never seen is reported as `not_found` rather than
+   * throwing, because "no charge for this reference" is exactly what makes it safe to
+   * start a new payment.
+   */
+  const inspectPayment = useCallback(
+    async ({
+      reference,
+      amount,
+      email,
+    }: {
+      reference: string;
+      amount: number;
+      email: string;
+    }) => {
+      if (!useNewCheckout) {
+        return paymentsApi.inspectEscrowPaymentStatus({ reference, amount, email });
+      }
+      try {
+        const truth = await inspectCharge(reference);
+        return {
+          reference: truth.reference,
+          paid: truth.paid,
+          terminalUnpaid: truth.terminalUnpaid,
+          safeToStartNewPayment: truth.terminalUnpaid,
+          status: (truth.status || 'unknown') as EscrowPaymentInspectStatus,
+          amount: truth.amountNgn,
+        };
+      } catch (error: any) {
+        if (Number(error?.status) === 404) {
+          return {
+            reference,
+            paid: false,
+            terminalUnpaid: false,
+            safeToStartNewPayment: true,
+            status: 'not_found' as EscrowPaymentInspectStatus,
+          };
+        }
+        throw error;
+      }
+    },
+    [useNewCheckout]
+  );
   const triggerFinalizationRef = useRef<
     (
       verifyRef: string,
@@ -224,7 +307,27 @@ export default function PaymentSheetModal({
 
       for (let attempt = 0; attempt < FINALIZE_PENDING_MAX_ATTEMPTS; attempt += 1) {
         try {
-          response = await paymentsApi.finalizeMarketEscrowPayment({
+          if (useNewCheckout) {
+            const result = await finalizeCheckoutOrder({
+              reference: normalizedRef,
+              cartItems: cartItems!,
+              total,
+              deliveryAddress: finalizeDelivery,
+              customerInfo: { name: buyerName, phone: finalizePhone },
+              idempotencyKey: `ikm_${postId}_${buyerId}`,
+            });
+            response = {
+              success: result.success,
+              alreadyExists: result.alreadyExists,
+              orderId: result.orderId || undefined,
+              orderIds: result.orderIds,
+              // The server does not need to tell us the thread: this checkout came
+              // from that chat, so it is already known here.
+              dealThreadId: fromChatId || undefined,
+              message: result.message,
+            } as typeof response;
+          } else {
+            response = await paymentsApi.finalizeMarketEscrowPayment({
             reference: normalizedRef,
             postId: primaryPostId || post.id || '',
             quantity: isCartCheckout
@@ -248,7 +351,8 @@ export default function PaymentSheetModal({
                 }))
               : undefined,
             cartSessionId: cartSessionId || undefined,
-          });
+            });
+          }
           lastError = null;
           break;
         } catch (attemptError) {
@@ -294,7 +398,7 @@ export default function PaymentSheetModal({
       if (isTerminalFailedPaymentMessage(msg)) {
         // Never trust a single error string — re-inspect Paystack before discarding recovery data.
         try {
-          const inspected = await paymentsApi.inspectEscrowPaymentStatus({
+          const inspected = await inspectPayment({
             reference: normalizedRef,
             amount: total,
             email: buyerEmail,
@@ -364,6 +468,11 @@ export default function PaymentSheetModal({
     post.posterId,
     post.title,
     post.description,
+    // Which money path a finalize belongs to is decided from the cart, so a stale
+    // closure here would rebuild the order on the wrong backend.
+    inspectPayment,
+    useNewCheckout,
+    cartItems,
     quantity,
     deliveryAddress,
     buyerPhone,
@@ -398,7 +507,7 @@ export default function PaymentSheetModal({
         setPaymentState('CONFIRMING');
         setVerifyingText('Checking your previous payment with Paystack…');
 
-        const inspected = await paymentsApi.inspectEscrowPaymentStatus({
+        const inspected = await inspectPayment({
           reference: pending.reference,
           amount: Number(pending.amount) || total,
           email: pending.buyerEmail || buyerEmail,
@@ -459,11 +568,58 @@ export default function PaymentSheetModal({
     };
 
     void checkPendingTransaction();
-  }, [visible, postId, buyerId, total, buyerEmail]);
+  }, [visible, postId, buyerId, total, buyerEmail, inspectPayment]);
 
   const beginFreshPaystackSession = async () => {
     const defaultRef = buildDefaultReference();
     const mockCallbackUrl = 'https://chatcart-mobile.web.app/paystack-callback';
+
+    if (useNewCheckout) {
+      // Nothing but the cart and the code goes up. There is no amount to send: the
+      // server prices the charge from the cart, so a buyer cannot edit a payload and
+      // pay less than the order is worth.
+      const initialized = await initializeCheckout({
+        cartItems: cartItems!,
+        email: buyerEmail,
+        callbackUrl: mockCallbackUrl,
+        reference: defaultRef,
+        code: promoCode,
+        deliveryAddress,
+        customerInfo: {
+          name: buyerName,
+          phone: buyerPhone,
+        },
+        idempotencyKey: `ikm_${postId}_${buyerId}`,
+      });
+
+      const newRef = initialized.reference || defaultRef;
+      setReference(newRef);
+
+      await savePendingEscrowCheckout({
+        reference: newRef,
+        amount: initialized.amount ?? total,
+        buyerId,
+        buyerName,
+        buyerEmail,
+        buyerPhone,
+        post: isCartCheckout ? ({ ...post, id: postId } as typeof post) : post,
+        quantity: isCartCheckout
+          ? activeCartLines!.reduce((sum, line) => sum + line.quantity, 0)
+          : quantity,
+        finalPrice: initialized.amount ?? total,
+        deliveryAddress,
+        fromChatId,
+        deliveryState,
+        deliveryCity,
+        addressLine,
+        createdAtMs: Date.now(),
+        phase: 'initialized',
+        cartSessionId: cartSessionId || undefined,
+      });
+
+      setPaymentState('GATEWAY');
+      return;
+    }
 
     const initialized = await paymentsApi.initializeEscrowPayment({
       amount: total,
@@ -553,7 +709,7 @@ export default function PaymentSheetModal({
       // Only inspect THIS product's pending payment — never Product B's.
       const existing = await readPendingEscrowCheckout({ postId, buyerId });
       if (existing) {
-        const inspected = await paymentsApi.inspectEscrowPaymentStatus({
+        const inspected = await inspectPayment({
           reference: existing.reference,
           amount: Number(existing.amount) || total,
           email: existing.buyerEmail || buyerEmail,
@@ -597,7 +753,7 @@ export default function PaymentSheetModal({
               style: 'destructive',
               onPress: () => {
                 void (async () => {
-                  const again = await paymentsApi.inspectEscrowPaymentStatus({
+                  const again = await inspectPayment({
                     reference: existing.reference,
                     amount: Number(existing.amount) || total,
                     email: existing.buyerEmail || buyerEmail,

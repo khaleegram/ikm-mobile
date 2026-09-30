@@ -4,6 +4,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import KeyboardScreen from '@/components/layout/KeyboardScreen';
 import PaymentSheetModal from '@/components/market/payment-sheet-modal';
+import {
+  CheckoutBreakdown,
+  LiveOfferChips,
+  PromoCodeField,
+} from '@/components/market/checkout-pricing';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { SmartPhoneField } from '@/components/ui/smart-phone-field';
 import {
@@ -11,7 +16,9 @@ import {
   saveMarketBuyerProfile,
   toBuyerLocationPayload,
 } from '@/lib/api/market-buyer-profile';
+import type { CheckoutCartItem } from '@/lib/api/checkout';
 import { useUser } from '@/lib/firebase/auth/use-user';
+import { useCheckoutQuote } from '@/lib/hooks/use-checkout-quote';
 import { useMyMarketProfile } from '@/lib/hooks/use-my-market-profile';
 import { useTheme } from '@/lib/theme/theme-context';
 import { haptics } from '@/lib/utils/haptics';
@@ -45,6 +52,7 @@ export function DealCheckoutSheet({
   const [phone, setPhone] = useState('');
   const [locationLabel, setLocationLabel] = useState('');
   const [payOpen, setPayOpen] = useState(false);
+  const [appliedCode, setAppliedCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -62,6 +70,50 @@ export function DealCheckoutSheet({
   const deliveryAddress = locationLabel.trim();
   const price = Math.max(0, Number(unitPrice) || 0);
 
+  // The cart this deal is. Sent to the server, which prices it — the sheet does not
+  // add up a total of its own, because a total the phone computes is a total the phone
+  // can get wrong.
+  const cartItems: CheckoutCartItem[] = useMemo(() => {
+    if (!post?.id || !(price > 0)) return [];
+    return [
+      {
+        id: String(post.id),
+        sellerId: String(post.posterId || ''),
+        name: String(post.title || post.description || 'Item').slice(0, 80),
+        price,
+        quantity: 1,
+      },
+    ];
+  }, [post?.id, post?.posterId, post?.title, post?.description, price]);
+
+  const quote = useCheckoutQuote({
+    cartItems,
+    code: appliedCode,
+    enabled: visible && cartItems.length > 0,
+  });
+
+  const quoteData = quote.data && quote.data.eligible ? quote.data : null;
+  // The charge comes from the server's total, and only from there. With no quote yet
+  // the sheet will not let the buyer continue rather than guess a number.
+  const payableNaira = quoteData ? quoteData.display.totalKobo / 100 : null;
+  // A code that came back valid but unfundable is cleared, so the buyer is not left
+  // believing a discount was applied.
+  const promoError = useMemo(() => {
+    if (!appliedCode) return null;
+    if (quote.isFetching && !quote.data) return null;
+    if (quote.data && !quote.data.eligible) {
+      return quote.data.promo?.message || 'That code cannot be used on this order';
+    }
+    if (quoteData && !quoteData.chargeable) {
+      return quoteData.reason === 'BUDGET_EXHAUSTED'
+        ? 'This offer has been fully claimed'
+        : 'This offer is not available right now';
+    }
+    return quote.error ? 'Could not check that code. Try again.' : null;
+  }, [appliedCode, quote.data, quote.isFetching, quote.error, quoteData]);
+
+  const promoMessage = quoteData?.promo?.message || null;
+
   const startPay = async () => {
     if (!user?.uid || !post?.id) return;
     if (!(price > 0)) {
@@ -70,6 +122,14 @@ export function DealCheckoutSheet({
     }
     if (!deliveryAddress) {
       showToast('Add a delivery location.', 'error');
+      return;
+    }
+    if (promoError) {
+      showToast('Remove or fix the promo code first.', 'error');
+      return;
+    }
+    if (!payableNaira) {
+      showToast('Still pricing your order. Try again in a moment.', 'error');
       return;
     }
     try {
@@ -98,12 +158,42 @@ export function DealCheckoutSheet({
         </View>
 
         <KeyboardScreen contentContainerStyle={{ padding: 16, paddingBottom: 32 }} extraScrollHeight={48}>
-          <Text style={[styles.price, { color: colors.text }]}>
-            NGN {price.toLocaleString()}
-          </Text>
+          {quoteData ? (
+            <CheckoutBreakdown display={quoteData.display} quote={quote.data ?? null} itemCount={1} />
+          ) : (
+            <Text style={[styles.price, { color: colors.text }]}>
+              {`NGN ${price.toLocaleString()}`}
+            </Text>
+          )}
           <Text style={[styles.hint, { color: colors.textSecondary }]}>
             Money is held until you confirm you received the item. The seller is not paid at checkout.
           </Text>
+
+          <Text style={[styles.label, { color: colors.text }]}>Promo code</Text>
+          <PromoCodeField
+            appliedCode={appliedCode}
+            onApply={(code) => {
+              haptics.light();
+              setAppliedCode(code);
+            }}
+            onClear={() => {
+              haptics.light();
+              setAppliedCode(null);
+            }}
+            isChecking={quote.isFetching && Boolean(appliedCode)}
+            error={appliedCode ? promoError : null}
+            message={promoMessage}
+          />
+          {!appliedCode && (
+            <View style={styles.chipsWrap}>
+              <LiveOfferChips
+                onPick={(code) => {
+                  haptics.light();
+                  setAppliedCode(code);
+                }}
+              />
+            </View>
+          )}
 
           <Text style={[styles.label, { color: colors.text }]}>Phone</Text>
           <SmartPhoneField
@@ -132,9 +222,17 @@ export function DealCheckoutSheet({
           />
 
           <TouchableOpacity
-            style={[styles.cta, { backgroundColor: ACCENT }]}
+            style={[
+              styles.cta,
+              { backgroundColor: ACCENT, opacity: !payableNaira || promoError ? 0.5 : 1 },
+            ]}
+            disabled={!payableNaira || Boolean(promoError)}
             onPress={() => void startPay()}>
-            <Text style={styles.ctaText}>Continue to payment</Text>
+            <Text style={styles.ctaText}>
+              {payableNaira
+                ? `Continue to payment · ₦${(payableNaira).toLocaleString()}`
+                : 'Continue to payment'}
+            </Text>
           </TouchableOpacity>
         </KeyboardScreen>
 
@@ -145,6 +243,10 @@ export function DealCheckoutSheet({
             post={post}
             unitPrice={price}
             quantity={1}
+            // The server's price for this cart, not a figure this screen derived.
+            pricedTotalNaira={payableNaira ?? undefined}
+            cartItems={cartItems}
+            promoCode={appliedCode}
             deliveryAddress={deliveryAddress}
             deliveryState=""
             deliveryCity=""
@@ -189,4 +291,5 @@ const styles = StyleSheet.create({
   },
   cta: { marginTop: 16, borderRadius: 16, paddingVertical: 14, alignItems: 'center' },
   ctaText: { color: '#FFF', fontWeight: '800', fontSize: 15 },
+  chipsWrap: { marginTop: 10 },
 });
