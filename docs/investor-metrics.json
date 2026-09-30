@@ -1,0 +1,215 @@
+{
+  "overview": [
+    {
+      "paid_orders": 10,
+      "net_orders": 10,
+      "cancelled_orders": 0,
+      "refunded_orders": 0,
+      "completed_orders": 1,
+      "gmv_gross": 869200,
+      "gmv_net": 869200,
+      "revenue_booked": 43460,
+      "revenue_realised": 2500,
+      "escrow_held_now": 819200,
+      "buyers": 3,
+      "sellers": 3,
+      "posts_sold": 6,
+      "first_order_at": "2026-06-08T01:04:39.337Z",
+      "last_order_at": "2026-09-27T14:41:45.170Z"
+    }
+  ],
+  "repeat_buyers": [
+    {
+      "buyers": 3,
+      "repeat_buyers": 3,
+      "buyers_3plus": 2,
+      "buyers_multi_seller": 3,
+      "buyers_repeat_post": 3,
+      "repeat_rate_pct": 100,
+      "orders_per_buyer": 3.33,
+      "avg_lifetime_spend": 289733.33,
+      "avg_days_first_to_last": 37.7
+    }
+  ],
+  "aov": [
+    {
+      "checkouts": 10,
+      "aov_per_checkout": 86920,
+      "sellers_per_checkout": 1,
+      "multi_seller_checkouts": 0,
+      "multi_seller_checkout_pct": 0
+    }
+  ],
+  "chat_funnel": [
+    {
+      "threads_total": 12,
+      "threads_30d": 1,
+      "threads_with_order": 4,
+      "thread_to_order_pct": 33.3,
+      "orders_from_chat": 5,
+      "orders_net": 10,
+      "pct_orders_from_chat": 50,
+      "messages": 118,
+      "threads_with_messages": 11,
+      "people_chatting": 4,
+      "offers": 6,
+      "offers_accepted": 4,
+      "offer_accept_pct": 66.7
+    }
+  ],
+  "weekly": [
+    {
+      "week": "2026-09-20T23:00:00.000Z",
+      "orders": 1,
+      "gmv": 20000,
+      "revenue": 1000,
+      "buyers": 1,
+      "returning_buyers": 1,
+      "sellers": 1,
+      "repeat_orders": 1
+    },
+    {
+      "week": "2026-07-12T23:00:00.000Z",
+      "orders": 5,
+      "gmv": 369200,
+      "revenue": 18460,
+      "buyers": 2,
+      "returning_buyers": 2,
+      "sellers": 2,
+      "repeat_orders": 4
+    },
+    {
+      "week": "2026-06-07T23:00:00.000Z",
+      "orders": 4,
+      "gmv": 480000,
+      "revenue": 24000,
+      "buyers": 2,
+      "returning_buyers": 2,
+      "sellers": 3,
+      "repeat_orders": 2
+    }
+  ],
+  "supply_funnel": [
+    {
+      "sellers_who_posted": 3,
+      "sellers_with_a_sale": 3,
+      "posted_never_sold": 0,
+      "post_to_sale_pct": 100,
+      "avg_posts_per_seller": 4,
+      "median_days_post_to_first_sale": 104.3
+    }
+  ],
+  "supply_activity": [
+    {
+      "users_total": 16,
+      "posts_total": 12,
+      "posts_active": 11,
+      "posters_total": 3,
+      "posters_30d": 0,
+      "posters_7d": 0,
+      "new_sellers_30d": 0,
+      "posters_with_a_sale": 3,
+      "posters_never_sold_flag": 2
+    }
+  ],
+  "posts_weekly": [
+    {
+      "week": "2026-09-20T23:00:00.000Z",
+      "posts": null,
+      "posters": null,
+      "threads": 1
+    },
+    {
+      "week": "2026-08-16T23:00:00.000Z",
+      "posts": null,
+      "posters": null,
+      "threads": 3
+    },
+    {
+      "week": "2026-07-12T23:00:00.000Z",
+      "posts": 2,
+      "posters": 1,
+      "threads": 4
+    },
+    {
+      "week": "2026-06-07T23:00:00.000Z",
+      "posts": 3,
+      "posters": 2,
+      "threads": 4
+    },
+    {
+      "week": "2026-05-31T23:00:00.000Z",
+      "posts": 1,
+      "posters": 1,
+      "threads": null
+    },
+    {
+      "week": "2026-04-26T23:00:00.000Z",
+      "posts": 3,
+      "posters": 1,
+      "threads": null
+    },
+    {
+      "week": "2026-02-22T23:00:00.000Z",
+      "posts": 1,
+      "posters": 1,
+      "threads": null
+    },
+    {
+      "week": "2026-02-15T23:00:00.000Z",
+      "posts": 2,
+      "posters": 1,
+      "threads": null
+    }
+  ],
+  "top_sellers": [
+    {
+      "seller_id": "J7XqBvo2evPr6cdtsFPGXTvQuY03",
+      "seller": "Bagatata's Store",
+      "orders": 6,
+      "gmv": 709100,
+      "distinct_buyers": 2,
+      "first_sale": "2026-06-08T23:00:00.000Z",
+      "last_sale": "2026-07-16T23:00:00.000Z"
+    },
+    {
+      "seller_id": "G2Oy0qWavYSjyhq6dmIJUsdxJx52",
+      "seller": "Zee Mai Agogo 😇",
+      "orders": 2,
+      "gmv": 130100,
+      "distinct_buyers": 2,
+      "first_sale": "2026-06-07T23:00:00.000Z",
+      "last_sale": "2026-07-13T23:00:00.000Z"
+    },
+    {
+      "seller_id": "arxJ2ao4TGMqqdnlz2OHBwX7SIO2",
+      "seller": "Banditontt",
+      "orders": 2,
+      "gmv": 30000,
+      "distinct_buyers": 2,
+      "first_sale": "2026-06-07T23:00:00.000Z",
+      "last_sale": "2026-09-26T23:00:00.000Z"
+    }
+  ],
+  "data_quality": [
+    {
+      "orders_without_payment": 0,
+      "test_rows_present": 0,
+      "self_buys": 0,
+      "zero_value_orders": 0,
+      "orphan_orders": 0,
+      "checkout_total_mismatches": 0,
+      "stale_escrow_30d": 8,
+      "completed_but_unreleased": 0,
+      "paid_orders_without_escrow_status": 0
+    }
+  ],
+  "integrity_info": [
+    {
+      "multi_seller_references": 0,
+      "duplicate_orders_per_reference_seller": 0,
+      "blocked_pairs": 0,
+      "open_chat_reports": 0
+    }
+  ]
+}

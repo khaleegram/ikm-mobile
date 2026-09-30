@@ -91,7 +91,22 @@ import {
   registerThreadSocket,
   unregisterThreadSocket,
   initChatWsPubSub,
+  registerUserSocket,
+  unregisterUserSocket,
+  broadcastToUser,
 } from './chat-ws.mjs';
+import {
+  RING_TIMEOUT_SEC,
+  assertCallParticipant,
+  answerCall,
+  buildIceServers,
+  createCall,
+  declineCall,
+  endCall,
+  listCallsForThread,
+  notifyIncomingCall,
+  peerOf,
+} from './calls.mjs';
 import { touchPresence } from './chat-presence.mjs';
 
 const app = Fastify({ logger: true });
@@ -273,6 +288,41 @@ function asString(value) {
   return String(value ?? '').trim();
 }
 
+/**
+ * End a call, tell the other side, and record it in the conversation — once.
+ *
+ * Both the socket and the REST route funnel through here so hanging up behaves identically
+ * whichever path the client takes, and so a call can never be written into the chat twice.
+ */
+async function finishCall({ callId, userId, failed = false }) {
+  const before = await assertCallParticipant(userId, callId);
+  const call = await endCall(callId, userId, { failed });
+
+  broadcastToUser(peerOf(call, userId), {
+    event: 'call_ended',
+    callId: call.id,
+    reason: call?.status || 'ended',
+    durationSec: call?.durationSec ?? null,
+  });
+
+  const wasOpen = before.status === 'ringing' || before.status === 'active';
+  if (wasOpen && call?.threadId) {
+    const seconds = Number(call.durationSec || 0);
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    const length = mins > 0 ? `${mins}m ${String(secs).padStart(2, '0')}s` : `${secs}s`;
+    const text =
+      call.status === 'ended'
+        ? `${call.kind === 'video' ? 'Video' : 'Voice'} call · ${length}`
+        : call.status === 'declined'
+          ? 'Call declined'
+          : 'Missed call';
+    await appendSystemEvent({ threadId: call.threadId, event: 'call', text }).catch(() => {});
+  }
+
+  return call;
+}
+
 app.get('/v1/chat/threads/:id/stream', { websocket: true }, (socket, request) => {
   const threadId = request.params?.id;
   let authedUserId = null;
@@ -301,6 +351,195 @@ app.get('/v1/chat/threads/:id/stream', { websocket: true }, (socket, request) =>
   socket.on('close', () => {
     unregisterThreadSocket(threadId, socket);
   });
+});
+
+/**
+ * Call channel — one socket per person, not per conversation.
+ *
+ * A call has to reach you wherever you are in the app, so this socket is keyed by user. After the
+ * auth handshake it only relays signalling between the two people on a live call: the server looks
+ * up the call, works out the peer, and forwards. Signals are never relayed to anyone the sender is
+ * not already on a call with.
+ */
+app.get('/v1/calls/stream', { websocket: true }, (socket, request) => {
+  let authedUserId = null;
+
+  const fail = (message) => socket.send(JSON.stringify({ event: 'error', message }));
+
+  socket.on('message', async (raw) => {
+    try {
+      const parsed = JSON.parse(String(raw));
+
+      if (parsed?.type === 'auth') {
+        const auth = await requireAuth(`Bearer ${parsed.token || ''}`);
+        authedUserId = auth.uid;
+        await touchPresence(auth.uid);
+        registerUserSocket(auth.uid, socket);
+        socket.send(JSON.stringify({ event: 'connected', userId: auth.uid }));
+        return;
+      }
+
+      if (!authedUserId) {
+        fail('Not authenticated');
+        return;
+      }
+
+      if (parsed?.type === 'ping') {
+        await touchPresence(authedUserId);
+        socket.send(JSON.stringify({ event: 'pong' }));
+        return;
+      }
+
+      // Signal / state changes. `type` doubles as the event name sent to the peer.
+      const relayable = ['offer', 'answer', 'ice', 'accept', 'decline', 'end'];
+      if (!relayable.includes(String(parsed?.type))) return;
+
+      const call = await assertCallParticipant(authedUserId, parsed?.callId);
+      const peer = peerOf(call, authedUserId);
+
+      if (parsed.type === 'accept') {
+        const updated = await answerCall(call.id, authedUserId);
+        broadcastToUser(peer, { event: 'call_accepted', callId: call.id });
+        return;
+      }
+      if (parsed.type === 'decline') {
+        await declineCall(call.id, authedUserId);
+        broadcastToUser(peer, { event: 'call_declined', callId: call.id });
+        return;
+      }
+      if (parsed.type === 'end') {
+        await finishCall({ callId: call.id, userId: authedUserId });
+        return;
+      }
+
+      // offer / answer / ice — opaque to us, passed straight through.
+      broadcastToUser(peer, {
+        event: parsed.type,
+        callId: call.id,
+        threadId: call.threadId,
+        from: authedUserId,
+        payload: parsed.payload ?? null,
+      });
+    } catch (error) {
+      fail(error.message);
+    }
+  });
+
+  socket.on('close', () => {
+    if (authedUserId) unregisterUserSocket(authedUserId, socket);
+  });
+});
+
+/** Relay credentials for a call. Short-lived, minted server-side so nothing is baked into the app. */
+app.get('/v1/calls/ice', async (request, reply) => {
+  try {
+    await requireAuth(request.headers.authorization);
+    const ice = await buildIceServers();
+    return reply.send({ success: true, ...ice });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/** Place a call. Rings the other person by socket and by push. */
+app.post('/v1/calls', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const body = request.body || {};
+    const threadId = asString(body.threadId);
+    const calleeId = asString(body.calleeId) || asString(body.calleeUserId);
+    if (!threadId || !calleeId) {
+      return reply.code(400).send({ success: false, error: 'threadId and calleeId are required' });
+    }
+
+    // Only people actually in the conversation may ring each other.
+    await assertThreadParticipant(auth.uid, threadId);
+
+    const { call, reused, busy } = await createCall({
+      threadId,
+      callerId: auth.uid,
+      calleeId,
+      kind: body.kind,
+    });
+
+    if (busy) {
+      return reply.send({ success: true, busy: true, call, ice: null });
+    }
+
+    const ice = await buildIceServers();
+    if (!reused) await notifyIncomingCall({ call, callerId: auth.uid });
+
+    return reply.send({ success: true, busy: false, call, ice, ringTimeoutSec: RING_TIMEOUT_SEC });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/** Current state of a call — used when a screen reopens or a socket reconnects mid-call. */
+app.get('/v1/calls/:id', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const call = await assertCallParticipant(auth.uid, request.params?.id);
+    return reply.send({ success: true, call });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/calls/:id/answer', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    await assertCallParticipant(auth.uid, request.params?.id);
+    const call = await answerCall(request.params.id, auth.uid);
+    broadcastToUser(peerOf(call, auth.uid), { event: 'call_accepted', callId: call.id });
+    return reply.send({ success: true, call });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.post('/v1/calls/:id/decline', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    await assertCallParticipant(auth.uid, request.params?.id);
+    const call = await declineCall(request.params.id, auth.uid);
+    broadcastToUser(peerOf(call, auth.uid), { event: 'call_declined', callId: call.id });
+    return reply.send({ success: true, call });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Hang up.
+ *
+ * Also writes a line into the conversation, so a call is part of the deal's history rather than
+ * something that vanished. A missed or declined call is exactly what a later dispute needs to see.
+ */
+app.post('/v1/calls/:id/end', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const call = await finishCall({
+      callId: request.params?.id,
+      userId: auth.uid,
+      failed: Boolean(request.body?.failed),
+    });
+    return reply.send({ success: true, call });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
+});
+
+app.get('/v1/calls/thread/:threadId', async (request, reply) => {
+  try {
+    const auth = await requireAuth(request.headers.authorization);
+    const threadId = asString(request.params?.threadId);
+    await assertThreadParticipant(auth.uid, threadId);
+    const calls = await listCallsForThread(threadId, request.query?.limit);
+    return reply.send({ success: true, calls });
+  } catch (error) {
+    return reply.code(error.statusCode || 500).send({ success: false, error: error.message });
+  }
 });
 
 app.post('/v1/feed', async (request, reply) => {

@@ -2,7 +2,7 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 
 import { apiUrl } from './api-base';
 import { coreCloudClient } from './core-cloud-client';
-import type { MarketPost, MarketSound } from '@/types';
+import type { MarketPost } from '@/types';
 
 import { auth } from '@/lib/firebase/config';
 import { inferFileExtension } from '@/lib/utils/market-media';
@@ -23,18 +23,6 @@ async function captureVideoThumbnail(videoUri: string): Promise<string | null> {
   }
 }
 
-/** @deprecated Sound library removed — videos use their own audio only. */
-export interface CreateMarketPostSoundSelection {
-  mode?: 'original' | 'existing' | 'uploaded' | 'none';
-  existingSound?: MarketSound | null;
-  uploadedAudioUri?: string | null;
-  soundTitle?: string;
-  startMs?: number;
-  soundVolume?: number;
-  originalAudioVolume?: number;
-  useOriginalVideoAudio?: boolean;
-}
-
 export interface CreateMarketPostData {
   mediaType?: MarketPost['mediaType'];
   images?: string[];
@@ -51,8 +39,6 @@ export interface CreateMarketPostData {
     city?: string;
   };
   contactMethod?: 'in-app' | 'whatsapp';
-  /** Ignored — kept for call-site compatibility. */
-  soundSelection?: CreateMarketPostSoundSelection;
 }
 
 function requireAuthenticatedUser() {
@@ -222,16 +208,6 @@ export const marketPostsApi = {
     if (!id) return [];
     const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
       apiUrl(`/posts?posterId=${encodeURIComponent(id)}&limit=${Math.min(60, Math.max(1, limit))}`),
-      { method: 'GET', requiresAuth: postReadRequiresAuth() }
-    );
-    return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];
-  },
-
-  async listBySound(soundId: string, limit = 40): Promise<MarketPost[]> {
-    const id = String(soundId || '').trim();
-    if (!id) return [];
-    const response = await coreCloudClient.request<{ success: boolean; posts: MarketPost[] }>(
-      apiUrl(`/posts?soundId=${encodeURIComponent(id)}&limit=${Math.min(60, Math.max(1, limit))}`),
       { method: 'GET', requiresAuth: postReadRequiresAuth() }
     );
     return Array.isArray(response.posts) ? response.posts.map(normalizeApiPost) : [];

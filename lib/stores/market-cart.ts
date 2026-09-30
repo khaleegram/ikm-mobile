@@ -1,3 +1,7 @@
+/**
+ * Market cart — one Paystack charge, then the server splits into one escrow
+ * order per seller (`commitMarketCheckoutOrders`). Do not pay per seller slice.
+ */
 import { create } from 'zustand';
 
 import { appStorage } from '@/lib/storage/mmkv';
@@ -34,8 +38,6 @@ type MarketCartState = {
   totalItems: () => number;
   totalAmount: () => number;
   sellerGroups: () => MarketCartSellerGroup[];
-  /** Pending-escrow / payment session key for one seller slice of this cart. */
-  sellerSessionId: (sellerId: string) => string;
 };
 
 function newSessionId(): string {
@@ -170,8 +172,4 @@ export const useMarketCartStore = create<MarketCartState>((set, get) => ({
   totalAmount: () =>
     get().lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
   sellerGroups: () => groupCartBySeller(get().lines),
-  sellerSessionId: (sellerId) => {
-    const sid = String(sellerId || '').trim() || 'seller';
-    return `${get().cartSessionId}__${sid}`;
-  },
 }));

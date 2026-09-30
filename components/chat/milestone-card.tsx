@@ -7,24 +7,29 @@ import { formatRelativeTime } from '@/lib/utils/date-format';
 
 /**
  * Compact WhatsApp-style system lines — not heavy "cards".
+ *
+ * One event, one sentence. These lines are read by both sides, so they stay neutral and
+ * passive ("Seller sent your item") rather than phrased as a to-do for one role — that is the
+ * ribbon's job. "Send" is used throughout instead of "ship": the marketplace supports pickup
+ * and waybill, and "shipped" is wrong for a handover.
  */
 const EVENT_COPY: Record<string, string> = {
-  order_paid: 'Payment received in escrow',
-  seller_accepted: 'Seller accepted the order',
+  order_paid: 'Money held safely',
+  seller_accepted: 'Seller accepted your order',
   seller_preparing: 'Seller is preparing your order',
-  order_shipped: 'Order marked as shipped',
-  order_delivered: 'Delivered',
+  order_shipped: 'Seller sent your item',
+  order_delivered: 'Buyer confirmed they got it',
   buyer_confirmed: 'Order completed',
   order_cancelled: 'Order cancelled',
-  refund_requested: 'Refund processing',
-  dispute_opened: 'Dispute opened',
+  refund_requested: 'Refund on the way',
+  dispute_opened: 'Dispute open — money held',
   dispute_resolved: 'Dispute resolved',
-  escrow_released: 'Escrow released to seller',
-  refund_processed: 'Refund processed',
+  escrow_released: 'Money released to seller',
+  refund_processed: 'Refunded',
   seller_needs_time: 'Seller needs more time',
-  item_unavailable: 'Seller marked item unavailable',
+  item_unavailable: "Seller can't supply this item",
   buyer_accepted_wait: 'Buyer agreed to wait',
-  shipment_reminder: 'Reminder: still awaiting shipment',
+  shipment_reminder: 'Reminder: not sent yet',
 };
 
 type MilestoneCardProps = {
@@ -74,17 +79,17 @@ const styles = StyleSheet.create({
   wrap: {
     alignItems: 'center',
     paddingHorizontal: 28,
-    paddingVertical: 8,
-    gap: 6,
+    paddingVertical: 6,
+    gap: 4,
   },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
     maxWidth: '100%',
     gap: 4,
   },
@@ -105,9 +110,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   photo: {
-    width: '72%',
-    maxWidth: 240,
-    height: 140,
-    borderRadius: 12,
+    width: '68%',
+    maxWidth: 220,
+    height: 120,
+    borderRadius: 10,
   },
 });

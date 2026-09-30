@@ -2,6 +2,16 @@ import { MarketMessage } from '@/types';
 
 export const lightBrown = '#A67C52';
 
+/**
+ * Text and icons that sit on a `lightBrown` / success-green fill.
+ *
+ * White on this gold measures 3.73:1 and white on the success green only 2.54:1 — both fail the
+ * 4.5:1 needed for readable text. Dark text on the same fills measures 4.79:1 and 7.05:1. This
+ * applies in both themes because the chat's gold is a fixed brand colour, not a theme token.
+ * Dark fills (the destructive red at 6.47:1 with white) keep white.
+ */
+export const onLightFill = '#111827';
+
 export function isDirectConversationId(chatId: string | null): boolean {
   return Boolean(chatId && chatId.startsWith('direct_'));
 }

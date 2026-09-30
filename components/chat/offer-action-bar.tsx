@@ -60,8 +60,10 @@ export function OfferActionBar({
           style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
           onPress={onBuy}
           scaleValue={0.97}>
-          <IconSymbol name="bag.fill" size={16} color="#fff" />
-          <Text style={styles.primaryText}>Complete purchase</Text>
+          <IconSymbol name="bag.fill" size={16} color={colors.primaryForeground} />
+          <Text style={[styles.primaryText, { color: colors.primaryForeground }]}>
+            Complete purchase
+          </Text>
         </AnimatedPressable>
       </View>
     );
@@ -119,9 +121,9 @@ export function OfferActionBar({
             }
             scaleValue={0.95}>
             {busy ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <ActivityIndicator color={colors.primaryForeground} size="small" />
             ) : (
-              <Text style={styles.chipText}>Send</Text>
+              <Text style={[styles.chipText, { color: colors.primaryForeground }]}>Send</Text>
             )}
           </AnimatedPressable>
         </View>
@@ -134,7 +136,7 @@ export function OfferActionBar({
             disabled={busy}
             onPress={() => run(onAccept)}
             scaleValue={0.95}>
-            <Text style={styles.chipText}>Accept</Text>
+            <Text style={[styles.chipText, { color: colors.primaryForeground }]}>Accept</Text>
           </AnimatedPressable>
           <AnimatedPressable
             style={[styles.chip, { backgroundColor: colors.background, borderColor: colors.border, borderWidth: 1 }]}
@@ -200,7 +202,6 @@ const styles = {
     alignItems: 'center' as const,
   },
   chipText: {
-    color: '#fff',
     fontWeight: '600' as const,
     fontSize: 13,
   },
@@ -217,7 +218,6 @@ const styles = {
     borderRadius: 10,
   },
   primaryText: {
-    color: '#fff',
     fontWeight: '700' as const,
     fontSize: 14,
   },

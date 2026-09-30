@@ -125,7 +125,7 @@ export default function PaymentSheetModal({
   const [createdOrderId, setCreatedOrderId] = useState('');
   const [createdOrderIds, setCreatedOrderIds] = useState<string[]>([]);
   const [createdDealThreadId, setCreatedDealThreadId] = useState<string | null>(null);
-  const [verifyingText, setVerifyingText] = useState('Verifying escrow transaction...');
+  const [verifyingText, setVerifyingText] = useState('Verifying your payment...');
   const [paystackRetryKey, setPaystackRetryKey] = useState(0);
 
   const safeUnitPrice = Math.max(0, Number(unitPrice) || 0);
@@ -191,7 +191,7 @@ export default function PaymentSheetModal({
     const paidInspectRetry = options?.paidInspectRetry === true;
     const normalizedRef = String(verifyRef || '').trim();
 
-    setVerifyingText('Confirming secure escrow transaction...');
+    setVerifyingText('Confirming your payment...');
 
     try {
       if (!normalizedRef) {
@@ -330,7 +330,7 @@ export default function PaymentSheetModal({
               haptics.light();
               Alert.alert(
                 'Payment not completed',
-                'Paystack confirms this checkout was not charged. Tap Pay to Escrow to start a new payment.'
+                'Paystack confirms this checkout was not charged. Tap Pay securely to start a new payment.'
               );
             }
             return;
@@ -705,7 +705,7 @@ export default function PaymentSheetModal({
           );
           return;
         }
-        Alert.alert('No payment to complete', 'Start a new payment with Pay to Escrow.');
+        Alert.alert('No payment to complete', 'Start a new payment to finish this order.');
         setPaymentState('REVIEW');
       })();
       return;
@@ -731,8 +731,8 @@ export default function PaymentSheetModal({
         return (
           <View style={styles.stateWrapper}>
             <View style={styles.sheetHeader}>
-              <Text style={[styles.sheetTitle, { color: colors.text }]}>Secure Order Escrow</Text>
-              <Text style={[styles.sheetSub, { color: colors.textSecondary }]}>Funds are protected in safe escrow</Text>
+              <Text style={[styles.sheetTitle, { color: colors.text }]}>Secure payment</Text>
+              <Text style={[styles.sheetSub, { color: colors.textSecondary }]}>Your money is protected</Text>
             </View>
 
             <View style={[styles.detailCard, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
@@ -766,7 +766,7 @@ export default function PaymentSheetModal({
                 </>
               )}
               <View style={styles.row}>
-                <Text style={[styles.label, { color: colors.textSecondary }]}>Escrow Protection</Text>
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Buyer protection</Text>
                 <Text style={[styles.value, { color: '#10B981', fontWeight: '800' }]}>Active</Text>
               </View>
               <View style={styles.divider} />
@@ -779,12 +779,12 @@ export default function PaymentSheetModal({
             <View style={styles.infoBox}>
               <IconSymbol name="lock.fill" size={15} color={ACCENT} />
               <Text style={[styles.infoText, { color: colors.textSecondary }]}>
-                Your funds will remain securely in escrow. The seller will only be paid once you confirm that you have received the item.
+                We hold your money safely. The seller is only paid once you confirm you got the item.
               </Text>
             </View>
 
             <TouchableOpacity style={[styles.primaryButton, { backgroundColor: ACCENT }]} onPress={handleStartPayment}>
-              <Text style={styles.buttonText}>Pay to Escrow</Text>
+              <Text style={styles.buttonText}>Pay securely</Text>
             </TouchableOpacity>
           </View>
         );
@@ -849,7 +849,7 @@ export default function PaymentSheetModal({
               </View>
               <Text style={[styles.successTitle, { color: colors.text }]}>Payment Deposited</Text>
               <Text style={[styles.successSubtitle, { color: colors.textSecondary }]}>
-                Escrow order successfully processed!
+                Order placed — money held safely.
               </Text>
             </View>
 
@@ -864,7 +864,7 @@ export default function PaymentSheetModal({
               </View>
               <View style={styles.receiptRow}>
                 <Text style={[styles.receiptLabel, { color: colors.textSecondary }]}>Status</Text>
-                <Text style={[styles.receiptVal, { color: '#10B981', fontWeight: '800' }]}>Escrow Held</Text>
+                <Text style={[styles.receiptVal, { color: '#10B981', fontWeight: '800' }]}>Money held</Text>
               </View>
             </View>
 

@@ -25,7 +25,7 @@ if (fs.existsSync(rootEnv)) {
 }
 
 const API =
-  (process.env.PROD_API_BASE || 'https://chatcart-api-q3rjv54uka-uc.a.run.app').replace(/\/$/, '');
+  (process.env.PROD_API_BASE || 'https://chatcart-production.up.railway.app').replace(/\/$/, '');
 const INTERNAL_SECRET = process.env.CHAT_INTERNAL_SECRET || '';
 const FIREBASE_API_KEY =
   process.env.FIREBASE_WEB_API_KEY ||

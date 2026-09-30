@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { View, Text, StyleSheet, Linking, Platform } from 'react-native';
+import { View, Text, StyleSheet, Linking } from 'react-native';
 import { useTheme } from '@/lib/theme/theme-context';
 import { MarketMessage } from '@/types';
 import { SafeImage } from '@/components/safe-image';
@@ -8,6 +8,7 @@ import { formatRelativeTime } from '@/lib/utils/date-format';
 import { AnimatedPressable } from '@/components/animated-pressable';
 import { parseMarketOfferLink } from '@/lib/utils/market-offer-link';
 import { VoiceMessageBubble } from '@/components/chat/voice-message-bubble';
+import { PhotoAlbumGrid } from '@/components/chat/deal-room/photo-album-grid';
 import { MilestoneCard } from '@/components/chat/milestone-card';
 import { productTitleOrFallback } from '@/lib/chat/enrich-inbox-snapshots';
 
@@ -22,20 +23,32 @@ interface MessageBubbleProps {
     chatId?: string;
   }) => void;
   onRetryVoice?: (messageId: string) => void;
+  /** Photos sent together in one go — rendered as a single grid instead of stacked bubbles. */
+  albumPhotos?: string[];
   /** Retry a failed text/quote send (voice retries go through onRetryVoice). */
   onRetryMessage?: (message: MarketMessage) => void;
+  /** Open the product a quote message points at. */
+  onOpenPost?: (postId: string) => void;
 }
 
 export const MessageBubble = memo(function MessageBubble({
   message,
   currentUserId,
-  peerAvatarUri,
   onOpenOffer,
   onRetryVoice,
   onRetryMessage,
+  onOpenPost,
+  albumPhotos,
 }: MessageBubbleProps) {
   const { colors } = useTheme();
   const isSent = Boolean(currentUserId && currentUserId === message.senderId);
+  // The sent bubble is filled with the gold `primary`, so everything inside it uses the paired
+  // foreground instead of white — white on this gold measures 2.90:1 in dark mode. Both themes
+  // expose a 6-digit hex here, so alpha suffixes stay valid.
+  const onSent = colors.primaryForeground;
+  const onSentMuted = colors.primaryForegroundMuted;
+  const onSentSurface = `${colors.primaryForeground}1F`;
+  const onSentBorder = `${colors.primaryForeground}4D`;
   const messageId = String(message.id || '').trim();
   const clientMessageId = String(message.clientMessageId || '').trim();
   const sendStatus = message.sendStatus;
@@ -86,15 +99,6 @@ export const MessageBubble = memo(function MessageBubble({
       (isPending && sendStatus !== 'failed');
     return (
       <View style={[styles.container, isSent ? styles.sentContainer : styles.receivedContainer]}>
-        {!isSent ? (
-          <View style={[styles.avatarWrap, { backgroundColor: colors.backgroundSecondary }]}>
-            {peerAvatarUri ? (
-              <SafeImage uri={peerAvatarUri} style={styles.avatarImage} />
-            ) : (
-              <IconSymbol name="person.circle.fill" size={22} color={colors.textSecondary} />
-            )}
-          </View>
-        ) : null}
         <VoiceMessageBubble
           uri={message.voiceUrl}
           durationSec={message.voiceDurationSec}
@@ -113,82 +117,89 @@ export const MessageBubble = memo(function MessageBubble({
     );
   }
 
+  const quote = message.quoteCard;
+  const quotePostId = String(quote?.postId || '').trim();
+  const quoteTitle = quote ? productTitleOrFallback(quote.previewText) : '';
+  const canOpenQuote = Boolean(quotePostId && onOpenPost);
+
   return (
     <View style={[styles.container, isSent ? styles.sentContainer : styles.receivedContainer]}>
-      {!isSent ? (
-        <View style={[styles.avatarWrap, { backgroundColor: colors.backgroundSecondary }]}>
-          {peerAvatarUri ? (
-            <SafeImage uri={peerAvatarUri} style={styles.avatarImage} />
-          ) : (
-            <IconSymbol name="person.circle.fill" size={22} color={colors.textSecondary} />
-          )}
-        </View>
-      ) : null}
-
       <View
         style={[
           styles.bubble,
+          isSent ? styles.bubbleSent : styles.bubbleReceived,
           {
             backgroundColor: isSent ? colors.primary : colors.backgroundSecondary,
             alignSelf: isSent ? 'flex-end' : 'flex-start',
           },
+          // Photos sit flush against the bubble edge the way WhatsApp renders them; text keeps
+          // its own padding so it never touches the edge.
+          message.imageUrl && !messageText ? styles.bubbleMedia : null,
         ]}>
-        {/* Image Message */}
-        {message.imageUrl ? (
+        {/* Image Message — an album from one send renders as one grid; a lone photo stays
+            a single tile. */}
+        {albumPhotos && albumPhotos.length > 1 ? (
+          <PhotoAlbumGrid photos={albumPhotos} />
+        ) : message.imageUrl ? (
           <SafeImage uri={message.imageUrl} style={styles.messageImage} />
         ) : null}
 
-        {/* Text Message */}
+        {/* Text Message — the timestamp rides inline at the end of the last line, the way
+            WhatsApp does it. A separate footer row cost ~17dp on every single message. */}
         {messageText ? (
           <Text
             style={[
               styles.messageText,
-              { color: isSent ? '#FFFFFF' : colors.text },
+              { color: isSent ? onSent : colors.text },
+              isSent ? styles.messageTextSent : null,
             ]}>
             {messageText}
+            <Text style={[styles.inlineTime, { color: isSent ? onSentMuted : colors.textSecondary }]}>
+              {`  ${formatRelativeTime(message.createdAt)}`}
+            </Text>
           </Text>
         ) : null}
 
-        {/* Quote Card */}
-        {message.quoteCard && (
-          <View
-            style={[
-              styles.quoteCard,
-              {
-                borderColor: isSent ? 'rgba(255,255,255,0.35)' : colors.border,
-                backgroundColor: isSent ? 'rgba(255,255,255,0.12)' : colors.background,
-              },
-            ]}>
-            <View style={styles.quoteHeader}>
-              <IconSymbol name="tag.fill" size={12} color={isSent ? '#FFFFFF' : colors.textSecondary} />
-              <Text
-                style={[
-                  styles.quoteHeaderText,
-                  { color: isSent ? '#FFFFFF' : colors.textSecondary },
-                ]}>
-                Product
-              </Text>
-            </View>
-            {message.quoteCard.previewImage ? (
-              <SafeImage uri={message.quoteCard.previewImage} style={styles.quotePreviewImage} />
-            ) : null}
-            {(() => {
-              const raw = String(message.quoteCard.previewText || '').trim();
-              if (!raw) return null;
-              const safe = productTitleOrFallback(raw);
-              return (
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    styles.quotePreviewText,
-                    { color: isSent ? '#FFFFFF' : colors.text },
-                  ]}>
-                  {safe}
-                </Text>
-              );
-            })()}
+        {/* Read ticks float in the corner the text reserved with paddingRight. */}
+        {isSent && !isFailed && messageText ? (
+          <View style={styles.inlineTicks} pointerEvents="none">
+            <IconSymbol
+              name={message.read ? 'checkmark.circle.fill' : 'checkmark.circle'}
+              size={11}
+              color={message.read ? onSent : onSentMuted}
+              style={{ opacity: isPending ? 0.45 : 1 }}
+            />
           </View>
-        )}
+        ) : null}
+
+        {/* Product tile — the item this deal is about. Image plus one caption line; the old
+            version nested a bordered box inside the bubble and printed "Product" twice. */}
+        {quote ? (
+          <AnimatedPressable
+            disabled={!canOpenQuote}
+            onPress={() => onOpenPost?.(quotePostId)}
+            scaleValue={0.98}
+            accessibilityRole={canOpenQuote ? 'button' : undefined}
+            accessibilityLabel={canOpenQuote ? `${quoteTitle}. Open product` : quoteTitle}>
+            {quote.previewImage ? (
+              <SafeImage uri={quote.previewImage} style={styles.quoteImage} />
+            ) : null}
+            <View style={styles.quoteMeta}>
+              <Text
+                numberOfLines={1}
+                style={[styles.quoteTitle, { color: isSent ? onSent : colors.text }]}>
+                {quoteTitle}
+              </Text>
+              {canOpenQuote ? (
+                <IconSymbol
+                  name="chevron.right"
+                  size={13}
+                  color={isSent ? onSentMuted : colors.textSecondary}
+                />
+              ) : null}
+            </View>
+          </AnimatedPressable>
+        ) : null}
 
         {/* Structured offer chip */}
         {message.chatOffer && message.type === 'offer' ? (
@@ -196,12 +207,16 @@ export const MessageBubble = memo(function MessageBubble({
             style={[
               styles.offerChip,
               {
-                backgroundColor: isSent ? 'rgba(255,255,255,0.15)' : colors.background,
-                borderColor: isSent ? 'rgba(255,255,255,0.3)' : colors.border,
+                backgroundColor: isSent ? onSentSurface : colors.background,
+                borderColor: isSent ? onSentBorder : colors.border,
               },
             ]}>
-            <IconSymbol name="dollarsign.circle.fill" size={14} color={isSent ? '#fff' : colors.primary} />
-            <Text style={[styles.offerChipText, { color: isSent ? '#fff' : colors.text }]}>
+            <IconSymbol
+              name="dollarsign.circle.fill"
+              size={14}
+              color={isSent ? onSent : colors.primary}
+            />
+            <Text style={[styles.offerChipText, { color: isSent ? onSent : colors.text }]}>
               {isSent ? 'Your offer' : 'Offer'}{' '}
               {message.chatOffer.currency} {message.chatOffer.amount.toLocaleString()}
               {message.chatOffer.status === 'pending'
@@ -218,51 +233,51 @@ export const MessageBubble = memo(function MessageBubble({
         {/* Payment Link */}
         {message.paymentLink && (
           <AnimatedPressable
-            style={[styles.paymentLink, { backgroundColor: isSent ? 'rgba(255,255,255,0.2)' : colors.backgroundSecondary }]}
+            style={[
+              styles.paymentLink,
+              { backgroundColor: isSent ? onSentSurface : colors.backgroundSecondary },
+            ]}
             onPress={handlePaymentLink}
             scaleValue={0.95}>
             <IconSymbol
               name={offerPayload ? 'bag.fill' : 'creditcard'}
               size={16}
-              color={isSent ? '#FFFFFF' : colors.text}
+              color={isSent ? onSent : colors.text}
             />
-            <Text style={[styles.paymentLinkText, { color: isSent ? '#FFFFFF' : colors.text }]}>
+            <Text style={[styles.paymentLinkText, { color: isSent ? onSent : colors.text }]}>
               {offerPayload ? (isSent ? 'Offer Sent' : 'Buy Offer') : 'Payment Link'}
             </Text>
-            <IconSymbol name="arrow.up.right" size={14} color={isSent ? '#FFFFFF' : colors.text} />
+            <IconSymbol name="arrow.up.right" size={14} color={isSent ? onSent : colors.text} />
           </AnimatedPressable>
         )}
 
-        {/* Timestamp and Read Status */}
-        <View style={styles.footer}>
-          <Text
-            style={[
-              styles.timestamp,
-              { color: isSent ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-            ]}>
-            {formatRelativeTime(message.createdAt)}
-          </Text>
-          {isSent && isFailed ? (
-            <AnimatedPressable
-              onPress={() => onRetryMessage?.(message)}
-              scaleValue={0.94}
-              disabled={!onRetryMessage}>
-              <Text style={[styles.pendingText, { color: '#FFD1D1', textDecorationLine: 'underline' }]}>
-                Failed · Tap to retry
-              </Text>
-            </AnimatedPressable>
-          ) : isSent && isPending ? (
-            <Text style={[styles.pendingText, { color: 'rgba(255,255,255,0.8)' }]}>Pending</Text>
-          ) : null}
-          {isSent && !isFailed && (
-            <IconSymbol
-              name={message.read ? 'checkmark.circle.fill' : 'checkmark.circle'}
-              size={14}
-              color={message.read ? '#4CAF50' : 'rgba(255,255,255,0.7)'}
-              style={{ opacity: isPending ? 0.45 : 1 }}
-            />
-          )}
-        </View>
+        {/* Timestamp row survives only where it cannot ride inline: photo-only messages and a
+            failed send that needs its retry affordance. */}
+        {!messageText || isFailed ? (
+          <View style={styles.footer}>
+            <Text
+              style={[
+                styles.timestamp,
+                { color: isSent ? onSentMuted : colors.textSecondary },
+              ]}>
+              {formatRelativeTime(message.createdAt)}
+            </Text>
+            {isSent && isFailed ? (
+              <AnimatedPressable
+                onPress={() => onRetryMessage?.(message)}
+                scaleValue={0.94}
+                disabled={!onRetryMessage}>
+                <Text
+                  style={[
+                    styles.pendingText,
+                    { color: isSent ? onSent : '#B91C1C', textDecorationLine: 'underline' },
+                  ]}>
+                  Failed · Tap to retry
+                </Text>
+              </AnimatedPressable>
+            ) : null}
+          </View>
+        ) : null}
       </View>
 
     </View>
@@ -271,11 +286,11 @@ export const MessageBubble = memo(function MessageBubble({
 
 const styles = StyleSheet.create({
   container: {
-    marginVertical: 4,
-    paddingHorizontal: 16,
+    // WhatsApp-density rows: tight enough that a screen holds a real conversation.
+    marginVertical: 1,
+    paddingHorizontal: 7,
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 8,
   },
   sentContainer: {
     justifyContent: 'flex-end',
@@ -283,43 +298,49 @@ const styles = StyleSheet.create({
   receivedContainer: {
     justifyContent: 'flex-start',
   },
-  avatarWrap: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  avatarImage: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-  },
   bubble: {
-    maxWidth: '80%',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 18,
-    gap: 6,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.08,
-        shadowRadius: 4,
-      },
-      android: { elevation: 1 },
-    }),
+    maxWidth: '78%',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    // WhatsApp uses a tight ~8px radius; the large radius was a big part of why these read as
+    // chunky panels rather than message bubbles.
+    borderRadius: 9,
+    gap: 3,
+    // No shadow or elevation: WhatsApp separates messages by fill colour alone. The card
+    // shadow was what made every message read as a floating panel.
+  },
+  /** Tail corner on the sender's side, as WhatsApp does. */
+  bubbleSent: {
+    borderBottomRightRadius: 3,
+  },
+  bubbleReceived: {
+    borderBottomLeftRadius: 3,
+  },
+  /** Image-only messages bleed to the bubble edge; radius stays inside the tail corner. */
+  bubbleMedia: {
+    padding: 3,
+    paddingBottom: 3,
   },
   messageText: {
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  /** Reserves the corner the floating read ticks sit in. Costs no height. */
+  messageTextSent: {
+    paddingRight: 14,
+  },
+  inlineTime: {
+    fontSize: 10,
+  },
+  inlineTicks: {
+    position: 'absolute',
+    right: 6,
+    bottom: 4,
   },
   messageImage: {
-    width: 200,
-    height: 200,
-    borderRadius: 12,
+    width: 190,
+    height: 190,
+    borderRadius: 7,
     marginBottom: 4,
   },
   offerChip: {
@@ -350,40 +371,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginTop: 4,
   },
   timestamp: {
-    fontSize: 11,
+    fontSize: 10,
   },
   pendingText: {
     fontSize: 11,
     fontWeight: '700',
   },
-  quoteCard: {
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 8,
-    gap: 4,
+  quoteImage: {
+    width: '100%',
+    height: 140,
+    borderRadius: 12,
   },
-  quoteHeader: {
+  quoteMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
+    marginTop: 8,
   },
-  quoteHeaderText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  quotePreviewText: {
-    fontSize: 12,
+  quoteTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13.5,
     fontWeight: '600',
-    lineHeight: 16,
-  },
-  quotePreviewImage: {
-    marginTop: 6,
-    width: '100%',
-    height: 110,
-    borderRadius: 8,
+    lineHeight: 18,
   },
   systemWrap: {
     alignItems: 'center',

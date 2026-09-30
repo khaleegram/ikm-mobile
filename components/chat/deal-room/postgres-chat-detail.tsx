@@ -8,7 +8,6 @@ import {
   Platform,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
   type FlatList,
 } from 'react-native';
@@ -22,11 +21,9 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { DealProductHero } from '@/components/chat/deal-product-hero';
-import { DealStatusStrip } from '@/components/chat/deal-status-strip';
+import { ProductDealBand } from '@/components/chat/deal-room/product-deal-band';
 import { OfferActionBar } from '@/components/chat/offer-action-bar';
 import { OfferInlinePanel } from '@/components/chat/offer-inline-panel';
-import { ProductRoomSwitcher } from '@/components/chat/product-room-switcher';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { showToast } from '@/components/toast';
 import { chatMessageToMarketMessage } from '@/lib/chat/map-messages';
@@ -60,11 +57,15 @@ import { isPendingThreadId, parsePendingThreadId } from '@/lib/chat/thread-id';
 import { mergeThreadMessages } from '@/lib/chat/thread-messages';
 import { useMarketChatStore } from '@/lib/stores/marketChatStore';
 import { MarketMessage, MarketPost } from '@/types';
-import { AnimatedPressable } from '@/components/animated-pressable';
 import { Alert } from '@/components/app-alert';
 
 import type { ChatInboxItem } from '@/types/chat';
 
+import { DealCheckoutSheet } from '@/components/chat/deal-room/deal-checkout-sheet';
+import { DealActionsSheet, type DealSheetAction } from '@/components/chat/deal-room/deal-actions-sheet';
+import { DealActionRibbon, type DealRibbonAction } from '@/components/chat/deal-room/deal-action-ribbon';
+import { DisputeCaseSheet } from '@/components/chat/deal-room/dispute-case-sheet';
+import { ReviewSheet } from '@/components/chat/deal-room/review-sheet';
 import { ChatComposer } from './chat-composer';
 import { ChatHeader } from './chat-header';
 import { ChatList } from './chat-list';
@@ -472,13 +473,20 @@ export function PostgresChatDetail({
   const isInOrder = ['in_order', 'order_active', 'completed', 'closed'].includes(threadStatus);
   const linkedOrderIdFromThread = String(thread?.linkedOrderId || '').trim();
   const showOrderProgress = Boolean(linkedOrderIdFromThread) || isInOrder;
-  const canNegotiateOffers = !isInOrder;
+  // Once a price is agreed (offer accepted) the number is locked — no more offer entry points.
+  const offersLocked = isInOrder || threadStatus === 'accepted';
+  const canNegotiateOffers = !offersLocked;
   // Block every offer entry point (header, hero, inline panel) until a pending thread has
   // resolved to a real server UUID — the API rejects offers on `pending:` ids.
   const canSendOffer = canNegotiateOffers && !isBlockedPeer && !roomConnecting;
   const { order: linkedOrder } = useDealOrder(linkedOrderIdFromThread || null, threadId || null);
   const invalidateOrder = useInvalidateOrder();
   const [shippingBusy, setShippingBusy] = useState(false);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [checkoutUnitPrice, setCheckoutUnitPrice] = useState(0);
+  const [disputeOpen, setDisputeOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [actionsSheetOpen, setActionsSheetOpen] = useState(false);
 
   // Prefer order party ids when thread roles are thin/stale — buyer tools must not disappear.
   const isBuyer = Boolean(
@@ -558,12 +566,20 @@ export function PostgresChatDetail({
       !['Received', 'Completed', 'Cancelled', 'Disputed'].includes(orderStatusRaw) &&
       !milestoneHints.received
   );
+  const escrowHeld =
+    String((linkedOrder as any)?.escrowStatus || 'held') !== 'released' &&
+    String((linkedOrder as any)?.escrowStatus || '') !== 'refunded';
   const canBuyerDispute = Boolean(
     buyerForOrderActions &&
       actionOrderId &&
-      (orderStatus === 'Sent' || milestoneHints.shipped) &&
+      escrowHeld &&
       !['Completed', 'Cancelled', 'Disputed'].includes(orderStatusRaw) &&
       !milestoneHints.received
+  );
+  const canLeaveReview = Boolean(
+    buyerForOrderActions &&
+      actionOrderId &&
+      (orderStatusRaw === 'Completed' || orderStatusRaw === 'Received' || milestoneHints.received)
   );
   // AvailabilityCheck buyers use the dedicated wait/cancel row; sellers can still cancel.
   const canCancelOrder = Boolean(
@@ -573,14 +589,6 @@ export function PostgresChatDetail({
         (isSeller && orderStatus === 'AvailabilityCheck'))
   );
   const canSellerAccept = Boolean(isSeller && actionOrderId && orderStatus === 'Paid');
-  const showOrderPhaseDock = Boolean(
-    canMarkShipped ||
-      canSellerUpdateAvailability ||
-      canBuyerRespondAvailability ||
-      canConfirmReceipt ||
-      canSellerAccept ||
-      canCancelOrder
-  );
   const [orderActionBusy, setOrderActionBusy] = useState(false);
 
   const presenceSubtitle = useMemo(() => {
@@ -655,13 +663,6 @@ export function PostgresChatDetail({
     [setChromeExpanded]
   );
 
-  const chromeAnimatedStyle = useAnimatedStyle(() => ({
-    // Keep a little room for the product card; never fully erase chrome to opacity 0
-    maxHeight: interpolate(chromeProgress.value, [0, 1], [56, 220]),
-    opacity: interpolate(chromeProgress.value, [0, 1], [0.92, 1]),
-    overflow: 'hidden' as const,
-  }));
-
   const hasSellerOfferAlready = useMemo(
     () =>
       messages.some(
@@ -703,7 +704,8 @@ export function PostgresChatDetail({
         threadId,
         postId,
         peerId,
-        sellerId
+        sellerId,
+        offersLocked
       );
       if (
         mapped.type === 'system' &&
@@ -715,24 +717,24 @@ export function PostgresChatDetail({
       }
       return mapped;
     });
-  }, [linkedOrder?.sentPhotoUrl, messages, thread, threadId, peerId]);
+  }, [linkedOrder?.sentPhotoUrl, messages, offersLocked, thread, threadId, peerId]);
 
   const handleMarkShipped = useCallback(() => {
     if (!actionOrderId || shippingBusy) return;
-    Alert.alert('Mark as Shipped', 'Attach a dispatch proof photo?', [
+    Alert.alert("I've sent it", 'Add a photo of the parcel? Buyers like seeing it.', [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Ship without proof',
+        text: 'Send without photo',
         onPress: () => {
           void (async () => {
             try {
               setShippingBusy(true);
               await orderApi.markAsSent(actionOrderId);
               haptics.success();
-              showToast('Order marked as shipped.', 'success');
+              showToast('Marked as sent — the buyer can see it now.', 'success');
               await invalidateOrder(actionOrderId);
             } catch (error: any) {
-              showToast(error?.message || 'Unable to mark as shipped.', 'error');
+              showToast(error?.message || 'Could not update the order.', 'error');
             } finally {
               setShippingBusy(false);
             }
@@ -740,7 +742,7 @@ export function PostgresChatDetail({
         },
       },
       {
-        text: 'Attach proof',
+        text: 'Add photo',
         onPress: () => {
           void (async () => {
             try {
@@ -765,10 +767,10 @@ export function PostgresChatDetail({
               );
               await orderApi.markAsSent(actionOrderId, uploaded.url);
               haptics.success();
-              showToast('Order marked as shipped.', 'success');
+              showToast('Marked as sent — the buyer can see it now.', 'success');
               await invalidateOrder(actionOrderId);
             } catch (error: any) {
-              showToast(error?.message || 'Unable to mark as shipped.', 'error');
+              showToast(error?.message || 'Could not update the order.', 'error');
             } finally {
               setShippingBusy(false);
             }
@@ -780,7 +782,7 @@ export function PostgresChatDetail({
 
   const handleSellerNeedsTime = useCallback(() => {
     if (!actionOrderId || orderActionBusy) return;
-    Alert.alert('Need more time?', 'Tell the buyer how long before you can ship.', [
+    Alert.alert('Need more time?', 'Tell the buyer how long before you can send it.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: '2 days',
@@ -791,7 +793,7 @@ export function PostgresChatDetail({
               await orderApi.markAsNotAvailable({
                 orderId: actionOrderId,
                 waitTimeDays: 2,
-                reason: 'Needs a bit more time to prepare/ship',
+                reason: 'Needs a bit more time to send',
               });
               haptics.success();
               showToast('Buyer notified — 2 days.', 'success');
@@ -813,7 +815,7 @@ export function PostgresChatDetail({
               await orderApi.markAsNotAvailable({
                 orderId: actionOrderId,
                 waitTimeDays: 4,
-                reason: 'Needs more time to prepare/ship',
+                reason: 'Needs more time to send',
               });
               haptics.success();
               showToast('Buyer notified — 4 days.', 'success');
@@ -832,12 +834,12 @@ export function PostgresChatDetail({
   const handleSellerUnavailable = useCallback(() => {
     if (!actionOrderId || orderActionBusy) return;
     Alert.alert(
-      'Item not available?',
-      'Buyer can cancel for a refund or chat with you to resolve. This posts into the deal room.',
+      "You can't supply this?",
+      'The buyer can cancel for a refund or chat with you to sort it out. This posts into the deal room.',
       [
         { text: 'Keep order', style: 'cancel' },
         {
-          text: 'Mark unavailable',
+          text: "Can't supply it",
           style: 'destructive',
           onPress: () => {
             void (async () => {
@@ -845,7 +847,7 @@ export function PostgresChatDetail({
                 setOrderActionBusy(true);
                 await orderApi.markAsNotAvailable({
                   orderId: actionOrderId,
-                  reason: 'Item no longer available',
+                  reason: "Seller can't supply this item",
                 });
                 haptics.success();
                 showToast('Buyer notified in chat.', 'success');
@@ -874,7 +876,7 @@ export function PostgresChatDetail({
           showToast(
             response === 'wait'
               ? 'Got it — waiting on seller.'
-              : 'Order cancelled. Refund to your payment method is processing.',
+              : 'Cancelled — refund on the way.',
             'success'
           );
         } catch (error: any) {
@@ -889,20 +891,21 @@ export function PostgresChatDetail({
 
   const handleConfirmReceipt = useCallback(() => {
     if (!actionOrderId || orderActionBusy) return;
-    Alert.alert('Confirm receipt?', 'Only confirm if you have received the item.', [
+    Alert.alert('Did you get it?', 'Only confirm once the item is in your hands — this releases the money.', [
       { text: 'Not yet', style: 'cancel' },
       {
-        text: 'Confirm received',
+        text: 'Yes, I got it',
         onPress: () => {
           void (async () => {
             try {
               setOrderActionBusy(true);
               await orderApi.markAsReceived(actionOrderId);
               haptics.success();
-              showToast('Order confirmed. Thank you!', 'success');
+              showToast('Received — thanks!', 'success');
               await invalidateOrder(actionOrderId);
+              setReviewOpen(true);
             } catch (error: any) {
-              showToast(error?.message || 'Unable to confirm receipt.', 'error');
+              showToast(error?.message || 'Could not confirm.', 'error');
             } finally {
               setOrderActionBusy(false);
             }
@@ -914,35 +917,15 @@ export function PostgresChatDetail({
 
   const handleOpenDispute = useCallback(() => {
     if (!actionOrderId || orderActionBusy) return;
-    Alert.alert('Open dispute?', 'Use this if the item has issues or was not received.', [
-      { text: 'Back', style: 'cancel' },
-      {
-        text: 'Open dispute',
-        style: 'destructive',
-        onPress: () => {
-          void (async () => {
-            try {
-              setOrderActionBusy(true);
-              await orderApi.updateStatus(actionOrderId, 'Disputed');
-              haptics.success();
-              showToast('Dispute opened.', 'success');
-              await invalidateOrder(actionOrderId);
-            } catch (error: any) {
-              showToast(error?.message || 'Unable to open dispute.', 'error');
-            } finally {
-              setOrderActionBusy(false);
-            }
-          })();
-        },
-      },
-    ]);
-  }, [actionOrderId, orderActionBusy, invalidateOrder]);
+    haptics.light();
+    setDisputeOpen(true);
+  }, [actionOrderId, orderActionBusy]);
 
   const handleCancelOrder = useCallback(() => {
     if (!actionOrderId || orderActionBusy) return;
     Alert.alert(
-      'Cancel order?',
-      'A refund will be sent to the original payment method when eligible.',
+      'Cancel this order?',
+      'A refund goes back to the original payment method.',
       [
         { text: 'Keep', style: 'cancel' },
         {
@@ -961,10 +944,10 @@ export function PostgresChatDetail({
                   await orderApi.updateStatus(actionOrderId, 'Cancelled');
                 }
                 haptics.success();
-                showToast('Order cancelled. Refund is processing.', 'success');
+                showToast('Cancelled — refund on the way.', 'success');
                 await invalidateOrder(actionOrderId);
               } catch (error: any) {
-                showToast(error?.message || 'Unable to cancel order.', 'error');
+                showToast(error?.message || 'Could not cancel.', 'error');
               } finally {
                 setOrderActionBusy(false);
               }
@@ -982,10 +965,10 @@ export function PostgresChatDetail({
         setOrderActionBusy(true);
         await orderApi.updateStatus(actionOrderId, 'Accepted');
         haptics.success();
-        showToast('Order accepted.', 'success');
+        showToast('Accepted — buyer can now pay.', 'success');
         await invalidateOrder(actionOrderId);
       } catch (error: any) {
-        showToast(error?.message || 'Unable to accept order.', 'error');
+        showToast(error?.message || 'Could not accept.', 'error');
       } finally {
         setOrderActionBusy(false);
       }
@@ -996,12 +979,18 @@ export function PostgresChatDetail({
     (offer: { postId: string; sellerId: string; price: number; chatId?: string }) => {
       const price = Number(offer.price);
       if (!(price > 0) || !offer.postId) return;
-      router.push(
-        `/(market)/buy/${encodeURIComponent(offer.postId)}?offerPrice=${encodeURIComponent(String(price))}&chatId=${encodeURIComponent(offer.chatId || threadId || '')}&sellerId=${encodeURIComponent(offer.sellerId)}` as any
-      );
+      setCheckoutUnitPrice(price);
+      setCheckoutOpen(true);
     },
-    [threadId]
+    []
   );
+
+  const handleOpenPost = useCallback((postId: string) => {
+    const id = String(postId || '').trim();
+    if (!id) return;
+    haptics.light();
+    router.push(`/(market)/post/${id}` as any);
+  }, []);
 
   const handleSend = async () => {
     if (isBlockedPeer) {
@@ -1097,6 +1086,219 @@ export function PostgresChatDetail({
     [threadId, sendText]
   );
 
+  // ---- One ribbon, one primary, everything else behind the sheet ----
+
+  /** Dismiss the sheet first, then open whichever modal the row launches. */
+  const runSheetAction = useCallback((fn: () => void) => {
+    setActionsSheetOpen(false);
+    // Let the sheet finish closing before another modal slides in.
+    setTimeout(fn, 260);
+  }, []);
+
+  /** Buyer accepted an offer but hasn't paid yet — the room's only job is checkout. */
+  const canCompletePurchase = Boolean(
+    !isInOrder && !pendingOfferMessage && acceptedOfferMessage?.offer && isBuyer
+  );
+
+  /** While a price is on the table the offer card owns the phase — the ribbon steps aside. */
+  const showPendingOfferCard = Boolean(pendingOfferMessage?.offer && !isInOrder);
+
+  const dealPrimaryAction = useMemo<DealRibbonAction | null>(() => {
+    if (canSellerAccept) {
+      return { label: 'Accept order', onPress: handleSellerAcceptOrder, busy: orderActionBusy };
+    }
+    if (canConfirmReceipt) {
+      return {
+        label: 'I got it',
+        icon: 'checkmark.circle.fill',
+        tone: 'success',
+        onPress: handleConfirmReceipt,
+        busy: orderActionBusy,
+      };
+    }
+    if (canMarkShipped) {
+      return {
+        label: "I've sent it",
+        icon: 'shippingbox.fill',
+        onPress: handleMarkShipped,
+        busy: shippingBusy || orderActionBusy,
+      };
+    }
+    if (canBuyerRespondAvailability) {
+      return {
+        label: 'I can wait',
+        onPress: () => handleBuyerAvailabilityResponse('wait'),
+        busy: orderActionBusy,
+      };
+    }
+    if (canCompletePurchase) {
+      return {
+        label: 'Complete purchase',
+        icon: 'bag.fill',
+        onPress: () => {
+          const offer = acceptedOfferMessage?.offer;
+          if (!offer || !thread) return;
+          handleOpenOffer({
+            postId: thread.postId,
+            sellerId: thread.sellerId,
+            price: offer.amount,
+            chatId: threadId || undefined,
+          });
+        },
+      };
+    }
+    if (canLeaveReview) {
+      return {
+        label: 'Rate seller',
+        icon: 'star.fill',
+        onPress: () => setReviewOpen(true),
+      };
+    }
+    return null;
+  }, [
+    acceptedOfferMessage,
+    canBuyerRespondAvailability,
+    canCompletePurchase,
+    canConfirmReceipt,
+    canLeaveReview,
+    canMarkShipped,
+    canSellerAccept,
+    handleBuyerAvailabilityResponse,
+    handleConfirmReceipt,
+    handleMarkShipped,
+    handleOpenOffer,
+    handleSellerAcceptOrder,
+    orderActionBusy,
+    shippingBusy,
+    thread,
+    threadId,
+  ]);
+
+  const dealSecondaryActions = useMemo<DealSheetAction[]>(() => {
+    const out: DealSheetAction[] = [];
+
+    if (canBuyerDispute) {
+      out.push({
+        id: 'dispute',
+        label: 'Open a dispute',
+        hint: 'Money stays held until support decides.',
+        icon: 'exclamationmark.bubble.fill',
+        tone: 'danger',
+        onPress: () => runSheetAction(handleOpenDispute),
+      });
+    }
+    if (canLeaveReview && dealPrimaryAction?.label !== 'Rate seller') {
+      out.push({
+        id: 'review',
+        label: 'Rate seller',
+        icon: 'star.fill',
+        onPress: () => runSheetAction(() => setReviewOpen(true)),
+      });
+    }
+    if (canSellerUpdateAvailability) {
+      out.push({
+        id: 'need-time',
+        label: 'I need more time',
+        hint: 'Buyer can wait or cancel for a refund.',
+        icon: 'clock.fill',
+        onPress: handleSellerNeedsTime,
+      });
+      out.push({
+        id: 'unavailable',
+        label: "I can't supply this",
+        hint: 'The buyer gets a refund.',
+        icon: 'xmark',
+        tone: 'danger',
+        onPress: handleSellerUnavailable,
+      });
+    }
+    if (canBuyerRespondAvailability) {
+      out.push({
+        id: 'cancel-refund',
+        label: 'Cancel & refund',
+        icon: 'xmark',
+        tone: 'danger',
+        onPress: () => handleBuyerAvailabilityResponse('cancel'),
+      });
+    } else if (canCancelOrder) {
+      out.push({
+        id: 'cancel',
+        label: 'Cancel order',
+        hint: 'Refunds the payment to the buyer.',
+        icon: 'xmark',
+        tone: 'danger',
+        onPress: handleCancelOrder,
+      });
+    }
+    if (linkedOrderId) {
+      out.push({
+        id: 'order-details',
+        label: 'View order details',
+        icon: 'doc.text.fill',
+        onPress: () =>
+          runSheetAction(() =>
+            router.push(`/(market)/orders/${encodeURIComponent(linkedOrderId)}` as any)
+          ),
+      });
+    }
+
+    return out;
+  }, [
+    canBuyerDispute,
+    canBuyerRespondAvailability,
+    canCancelOrder,
+    canLeaveReview,
+    canSellerUpdateAvailability,
+    dealPrimaryAction?.label,
+    handleBuyerAvailabilityResponse,
+    handleCancelOrder,
+    handleOpenDispute,
+    handleSellerNeedsTime,
+    handleSellerUnavailable,
+    linkedOrderId,
+    runSheetAction,
+  ]);
+
+  /** One sentence of context so the sheet's rows need no explaining. */
+  const dealActionsNote = useMemo(() => {
+    if (canBuyerDispute) {
+      return 'Money is held safely. Open a dispute if something is wrong — it stays held until support decides.';
+    }
+    if (canBuyerRespondAvailability) {
+      return 'Seller needs more time. Wait, or cancel for a full refund.';
+    }
+    if (canSellerUpdateAvailability) {
+      return Number.isFinite(waitTimeDays) && waitTimeDays > 0
+        ? `You told the buyer ~${waitTimeDays} day(s) — send it as soon as it's ready, or update them below.`
+        : "Send it as soon as it's ready, or update the buyer below.";
+    }
+    if (canLeaveReview) {
+      return 'Item received. Rating the seller closes this deal.';
+    }
+    if (canCancelOrder) {
+      return 'Cancelling refunds the buyer to their original payment method.';
+    }
+    return undefined;
+  }, [
+    canBuyerDispute,
+    canBuyerRespondAvailability,
+    canCancelOrder,
+    canLeaveReview,
+    canSellerUpdateAvailability,
+    waitTimeDays,
+  ]);
+
+  // Reading older messages: keep just the primary-action line, and drop the status-only
+  // line entirely so the chat gets the full screen back.
+  const ribbonAnimatedStyle = useAnimatedStyle(() => {
+    const collapsedMax = dealPrimaryAction ? 48 : 0;
+    return {
+      maxHeight: interpolate(chromeProgress.value, [0, 1], [collapsedMax, 62]),
+      opacity: interpolate(chromeProgress.value, [0, 1], [dealPrimaryAction ? 1 : 0, 1]),
+      overflow: 'hidden' as const,
+    };
+  }, [dealPrimaryAction]);
+
   const handleRetryVoice = useCallback(
     (messageId: string) => {
       const recorded = voiceRetryRef.current.get(messageId);
@@ -1125,20 +1327,29 @@ export function PostgresChatDetail({
   const handlePickImage = async () => {
     if (isBlockedPeer || !user || !threadId || roomConnecting) return;
 
-    const sendPickedUri = async (uri: string) => {
+    const sendPickedUris = async (uris: string[]) => {
+      if (!uris.length) return;
       setSending(true);
       try {
-        const uploaded = await uploadImage(
-          uri,
-          buildUserMediaPath('chatImages', user.uid, `${Date.now()}_image.jpg`)
-        );
         const { chatApi } = await import('@/lib/api/chat');
-        const saved = await chatApi.sendMessage(threadId, {
-          type: 'image',
-          attachment: { url: uploaded.url, mimeType: 'image/jpeg' },
-          clientMsgId: buildClientMessageId(),
-        });
-        appendMessage(saved);
+        // Several photos become one album: still one attachment per message, but they share an
+        // albumId so the deal room renders them as a single grid instead of a stack of bubbles.
+        const albumId = uris.length > 1 ? buildClientMessageId() : undefined;
+        for (let i = 0; i < uris.length; i += 1) {
+          const uploaded = await uploadImage(
+            uris[i],
+            buildUserMediaPath('chatImages', user.uid, `${Date.now()}_${i}_image.jpg`)
+          );
+          const saved = await chatApi.sendMessage(threadId, {
+            type: 'image',
+            attachment: { url: uploaded.url, mimeType: 'image/jpeg' },
+            clientMsgId: buildClientMessageId(),
+            ...(albumId
+              ? { payload: { albumId, albumIndex: i, albumCount: uris.length } }
+              : {}),
+          });
+          appendMessage(saved);
+        }
         haptics.success();
       } catch (pickError: any) {
         showToast(pickError?.message || 'Failed to send image', 'error');
@@ -1162,7 +1373,7 @@ export function PostgresChatDetail({
             quality: 0.8,
           });
           if (result.canceled || !result.assets[0]) return;
-          await sendPickedUri(result.assets[0].uri);
+          await sendPickedUris([result.assets[0].uri]);
         },
       },
       {
@@ -1173,13 +1384,16 @@ export function PostgresChatDetail({
             Alert.alert('Permission Required', 'We need access to your photos to send images.');
             return;
           }
+          // Multi-select so a whole set of photos goes out as one album grid. `allowsEditing`
+          // cannot be combined with multiple selection, so the library skips cropping.
           const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            allowsEditing: true,
+            allowsMultipleSelection: true,
+            selectionLimit: 10,
             quality: 0.8,
           });
-          if (result.canceled || !result.assets[0]) return;
-          await sendPickedUri(result.assets[0].uri);
+          if (result.canceled || !result.assets.length) return;
+          await sendPickedUris(result.assets.map((asset) => asset.uri));
         },
       },
       { text: 'Cancel', style: 'cancel' },
@@ -1217,27 +1431,19 @@ export function PostgresChatDetail({
           haptics.light();
           setOfferVisible(true);
         }}
+        threadId={threadId ?? undefined}
+        peerId={peerId}
+        callsDisabled={!peerId || isBlockedPeer || roomConnecting}
       />
 
-      <Animated.View
-        style={chromeAnimatedStyle}
-        pointerEvents={chromeCollapsed ? 'none' : 'box-none'}>
-        <ProductRoomSwitcher
-          currentThreadId={threadId}
-          peerId={peerId}
-          rooms={enrichedInboxRooms}
-        />
-
-        <DealProductHero
-          postId={thread?.postId}
-          snapshot={resolvedPostSnapshot}
-          peerName={headerStoreName || undefined}
-          threadStatus={thread?.status}
-          linkedOrderId={linkedOrderId || null}
-          canMakeOffer={canSendOffer}
-          onMakeOffer={() => setOfferVisible(true)}
-        />
-      </Animated.View>
+      <ProductDealBand
+        currentThreadId={threadId}
+        peerId={peerId}
+        rooms={enrichedInboxRooms}
+        snapshot={resolvedPostSnapshot}
+        postId={thread?.postId}
+        linkedOrderId={linkedOrderId || null}
+      />
 
       <View style={{ flex: 1, minHeight: 0 }}>
         {renderedMessages.length > 0 ? (
@@ -1251,6 +1457,7 @@ export function PostgresChatDetail({
             onOpenOffer={handleOpenOffer}
             onRetryVoice={handleRetryVoice}
             onRetryMessage={handleRetryMessage}
+            onOpenPost={handleOpenPost}
             peerAvatarUri={headerAvatarUri}
             onScrollOffsetChange={handleChatScroll}
             onLoadOlder={hasMore ? loadOlder : undefined}
@@ -1281,249 +1488,26 @@ export function PostgresChatDetail({
         )}
       </View>
 
-      {!keyboardOpen ? (
-        <DealStatusStrip
-          threadStatus={thread?.status}
-          orderStatus={linkedOrder?.status}
-          escrowStatus={(linkedOrder as any)?.escrowStatus}
-          refundStatus={(linkedOrder as any)?.refundStatus}
-          availabilityStatus={(linkedOrder as any)?.availabilityStatus}
-          waitTimeDays={(linkedOrder as any)?.waitTimeDays}
-          hasLinkedOrder={Boolean(linkedOrderId) || showOrderProgress}
-        />
+      {!showPendingOfferCard ? (
+        <Animated.View style={ribbonAnimatedStyle}>
+          <DealActionRibbon
+            viewer={isSeller ? 'seller' : 'buyer'}
+            threadStatus={thread?.status}
+            orderStatus={linkedOrder?.status}
+            escrowStatus={(linkedOrder as any)?.escrowStatus}
+            refundStatus={(linkedOrder as any)?.refundStatus}
+            availabilityStatus={(linkedOrder as any)?.availabilityStatus}
+            waitTimeDays={(linkedOrder as any)?.waitTimeDays}
+            hasLinkedOrder={Boolean(linkedOrderId) || showOrderProgress}
+            primary={dealPrimaryAction}
+            secondaryCount={keyboardOpen ? 0 : dealSecondaryActions.length}
+            onOpenActions={() => setActionsSheetOpen(true)}
+            compact={keyboardOpen || chromeCollapsed}
+          />
+        </Animated.View>
       ) : null}
 
-      {/* Buyer post-ship tools stay visible even with keyboard up — confirm/dispute can't vanish. */}
-      {canConfirmReceipt || canBuyerDispute ? (
-        <View style={{ marginHorizontal: 12, marginBottom: 4, marginTop: 2, gap: 8 }}>
-          <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>
-            Package marked shipped — confirm when it arrives, or raise a complaint.
-          </Text>
-          {canConfirmReceipt ? (
-            <AnimatedPressable
-              style={{
-                borderRadius: 12,
-                paddingVertical: 12,
-                paddingHorizontal: 12,
-                backgroundColor: '#10B981',
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                opacity: orderActionBusy ? 0.7 : 1,
-              }}
-              disabled={orderActionBusy}
-              onPress={handleConfirmReceipt}
-              scaleValue={0.97}>
-              <IconSymbol name="checkmark.circle.fill" size={16} color="#FFFFFF" />
-              <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 14 }}>
-                Confirm receipt
-              </Text>
-            </AnimatedPressable>
-          ) : null}
-          {canBuyerDispute ? (
-            <TouchableOpacity
-              style={{
-                borderRadius: 12,
-                paddingVertical: 10,
-                borderWidth: 1,
-                borderColor: `${colors.error}55`,
-                backgroundColor: colors.card,
-                alignItems: 'center',
-                opacity: orderActionBusy ? 0.7 : 1,
-              }}
-              disabled={orderActionBusy}
-              onPress={handleOpenDispute}>
-              <Text style={{ color: colors.error, fontWeight: '700', fontSize: 13 }}>
-                Raise complaint / dispute
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-          {linkedOrderId ? (
-            <TouchableOpacity
-              style={{ alignItems: 'center', paddingVertical: 2 }}
-              onPress={() => {
-                haptics.light();
-                router.push(`/(market)/orders/${encodeURIComponent(linkedOrderId)}` as any);
-              }}>
-              <Text style={{ color: lightBrown, fontWeight: '700', fontSize: 12 }}>
-                View order details
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      ) : null}
-
-      {!keyboardOpen && showOrderPhaseDock && !canConfirmReceipt ? (
-        <View style={{ marginHorizontal: 12, marginBottom: 4, marginTop: 2, gap: 8 }}>
-          {canSellerAccept ? (
-            <AnimatedPressable
-              style={{
-                borderRadius: 12,
-                paddingVertical: 10,
-                paddingHorizontal: 12,
-                backgroundColor: lightBrown,
-                alignItems: 'center',
-                opacity: orderActionBusy ? 0.7 : 1,
-              }}
-              disabled={orderActionBusy}
-              onPress={handleSellerAcceptOrder}
-              scaleValue={0.97}>
-              <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>Accept order</Text>
-            </AnimatedPressable>
-          ) : null}
-
-          {canMarkShipped && isAvailabilityWait ? (
-            <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>
-              {Number.isFinite(waitTimeDays) && waitTimeDays > 0
-                ? `You told the buyer ~${waitTimeDays} day(s) — ship as soon as it's ready.`
-                : "Ship as soon as it's ready — no need to wait out the delay."}
-            </Text>
-          ) : null}
-          {canMarkShipped ? (
-            <AnimatedPressable
-              style={{
-                borderRadius: 12,
-                paddingVertical: 10,
-                paddingHorizontal: 12,
-                backgroundColor: lightBrown,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                opacity: shippingBusy || orderActionBusy ? 0.7 : 1,
-              }}
-              disabled={shippingBusy || orderActionBusy}
-              onPress={handleMarkShipped}
-              scaleValue={0.97}>
-              {shippingBusy ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <IconSymbol name="shippingbox.fill" size={16} color="#FFFFFF" />
-              )}
-              <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>
-                Mark shipped
-              </Text>
-            </AnimatedPressable>
-          ) : null}
-
-          {canSellerUpdateAvailability ? (
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  borderRadius: 12,
-                  paddingVertical: 10,
-                  paddingHorizontal: 10,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.card,
-                  alignItems: 'center',
-                  opacity: orderActionBusy ? 0.7 : 1,
-                }}
-                disabled={orderActionBusy}
-                onPress={handleSellerNeedsTime}>
-                <Text style={{ color: colors.text, fontWeight: '700', fontSize: 12 }}>
-                  Need more time
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  borderRadius: 12,
-                  paddingVertical: 10,
-                  paddingHorizontal: 10,
-                  borderWidth: 1,
-                  borderColor: `${colors.error}55`,
-                  backgroundColor: colors.card,
-                  alignItems: 'center',
-                  opacity: orderActionBusy ? 0.7 : 1,
-                }}
-                disabled={orderActionBusy}
-                onPress={handleSellerUnavailable}>
-                <Text style={{ color: colors.error, fontWeight: '700', fontSize: 12 }}>
-                  Not available
-                </Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
-          {canBuyerRespondAvailability ? (
-            <>
-              <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>
-                Seller needs more time — wait, or cancel for a refund.
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TouchableOpacity
-                  style={{
-                    flex: 1,
-                    borderRadius: 12,
-                    paddingVertical: 10,
-                    backgroundColor: lightBrown,
-                    alignItems: 'center',
-                    opacity: orderActionBusy ? 0.7 : 1,
-                  }}
-                  disabled={orderActionBusy}
-                  onPress={() => handleBuyerAvailabilityResponse('wait')}>
-                  <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12 }}>
-                    I can wait
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={{
-                    flex: 1,
-                    borderRadius: 12,
-                    paddingVertical: 10,
-                    borderWidth: 1,
-                    borderColor: colors.border,
-                    alignItems: 'center',
-                    opacity: orderActionBusy ? 0.7 : 1,
-                  }}
-                  disabled={orderActionBusy}
-                  onPress={() => handleBuyerAvailabilityResponse('cancel')}>
-                  <Text style={{ color: colors.text, fontWeight: '700', fontSize: 12 }}>
-                    Cancel & refund
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </>
-          ) : null}
-
-          {canCancelOrder ? (
-            <TouchableOpacity
-              style={{
-                borderRadius: 12,
-                paddingVertical: 10,
-                borderWidth: 1,
-                borderColor: colors.border,
-                backgroundColor: colors.card,
-                alignItems: 'center',
-                opacity: orderActionBusy ? 0.7 : 1,
-              }}
-              disabled={orderActionBusy}
-              onPress={handleCancelOrder}>
-              <Text style={{ color: colors.textSecondary, fontWeight: '700', fontSize: 12 }}>
-                Cancel order
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-
-          {linkedOrderId ? (
-            <TouchableOpacity
-              style={{ alignItems: 'center', paddingVertical: 4 }}
-              onPress={() => {
-                haptics.light();
-                router.push(`/(market)/orders/${encodeURIComponent(linkedOrderId)}` as any);
-              }}>
-              <Text style={{ color: lightBrown, fontWeight: '700', fontSize: 12 }}>
-                View order details
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      ) : null}
-
-      {canNegotiateOffers && pendingOfferMessage?.offer ? (
+      {pendingOfferMessage?.offer && !isInOrder ? (
         <OfferActionBar
           offerId={pendingOfferMessage.offer.id}
           amount={pendingOfferMessage.offer.amount}
@@ -1544,31 +1528,6 @@ export function PostgresChatDetail({
             await respondToOffer(pendingOfferMessage.offer!.id, 'counter', { amount });
             haptics.success();
           }}
-        />
-      ) : null}
-
-      {canNegotiateOffers && !pendingOfferMessage && acceptedOfferMessage?.offer && isBuyer ? (
-        <OfferActionBar
-          offerId={acceptedOfferMessage.offer.id}
-          amount={acceptedOfferMessage.offer.amount}
-          currency={acceptedOfferMessage.offer.currency}
-          canRespond={false}
-          offerFrom={
-            acceptedOfferMessage.senderId === thread?.buyerId ? 'buyer' : 'seller'
-          }
-          isBuyer
-          status="accepted"
-          onAccept={async () => {}}
-          onDecline={async () => {}}
-          onCounter={async () => {}}
-          onBuy={() =>
-            handleOpenOffer({
-              postId: thread!.postId,
-              sellerId: thread!.sellerId,
-              price: acceptedOfferMessage.offer!.amount,
-              chatId: threadId || undefined,
-            })
-          }
         />
       ) : null}
 
@@ -1645,6 +1604,52 @@ export function PostgresChatDetail({
           </Text>
         </View>
       )}
+
+      <DealCheckoutSheet
+        visible={checkoutOpen}
+        onClose={() => setCheckoutOpen(false)}
+        post={
+          hydratedThreadPost ||
+          (thread?.postId
+            ? ({
+                id: thread.postId,
+                posterId: thread.sellerId,
+                price: checkoutUnitPrice,
+                title: resolvedPostSnapshot?.title || 'Item',
+                images: resolvedPostSnapshot?.imageUrl
+                  ? [String(resolvedPostSnapshot.imageUrl)]
+                  : [],
+              } as MarketPost)
+            : null)
+        }
+        unitPrice={checkoutUnitPrice}
+        threadId={threadId}
+        onPaid={async (orderId) => {
+          setCheckoutOpen(false);
+          await invalidateOrder(orderId, userId);
+          showToast('Paid — money held safely.', 'success');
+        }}
+      />
+      <DisputeCaseSheet
+        visible={disputeOpen}
+        orderId={actionOrderId}
+        onClose={() => setDisputeOpen(false)}
+        onOpened={() => {
+          void invalidateOrder(actionOrderId);
+        }}
+      />
+      <ReviewSheet
+        visible={reviewOpen}
+        orderId={actionOrderId}
+        sellerName={headerStoreName}
+        onClose={() => setReviewOpen(false)}
+      />
+      <DealActionsSheet
+        visible={actionsSheetOpen}
+        onClose={() => setActionsSheetOpen(false)}
+        note={dealActionsNote}
+        actions={dealSecondaryActions}
+      />
     </KeyboardAvoidingView>
   );
 }

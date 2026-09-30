@@ -18,6 +18,77 @@ import { MarketMessage } from '@/types';
 import { styles } from './styles';
 import { getMessageTimeMs, getStableMessageKey, lightBrown } from './utils';
 
+/**
+ * One rendered chat row. Photos sent together arrive as separate single-attachment messages
+ * sharing an `albumId`, so consecutive ones collapse into a single grid row here.
+ */
+type ChatRow =
+  | { kind: 'single'; key: string; message: MarketMessage }
+  | { kind: 'album'; key: string; lead: MarketMessage; photos: string[]; memberIds: string[] };
+
+const ALBUM_MAX_PHOTOS = 10;
+
+/**
+ * Collapse consecutive messages that belong to the same album into one row.
+ *
+ * Only *consecutive* runs are merged: if someone sends three photos, then a message, then two
+ * more, the two groups stay separate even for a repeated albumId, which matches how the
+ * conversation actually read.
+ */
+function buildChatRows(messages: MarketMessage[], chatId: string): ChatRow[] {
+  const rows: ChatRow[] = [];
+  let index = 0;
+
+  while (index < messages.length) {
+    const message = messages[index];
+    const albumId = String(message.albumId || '').trim();
+
+    if (albumId) {
+      const photos: string[] = [];
+      const memberIds: string[] = [];
+      let cursor = index;
+      let senderId = String(message.senderId || '');
+
+      while (cursor < messages.length) {
+        const candidate = messages[cursor];
+        if (String(candidate.albumId || '').trim() !== albumId) break;
+        // An album is one sender's burst of photos, never a mixed back-and-forth.
+        if (String(candidate.senderId || '') !== senderId) break;
+        if (!candidate.imageUrl) break;
+        // Only photos join an album; a message carrying text must render on its own.
+        if (String(candidate.text || candidate.message || '').trim()) break;
+        photos.push(candidate.imageUrl);
+        memberIds.push(String(candidate.id || ''));
+        cursor += 1;
+        senderId = String(candidate.senderId || '');
+      }
+
+      if (photos.length > 1 && photos.length <= ALBUM_MAX_PHOTOS) {
+        rows.push({
+          kind: 'album',
+          key: `album:${albumId}`,
+          // The newest message carries the row's timestamp/read state, and an inverted list
+          // renders it in place of the whole group.
+          lead: messages[cursor - 1],
+          photos,
+          memberIds,
+        });
+        index = cursor;
+        continue;
+      }
+    }
+
+    rows.push({
+      kind: 'single',
+      key: getStableMessageKey(message, chatId),
+      message,
+    });
+    index += 1;
+  }
+
+  return rows;
+}
+
 type ChatListProps = {
   activeChatId: string | null;
   colors: any;
@@ -27,6 +98,8 @@ type ChatListProps = {
   onOpenOffer: (offer: { postId: string; sellerId: string; price: number; chatId?: string }) => void;
   onRetryVoice?: (messageId: string) => void;
   onRetryMessage?: (message: MarketMessage) => void;
+  /** Open the product a quote message points at. */
+  onOpenPost?: (postId: string) => void;
   peerAvatarUri?: string;
   onLatestVisibleIncomingMessage?: (messageId: string) => void;
   /** Fired while scrolling — used to collapse/expand chrome for fuller chat. */
@@ -35,7 +108,9 @@ type ChatListProps = {
   loadingOlder?: boolean;
   unreadCount: number;
   unreadDividerMessageId: string;
-  flatListRef: React.RefObject<FlatListType<MarketMessage> | null>;
+  // Rows may be album groups, so this is intentionally `any` in the item slot; the parent only
+  // forwards the ref and never calls item-typed methods on it.
+  flatListRef: React.RefObject<FlatListType<any> | null>;
 };
 
 export function ChatList({
@@ -48,6 +123,7 @@ export function ChatList({
   onOpenOffer,
   onRetryVoice,
   onRetryMessage,
+  onOpenPost,
   peerAvatarUri,
   onLatestVisibleIncomingMessage,
   onScrollOffsetChange,
@@ -93,7 +169,10 @@ export function ChatList({
       let latestVisibleIncoming: MarketMessage | null = null;
       viewableItems.forEach((viewable) => {
         if (!viewable.isViewable) return;
-        const message = viewable.item as MarketMessage;
+        const row = viewable.item as ChatRow;
+        if (!row) return;
+        // An album row stands in for its newest member for ordering purposes.
+        const message = row.kind === 'album' ? row.lead : row.message;
         if (!message) return;
         if (String(message.senderId || '') === currentUser) return;
         if (
@@ -123,9 +202,12 @@ export function ChatList({
   }, []);
 
   const renderMessageItem = useCallback(
-    ({ item }: { item: MarketMessage }) => {
+    ({ item }: { item: ChatRow }) => {
       const shouldShowUnreadDivider =
-        Boolean(unreadDividerMessageId) && String(item.id || '').trim() === unreadDividerMessageId;
+        Boolean(unreadDividerMessageId) &&
+        (item.kind === 'album'
+          ? item.memberIds.includes(unreadDividerMessageId)
+          : String(item.message.id || '').trim() === unreadDividerMessageId);
 
       return (
         <View>
@@ -142,12 +224,14 @@ export function ChatList({
           ) : null}
 
           <MessageBubble
-            message={item}
+            message={item.kind === 'album' ? item.lead : item.message}
+            albumPhotos={item.kind === 'album' ? item.photos : undefined}
             currentUserId={currentUserId}
             peerAvatarUri={peerAvatarUri}
             onOpenOffer={onOpenOffer}
             onRetryVoice={onRetryVoice}
             onRetryMessage={onRetryMessage}
+            onOpenPost={onOpenPost}
           />
         </View>
       );
@@ -158,19 +242,22 @@ export function ChatList({
       onOpenOffer,
       onRetryVoice,
       onRetryMessage,
+      onOpenPost,
       peerAvatarUri,
       unreadCount,
       unreadDividerMessageId,
     ]
   );
 
-  const keyExtractor = useCallback(
-    (item: MarketMessage) => getStableMessageKey(item, String(activeChatId || 'chat')),
-    [activeChatId]
-  );
+  const keyExtractor = useCallback((item: ChatRow) => item.key, []);
 
-  // Newest-first for inverted list so latest activity sits at the bottom of the deal room.
-  const listData = useMemo(() => [...messages].reverse(), [messages]);
+  // Album runs are grouped in chronological order, then the whole list is reversed so the
+  // inverted FlatList still puts the newest row at the bottom of the deal room.
+  const chatRows = useMemo(
+    () => buildChatRows(messages, String(activeChatId || 'chat')),
+    [messages, activeChatId]
+  );
+  const listData = useMemo(() => [...chatRows].reverse(), [chatRows]);
 
   const contentContainerStyle = useMemo(
     () => [styles.messagesContent, { paddingBottom: insetsBottom + 24, paddingTop: 16 }],

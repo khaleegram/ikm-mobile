@@ -51,7 +51,14 @@ export default function MarketTabLayout() {
       <MarketChatNotificationsBridge />
       <FcmTokenBridge />
       <UploadProgressBanner />
-      <Tabs tabBar={renderTabBar} screenOptions={screenOptions}>
+      {/*
+        Every non-tab screen (settings, orders, cart, seller, …) is declared below with
+        `href: null`, which makes it a *tab* that is simply hidden. Tab navigators default to
+        `backBehavior="firstRoute"`, meaning back from any tab jumps to the first tab — the feed.
+        That is why back landed on the feed from anywhere in the app.
+        With "history", back returns to the screen you actually came from.
+      */}
+      <Tabs tabBar={renderTabBar} screenOptions={screenOptions} backBehavior="history">
       <Tabs.Screen
         name="index"
         options={{
@@ -145,8 +152,6 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="orders/[id]" options={{ href: null }} />
       <Tabs.Screen name="payouts" options={{ href: null }} />
       <Tabs.Screen name="delivery-settings" options={{ href: null }} />
-      <Tabs.Screen name="sound/[soundId]" options={{ href: null }} />
-      <Tabs.Screen name="saved-sounds" options={{ href: null }} />
       <Tabs.Screen name="following" options={{ href: null }} />
       <Tabs.Screen name="followers" options={{ href: null }} />
       <Tabs.Screen name="following-people" options={{ href: null }} />
@@ -154,8 +159,6 @@ export default function MarketTabLayout() {
       <Tabs.Screen name="liked" options={{ href: null }} />
       <Tabs.Screen name="seller/[sellerId]" options={{ href: null }} />
       <Tabs.Screen name="post-view/[id]" options={{ href: null }} />
-      <Tabs.Screen name="status/index" options={{ href: null }} />
-      <Tabs.Screen name="status/new" options={{ href: null }} />
     </Tabs>
     </UploadProgressProvider>
   );

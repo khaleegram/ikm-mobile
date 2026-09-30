@@ -27,6 +27,30 @@ const getStatusColor = (status: OrderStatus, colors: any): string => {
   return statusColors[status] || colors.textSecondary;
 };
 
+/**
+ * Plain-language status for the seller's list.
+ *
+ * This pill used to print the raw database value, so sellers read "AvailabilityCheck" and
+ * "Sent" — internal names, not English. Sellers only ever care about one thing: is there
+ * something for me to do?
+ */
+const getStatusLabel = (status: OrderStatus): string => {
+  const labels: Record<string, string> = {
+    PendingPayment: 'Not paid yet',
+    Paid: 'Send it',
+    Accepted: 'Send it',
+    Preparing: 'Send it',
+    Processing: 'Send it',
+    AvailabilityCheck: 'Waiting on buyer',
+    Sent: 'On the way',
+    Received: 'Buyer confirmed',
+    Completed: 'Completed',
+    Cancelled: 'Cancelled',
+    Disputed: 'Dispute open',
+  };
+  return labels[String(status)] || String(status);
+};
+
 export default function OrdersScreen() {
   const { user } = useUser();
   const { orders, loading, error } = useSellerOrders(user?.uid || null);
@@ -77,7 +101,7 @@ export default function OrdersScreen() {
             </View>
             <View style={[styles.statusPill, { backgroundColor: statusColor + '20' }]}>
               <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-              <Text style={[styles.statusPillText, { color: statusColor }]}>{item.status}</Text>
+              <Text style={[styles.statusPillText, { color: statusColor }]}>{getStatusLabel(item.status)}</Text>
             </View>
           </View>
 

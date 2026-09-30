@@ -49,7 +49,6 @@ const USER_FUNCTIONS = {
   getStoreSettings: cloudFunctionUrl('getStoreSettings'),
   updateStoreSettings: cloudFunctionUrl('updateStoreSettings'),
   getCustomers: cloudFunctionUrl('getCustomers'),
-  linkGuestOrdersToAccount: cloudFunctionUrl('linkGuestOrdersToAccount'),
 };
 
 export interface UpdateUserProfileData {

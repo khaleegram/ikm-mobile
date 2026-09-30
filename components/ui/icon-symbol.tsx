@@ -209,6 +209,22 @@ const MAPPING = {
   // Phone & Communication
   'phone.fill': 'phone-enabled',
   'phone': 'phone-enabled',
+
+  // Call controls
+  'phone.down.fill': 'call-end',
+  'phone.down': 'call-end',
+  'phone.arrow.up.right.fill': 'phone-forwarded',
+  'mic.slash.fill': 'mic-off',
+  'mic.slash': 'mic-off',
+  'speaker.wave.2.fill': 'volume-up',
+  'speaker.wave.2': 'volume-up',
+  'speaker.slash.fill': 'volume-off',
+  'speaker.slash': 'volume-off',
+  'video.slash.fill': 'videocam-off',
+  'video.slash': 'videocam-off',
+  'camera.rotate.fill': 'flip-camera-android',
+  'camera.rotate': 'flip-camera-android',
+  'phone.badge.waveform.fill': 'settings-phone',
   
   // Navigation & Exit
   'arrow.left.square.fill': 'logout',

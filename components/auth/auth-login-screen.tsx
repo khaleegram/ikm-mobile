@@ -3,6 +3,7 @@ import { useUser } from '@/lib/firebase/auth/use-user';
 import { getSignupRouteForVariant } from '@/lib/utils/auth-routes';
 import { AppVariant } from '@/lib/utils/app-variant';
 import { haptics } from '@/lib/utils/haptics';
+import { BrandMark } from '@/components/brand/brand-logo';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { router } from 'expo-router';
@@ -116,7 +117,7 @@ export function AuthLoginScreen({ variant }: AuthLoginScreenProps) {
         <View style={styles.content}>
           <View style={styles.header}>
             <View style={styles.logoCircle}>
-              <IconSymbol name="storefront.fill" size={32} color="#FFFFFF" />
+              <BrandMark size={32} color="#FFFFFF" />
             </View>
             <Text style={styles.welcomeText}>{copy.title}</Text>
             <View style={styles.accentBar} />

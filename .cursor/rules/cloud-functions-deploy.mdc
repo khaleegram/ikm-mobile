@@ -1,0 +1,108 @@
+---
+description: Hard rules for Firebase Cloud Functions work and deploys in ikm-marketplace — the regional Cloud Run CPU quota blocks full deploys.
+globs: functions/**
+alwaysApply: false
+---
+
+# Cloud Functions: deploy rules (ikm-marketplace)
+
+## The constraint: a 20 vCPU Cloud Run quota
+
+Every gen-2 function is a Cloud Run service. This project has **88** of them, all with
+`maxScale=3` and `startup-cpu-boost=true`, and `us-central1` has a Cloud Run CPU quota
+(`run.googleapis.com/cpu_allocation`) of only **20 vCPU** shared by all of them.
+
+A full-functions deploy starts containers for all ~100 functions at once, overruns the quota, and
+fails almost every function. The damage is not just that deploy: the started containers sit idle
+for **~20–30 minutes**, holding the whole 20 vCPU quota, so deploys keep failing during that
+window — including single-function ones. Measured: 21 idle instances vs. a 20 vCPU limit.
+
+Once those instances drain, small batches deploy fine. So the failure is temporary, but it is
+self-inflicted and wastes half an hour.
+
+## NEVER run a full-`functions` deploy
+
+```bash
+# ❌ BAD — saturates the quota, fails ~every function, blocks the next ~30 min of work
+firebase deploy --only functions
+```
+
+Name the functions you changed, and keep a batch to **2–3**:
+
+```bash
+# ✅ GOOD — small named batch
+node ~/.npm/_npx/7750544ccf494d8b/node_modules/firebase-tools/lib/bin/firebase.js deploy \
+  --only functions:markOrderAsSent,functions:markOrderAsReceived \
+  --project ikm-marketplace
+```
+
+If a batch hits the quota error, **stop**. Do not retry and do not try a smaller batch — the
+quota needs time to drain. Check the instance count (below) and come back when it is low.
+
+## Decoding the failure
+
+A wall of `Failed to update function <name> in region us-central1` looks like broken code. It is
+not. The real reason is only in `firebase-debug.log`:
+
+```
+Could not create or update Cloud Run service <name>, Container Healthcheck failed.
+Quota exceeded for total allowable CPU per project per region.
+```
+
+Never report this to the user as a code, build, or type error. Say it is the Cloud Run CPU quota.
+
+### Other errors seen on schedule functions
+
+`Error: Error generating the service identity for eventarc.googleapis.com.` — transient. The
+Eventarc service agent already exists in IAM and the API is enabled, so this is not a config
+problem and no fix is needed: retry the deploy. Verified twice.
+
+## Runtime: Node.js 20 is almost dead
+
+The CLI warns on every deploy:
+
+```
+Runtime Node.js 20 was deprecated on 2026-04-30 and will be decommissioned on 2026-10-30,
+after which you will not be able to deploy without upgrading.
+```
+
+After **2026-10-30** no function can be deployed until `"engines": { "node": "20" }` in
+`functions/package.json` is upgraded (to nodejs22 or later) and redeployed. Flag this to the user
+rather than drifting past the date. Deploying is not currently blocked by it.
+
+## Check headroom before and after deploying
+
+`gcloud` is not on `PATH` — use `export PATH="$HOME/google-cloud-sdk/bin:$PATH"`.
+
+```bash
+# running instances in the region — keep this well under 20 before deploying
+TOKEN=$(gcloud auth print-access-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://monitoring.googleapis.com/v3/projects/ikm-marketplace/timeSeries?filter=metric.type%3D%22run.googleapis.com%2Fcontainer%2Finstance_count%22&interval.startTime=$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)&interval.endTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+Quota vs. usage for the region: Cloud console → IAM & Admin → Quotas → filter
+`run.googleapis.com/cpu_allocation` in `us-central1`.
+
+## Deleting failed revisions does NOT free the quota
+
+Tried and verified: 49 of 124 quota-failed revisions were deleted and the quota was unaffected —
+failed revisions do not run containers, so they hold no CPU. It is harmless housekeeping, not a
+fix, so do not reach for it to unblock a deploy. The other 75 cannot be deleted at all; Cloud Run
+refuses with `FAILED_PRECONDITION` when the revision is the service's latest or is actively
+serving. Note `gcloud run revisions delete` accepts only **one** revision per call.
+
+## The durable fix (needs the user)
+
+Batching only works while there is headroom. The real fix is a quota increase for
+`run.googleapis.com/cpu_allocation` in `us-central1` (20 → ~100 vCPU), requested from the Cloud
+console. Suggest this rather than endless small deploys.
+
+## Housekeeping
+
+- **A deploy ships everything on disk**, not just your edit: check `git status -- functions/`
+  and commit first so there is a rollback point.
+- Confirm the project is `ikm-marketplace` (see `.firebaserc`).
+- `predeploy` runs `lint` then `build`; both must pass first.
+- Delete `firebase-debug.log` afterwards — it is generated, untracked, and holds live
+  environment values including secrets in plaintext.

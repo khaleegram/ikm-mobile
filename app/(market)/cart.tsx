@@ -96,6 +96,13 @@ export default function MarketCartScreen() {
 
   const startCheckout = async () => {
     if (!lines.length) return;
+    // Guests build a cart freely; paying is what requires an account. Handled here
+    // rather than by hiding the cart, so they can see what they picked.
+    if (!user) {
+      haptics.light();
+      router.push(getLoginRouteForVariant('market') as any);
+      return;
+    }
     if (!isValidPhoneNumber(phone)) {
       showToast('Enter a valid phone number.', 'error');
       return;
@@ -128,19 +135,6 @@ export default function MarketCartScreen() {
       router.replace('/(market)/orders' as any);
     }
   };
-
-  if (!user) {
-    return (
-      <View style={[styles.center, { backgroundColor: colors.background, paddingTop: insets.top }]}>
-        <Text style={[styles.emptyTitle, { color: colors.text }]}>Sign in to use your cart</Text>
-        <TouchableOpacity
-          style={[styles.primaryBtn, { backgroundColor: ACCENT }]}
-          onPress={() => router.push(getLoginRouteForVariant('market') as any)}>
-          <Text style={styles.primaryBtnText}>Log in</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
@@ -176,7 +170,7 @@ export default function MarketCartScreen() {
               <View style={[styles.splitBanner, { backgroundColor: `${ACCENT}14`, borderColor: `${ACCENT}33` }]}>
                 <IconSymbol name="info.circle" size={16} color={ACCENT} />
                 <Text style={[styles.splitBannerText, { color: colors.text }]}>
-                  {groups.length} sellers in cart — one payment, {groups.length} separate escrow orders.
+                  {groups.length} sellers in cart — one payment, {groups.length} separate orders.
                 </Text>
               </View>
             ) : null}
@@ -285,7 +279,9 @@ export default function MarketCartScreen() {
             onLayout={(e) => setFooterHeight(e.nativeEvent.layout.height)}>
             <View>
               <Text style={{ color: colors.textSecondary, fontSize: 12, fontWeight: '600' }}>
-                {groups.length > 1 ? `Total · ${groups.length} orders` : 'Total'}
+                {groups.length > 1
+                  ? `One payment · ${groups.length} seller orders`
+                  : 'One payment'}
               </Text>
               <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800' }}>
                 {formatAmount(totalAmount)}
@@ -294,13 +290,13 @@ export default function MarketCartScreen() {
             <TouchableOpacity
               style={[styles.primaryBtn, { backgroundColor: ACCENT }]}
               onPress={() => void startCheckout()}>
-              <Text style={styles.primaryBtnText}>Checkout</Text>
+              <Text style={styles.primaryBtnText}>{user ? 'Checkout' : 'Sign in to checkout'}</Text>
             </TouchableOpacity>
           </View>
         </>
       )}
 
-      {syntheticPost ? (
+      {syntheticPost && user ? (
         <PaymentSheetModal
           visible={sheetVisible}
           onClose={() => setSheetVisible(false)}

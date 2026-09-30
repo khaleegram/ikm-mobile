@@ -1,7 +1,6 @@
 import React, { memo, useCallback, useId } from 'react';
 import {
   ActivityIndicator,
-  Platform,
   StyleSheet,
   Text,
   View,
@@ -12,6 +11,8 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTheme } from '@/lib/theme/theme-context';
 import { useChatVoicePlayer } from '@/hooks/use-chat-voice-player';
 import { formatRelativeTime } from '@/lib/utils/date-format';
+
+import { onLightFill } from './deal-room/utils';
 
 const BRAND = '#A67C52';
 
@@ -68,60 +69,54 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
     void player.cycleRate();
   }, [failed, pending, player]);
 
+  // On the sent voice card (gold) the contents must be dark: white on this gold measures 3.73:1.
+  // `onLightFill` is a fixed dark ink because BRAND is a fixed brand colour, not a theme token.
   const cardBg = isSent ? BRAND : colors.backgroundSecondary;
-  const playBg = isSent ? '#FFFFFF' : BRAND;
-  const playIcon = isSent ? BRAND : '#FFFFFF';
-  const trackBg = isSent ? 'rgba(255,255,255,0.28)' : colors.border;
-  const fillBg = isSent ? '#FFFFFF' : BRAND;
-  const muted = isSent ? 'rgba(255,255,255,0.78)' : colors.textSecondary;
-  const ink = isSent ? '#FFFFFF' : colors.text;
+  const playBg = isSent ? onLightFill : BRAND;
+  const playIcon = '#FFFFFF';
+  const trackBg = isSent ? 'rgba(17, 24, 39, 0.24)' : colors.border;
+  const fillBg = isSent ? onLightFill : BRAND;
+  const muted = isSent ? 'rgba(17, 24, 39, 0.66)' : colors.textSecondary;
+  const ink = isSent ? onLightFill : colors.text;
   const cornerStyle = isSent
-    ? { borderBottomRightRadius: 4 }
-    : { borderBottomLeftRadius: 4 };
+    ? { borderBottomRightRadius: 3 }
+    : { borderBottomLeftRadius: 3 };
+
+  const cardStyle = {
+    backgroundColor: cardBg,
+    borderColor: failed ? '#E5484D' : isSent ? 'transparent' : colors.border,
+    opacity: pending ? 0.92 : 1,
+  };
 
   if (!player.available) {
     return (
-      <View
-        style={[
-          styles.card,
-          cornerStyle,
-          {
-            backgroundColor: cardBg,
-            borderColor: failed ? '#E5484D' : isSent ? 'transparent' : colors.border,
-            opacity: pending ? 0.85 : 1,
-          },
-        ]}>
-        <IconSymbol name="mic.fill" size={16} color={ink} />
-        <Text style={[styles.fallbackLabel, { color: ink }]}>Voice note</Text>
-        <Text style={[styles.time, { color: muted }]}>{formatClock(totalMs, true)}</Text>
+      <View style={[styles.card, cornerStyle, cardStyle]}>
+        <View style={styles.row}>
+          <IconSymbol name="mic.fill" size={15} color={ink} />
+          <Text style={[styles.fallbackLabel, { color: ink }]}>Voice note</Text>
+          <Text style={[styles.time, { color: muted }]}>{formatClock(totalMs, true)}</Text>
+        </View>
       </View>
     );
   }
 
   return (
-    <View
-      style={[
-        styles.card,
-        cornerStyle,
-        {
-          backgroundColor: cardBg,
-          borderColor: failed ? '#E5484D' : isSent ? 'transparent' : colors.border,
-          opacity: pending ? 0.92 : 1,
-        },
-      ]}>
+    <View style={[styles.card, cornerStyle, cardStyle]}>
       <View style={styles.row}>
         <AnimatedPressable
           onPress={onPlayPress}
           style={[styles.playBtn, { backgroundColor: playBg }]}
           scaleValue={0.92}
+          // The circle stays this small for density; hitSlop keeps the touch target ≥44pt.
+          hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={failed ? 'Retry send' : player.isPlaying ? 'Pause' : 'Play'}>
           {player.isLoading ? (
             <ActivityIndicator size="small" color={playIcon} />
           ) : player.isPlaying ? (
-            <IconSymbol name="pause.fill" size={14} color={playIcon} />
+            <IconSymbol name="pause.fill" size={13} color={playIcon} />
           ) : (
-            <IconSymbol name="play.fill" size={14} color={playIcon} />
+            <IconSymbol name="play.fill" size={13} color={playIcon} />
           )}
         </AnimatedPressable>
 
@@ -130,79 +125,76 @@ export const VoiceMessageBubble = memo(function VoiceMessageBubble({
             <View style={[styles.fill, { width: `${progress * 100}%`, backgroundColor: fillBg }]} />
           </View>
           <View style={styles.metaRow}>
-            <Text style={[styles.time, { color: muted }]}>
-              {player.isPlaying ? formatClock(remainingMs, true) : formatClock(totalMs, true)}
-            </Text>
+            {/* Duration doubles as the speed control, so no permanent "1x" chip costs width. */}
             <AnimatedPressable
               onPress={onSpeedPress}
               scaleValue={0.94}
-              style={styles.speedChip}
+              style={styles.duration}
               accessibilityRole="button"
-              accessibilityLabel="Playback speed">
-              <Text style={[styles.speedText, { color: ink }]}>{player.rate}x</Text>
+              accessibilityLabel={`Playback speed ${player.rate}x. Tap to change.`}>
+              <Text style={[styles.time, { color: ink }]}>
+                {player.isPlaying ? formatClock(remainingMs, true) : formatClock(totalMs, true)}
+              </Text>
+              {player.rate !== 1 ? (
+                <Text style={[styles.rate, { color: muted }]}>{player.rate}x</Text>
+              ) : null}
             </AnimatedPressable>
+
+            {failed ? (
+              <Text style={[styles.time, { color: '#E5484D' }]}>Tap to retry</Text>
+            ) : pending ? (
+              <Text style={[styles.time, { color: muted }]}>Sending…</Text>
+            ) : (
+              <View style={styles.stamp}>
+                <Text style={[styles.time, { color: muted }]}>{formatRelativeTime(createdAt)}</Text>
+                {isSent ? <IconSymbol name="checkmark.circle" size={12} color={muted} /> : null}
+              </View>
+            )}
           </View>
         </View>
       </View>
-
-      <AnimatedPressable
-        disabled={!failed}
-        onPress={failed ? onRetry : undefined}
-        scaleValue={failed ? 0.98 : 1}
-        style={styles.footer}>
-        <Text style={[styles.footerText, { color: failed ? '#E5484D' : muted }]}>
-          {failed ? 'Tap to retry' : pending ? 'Sending…' : formatRelativeTime(createdAt)}
-        </Text>
-        {isSent && !failed ? (
-          pending ? (
-            <ActivityIndicator size="small" color={muted} />
-          ) : (
-            <IconSymbol name="checkmark.circle" size={13} color={muted} />
-          )
-        ) : null}
-      </AnimatedPressable>
     </View>
   );
 });
 
 const styles = StyleSheet.create({
+  /**
+   * Fixed width, one content row, ~40dp tall.
+   *
+   * A voice note used to be two stacked rows — waveform + duration, then a footer carrying the
+   * timestamp and ticks — which cost ~61dp of height and printed the duration twice. WhatsApp
+   * gives every voice note the same footprint, so the column reads as a tidy stack instead of
+   * ragged varying-width cards.
+   */
   card: {
-    minWidth: 180,
-    maxWidth: 240,
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 8,
-    borderRadius: 18,
+    width: 190,
+    minHeight: 40,
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+    borderRadius: 9,
     borderWidth: StyleSheet.hairlineWidth,
-    gap: 6,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.08,
-        shadowRadius: 4,
-      },
-      android: { elevation: 1 },
-    }),
+    // No shadow or elevation — matches the flattened message bubbles.
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 7,
   },
   playBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
   },
   metaCol: {
     flex: 1,
-    gap: 4,
+    gap: 3,
+    justifyContent: 'center',
   },
   track: {
-    height: 4,
+    height: 3,
     borderRadius: 2,
     overflow: 'hidden',
   },
@@ -215,33 +207,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  time: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  speedChip: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  speedText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  footer: {
+  duration: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 4,
-    marginTop: 2,
+    gap: 3,
   },
-  footerText: {
+  stamp: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  time: {
     fontSize: 11,
     fontWeight: '600',
+  },
+  rate: {
+    fontSize: 10,
+    fontWeight: '800',
   },
   fallbackLabel: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
 });

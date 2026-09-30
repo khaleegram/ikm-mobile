@@ -1,4 +1,5 @@
 import { SmartPhoneField } from '@/components/ui/smart-phone-field';
+import { BrandMark } from '@/components/brand/brand-logo';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { auth, firestore } from '@/lib/firebase/config';
 import { useTheme } from '@/lib/theme/theme-context';
@@ -149,7 +150,7 @@ export function AuthSignupScreen({ variant }: AuthSignupScreenProps) {
         <View style={styles.content}>
           <View style={styles.header}>
             <View style={[styles.logoContainer, { backgroundColor: 'rgba(255, 255, 255, 0.2)' }]}>
-              <IconSymbol name="storefront.fill" size={48} color="#FFFFFF" />
+              <BrandMark size={42} color="#FFFFFF" />
             </View>
             <Text style={styles.title}>{copy.title}</Text>
             <Text style={styles.subtitle}>{copy.subtitle}</Text>

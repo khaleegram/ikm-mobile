@@ -321,7 +321,7 @@ export default function PaystackCallbackScreen() {
 
         if (cancelled) return;
         haptics.success();
-        showToast('Order placed. Payment is held in escrow.', 'success');
+        showToast('Order placed — money held safely.', 'success');
         setStatus('done');
         setMessage('Payment confirmed. Redirecting...');
         const orderIds =

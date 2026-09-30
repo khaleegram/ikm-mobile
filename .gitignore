@@ -30,6 +30,11 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
+# Firebase CLI debug logs — generated on every failed deploy and contain live env values,
+# including secrets, in plaintext.
+firebase-debug.log
+firebase-debug.*.log
+
 # macOS
 .DS_Store
 *.pem

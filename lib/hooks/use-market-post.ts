@@ -135,32 +135,6 @@ export function useMarketPostsSearch(searchQuery: string | null) {
   };
 }
 
-/** Posts using a given sound — Neon via `/posts?soundId=`, not Firestore. */
-export function useMarketPostsBySound(soundId: string | null) {
-  const id = String(soundId || '').trim() || null;
-  const query = useQuery({
-    queryKey: queryKeys.posts.bySound(id),
-    enabled: Boolean(id),
-    staleTime: 30_000,
-    queryFn: async (): Promise<MarketPost[]> => {
-      if (!id) return [];
-      return marketPostsApi.listBySound(id, 40);
-    },
-  });
-
-  const failed = query.isError && !query.data;
-  return {
-    posts: failed ? [] : (query.data ?? []),
-    loading: Boolean(id) && query.isPending && !query.data,
-    error: failed
-      ? query.error instanceof Error
-        ? query.error
-        : new Error('Failed to load posts for this sound')
-      : null,
-    refetch: query.refetch,
-  };
-}
-
 export function useInvalidateMarketPost() {
   const queryClient = useQueryClient();
   return {

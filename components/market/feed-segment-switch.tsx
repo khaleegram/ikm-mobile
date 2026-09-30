@@ -15,20 +15,24 @@ interface FeedSegmentSwitchProps {
 
 export function FeedSegmentSwitch({ options, value, onChange }: FeedSegmentSwitchProps) {
   return (
-    <View style={styles.track}>
+    <View style={styles.row}>
       {options.map((opt) => {
         const active = value === opt.id;
         return (
           <TouchableOpacity
             key={opt.id}
-            style={[styles.pill, active && styles.pillActive]}
-            activeOpacity={0.8}
+            style={styles.tab}
+            activeOpacity={0.7}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
             onPress={() => {
               if (opt.id === value) return;
               haptics.light();
               onChange(opt.id);
             }}>
-            <Text style={[styles.label, active && styles.labelActive]}>{opt.label}</Text>
+            {/* No container: the selected tab is simply brighter than the others. */}
+            <Text style={[styles.label, active ? styles.labelActive : styles.labelIdle]}>
+              {opt.label}
+            </Text>
           </TouchableOpacity>
         );
       })}
@@ -37,37 +41,30 @@ export function FeedSegmentSwitch({ options, value, onChange }: FeedSegmentSwitc
 }
 
 const styles = StyleSheet.create({
-  track: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.13)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 22,
-    padding: 3,
-    gap: 2,
+    gap: 20,
   },
-  pill: {
-    paddingHorizontal: 12,
+  tab: {
     paddingVertical: 6,
-    borderRadius: 18,
-  },
-  pillActive: {
-    backgroundColor: 'rgba(255,255,255,0.22)',
   },
   label: {
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.2,
-    textShadowColor: 'rgba(0,0,0,0.45)',
+    textShadowColor: 'rgba(0,0,0,0.55)',
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+    textShadowRadius: 3,
+  },
+  labelIdle: {
+    color: '#FFFFFF',
+    opacity: 0.55,
+    fontWeight: '600',
   },
   labelActive: {
     color: '#FFFFFF',
+    opacity: 1,
     fontWeight: '800',
-    textShadowColor: 'rgba(0,0,0,0.55)',
-    textShadowRadius: 3,
   },
 });

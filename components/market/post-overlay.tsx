@@ -211,6 +211,8 @@ interface PostOverlayProps {
   onMuteToggle?: () => void;
   isPostSaved?: boolean;
   isPosterFollowed?: boolean;
+  /** Multi-photo posts put their thumbnail strip here, above the price card. */
+  photoStrip?: React.ReactNode;
 }
 
 export const PostOverlay = React.memo(function PostOverlay({
@@ -224,6 +226,7 @@ export const PostOverlay = React.memo(function PostOverlay({
   onMuteToggle,
   isPostSaved,
   isPosterFollowed,
+  photoStrip,
 }: PostOverlayProps) {
   const { user } = useUser();
   const { enabled: feedSocialEnabled, followingIdSet, savedIdSet } = useFeedSocial();
@@ -682,6 +685,8 @@ export const PostOverlay = React.memo(function PostOverlay({
       </View>
 
       <View style={[styles.content, { bottom: bottomClearance + 4 }]} pointerEvents="box-none">
+        {photoStrip}
+
         <View style={styles.handleRow}>
           <TouchableOpacity
             style={styles.handleTap}

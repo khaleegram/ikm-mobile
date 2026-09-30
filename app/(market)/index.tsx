@@ -310,13 +310,13 @@ export default function MarketFeedScreen() {
         />
         <View style={[styles.headerSide, styles.headerSideRight]}>
           <TouchableOpacity
-            style={styles.searchPill}
+            style={styles.iconButton}
             onPress={() => {
               haptics.light();
               router.push('/(market)/cart');
             }}
-            activeOpacity={0.8}>
-            <IconSymbol name="cart.fill" size={14} color="rgba(255,255,255,0.85)" />
+            activeOpacity={0.7}>
+            <IconSymbol name="cart.fill" size={21} color="#FFFFFF" />
             {cartCount > 0 ? (
               <View style={styles.cartBadge}>
                 <Text style={styles.cartBadgeText}>{cartCount > 9 ? '9+' : String(cartCount)}</Text>
@@ -324,13 +324,13 @@ export default function MarketFeedScreen() {
             ) : null}
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.searchPill}
+            style={styles.iconButton}
             onPress={() => {
               haptics.light();
               router.push('/(market)/search');
             }}
-            activeOpacity={0.8}>
-            <IconSymbol name="magnifyingglass" size={14} color="rgba(255,255,255,0.85)" />
+            activeOpacity={0.7}>
+            <IconSymbol name="magnifyingglass" size={21} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
       </View>
@@ -473,20 +473,16 @@ const styles = StyleSheet.create({
   headerSideRight: {
     justifyContent: 'flex-end',
   },
-  searchPill: {
-    width: 40,
-    height: 40,
+  iconButton: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.13)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 20,
   },
   cartBadge: {
     position: 'absolute',
     top: 4,
-    right: 4,
+    right: 3,
     minWidth: 16,
     height: 16,
     borderRadius: 8,

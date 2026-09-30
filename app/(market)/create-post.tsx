@@ -153,7 +153,6 @@ export default function CreatePostScreen() {
       isNegotiable: hasListedPrice,
       location: locationLabel ? location : undefined,
       contactMethod: "in-app" as const,
-      soundSelection: postMode === "video" ? { mode: "original" as const } : undefined,
     };
     const label = postMode === "video" ? "Uploading video…" : "Uploading post…";
 

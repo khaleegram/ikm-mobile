@@ -588,7 +588,9 @@ export async function sendMessage(userId, threadId, payload = {}) {
         ]
       );
 
-      messagePayload = { attachment_id: att.rows[0].id };
+      // Merge rather than replace: the client may send its own payload keys alongside the
+      // attachment (albumId for a multi-photo send). Overwriting dropped them silently.
+      messagePayload = { ...messagePayload, attachment_id: att.rows[0].id };
       await client.query(
         `UPDATE chat_messages SET payload = $2::jsonb WHERE id = $1`,
         [messageRow.id, JSON.stringify(messagePayload)]
@@ -684,6 +686,15 @@ export async function assertThreadParticipant(userId, threadId) {
   return row;
 }
 
+/**
+ * How long an offer stays acceptable.
+ *
+ * Offers used to be written with no expires_at at all, and respondToOffer never
+ * checked it — so a price quoted weeks ago could still be taken. Set on every new
+ * offer (and counter) and enforced on accept.
+ */
+const OFFER_TTL_HOURS = 72;
+
 export async function createOffer(userId, threadId, payload = {}) {
   if (!isUuid(threadId)) throw httpError('Invalid thread id');
   const row = await getThreadRow(threadId);
@@ -717,10 +728,10 @@ export async function createOffer(userId, threadId, payload = {}) {
     await client.query('BEGIN');
 
     const offerRes = await client.query(
-      `INSERT INTO chat_offers (thread_id, buyer_id, seller_id, amount, currency, note, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      `INSERT INTO chat_offers (thread_id, buyer_id, seller_id, amount, currency, note, status, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', now() + ($7 || ' hours')::interval)
        RETURNING *`,
-      [threadId, row.buyer_id, row.seller_id, amount, currency, note]
+      [threadId, row.buyer_id, row.seller_id, amount, currency, note, String(OFFER_TTL_HOURS)]
     );
     const offer = offerRes.rows[0];
 
@@ -894,6 +905,17 @@ export async function respondToOffer(userId, threadId, offerId, action, payload 
   if (!offer) throw httpError('Offer not found', 404);
   if (offer.status !== 'pending') throw httpError('Offer is no longer pending', 409);
 
+  // Expiry is enforced, not just displayed. Without this a stale offer stayed
+  // acceptable forever because nothing ever moved it out of 'pending'.
+  if (offer.expires_at && new Date(offer.expires_at).getTime() <= Date.now()) {
+    await db.query(
+      `UPDATE chat_offers SET status = 'expired', updated_at = now()
+       WHERE id = $1 AND status = 'pending'`,
+      [offerId]
+    );
+    throw httpError('This offer has expired', 409);
+  }
+
   const peerId = row.buyer_id === userId ? row.seller_id : row.buyer_id;
   await assertNotBlocked(userId, peerId);
 
@@ -932,8 +954,8 @@ export async function respondToOffer(userId, threadId, offerId, action, payload 
       );
       const counterRes = await client.query(
         `INSERT INTO chat_offers
-           (thread_id, buyer_id, seller_id, amount, currency, note, status, parent_offer_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+           (thread_id, buyer_id, seller_id, amount, currency, note, status, parent_offer_id, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, now() + ($8 || ' hours')::interval)
          RETURNING *`,
         [
           threadId,
@@ -943,6 +965,7 @@ export async function respondToOffer(userId, threadId, offerId, action, payload 
           offer.currency,
           asString(payload.note) || null,
           offerId,
+          String(OFFER_TTL_HOURS),
         ]
       );
       newOffer = counterRes.rows[0];

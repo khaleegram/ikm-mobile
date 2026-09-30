@@ -120,7 +120,14 @@ export function CustomTabBar({ state, descriptors, navigation }: BottomTabBarPro
     });
 
     if (!event.defaultPrevented) {
-      navigation.navigate(route.name);
+      // The Inbox tab must always show the conversation list. Navigating to the tab alone
+      // restored whatever thread was left open in it, which looked like the tab had a mind
+      // of its own. Targeting the list explicitly means Inbox always means the inbox.
+      if (getMarketTabName(route.name) === 'messages') {
+        navigation.navigate(route.name, { screen: 'index' });
+      } else {
+        navigation.navigate(route.name);
+      }
       if (Platform.OS === 'ios') {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }

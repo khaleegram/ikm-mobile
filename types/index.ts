@@ -376,6 +376,13 @@ export interface Order {
   commissionRate?: number;        // Platform commission rate at time of order
   fundsReleasedAt?: Timestamp | Date;    // When funds were released
   autoReleaseDate?: Timestamp | Date;    // Auto-release date if no dispute
+  disputeOpenedAt?: Timestamp | Date;
+  disputeOpenedBy?: string;
+  disputeCategory?: string;
+  disputeReason?: string;
+  disputeEvidenceUrls?: string[];
+  disputeStatus?: 'open' | 'resolved_refund' | 'resolved_release';
+  disputeResolution?: 'refund' | 'release';
   refundStatus?: 'pending' | 'processed' | 'partial' | 'failed';
   lastRefundAt?: Timestamp | Date;
   
@@ -740,6 +747,14 @@ export interface MarketMessage {
   clientMessageId?: string;      // Client-generated ID for deduplication
   type?: 'text' | 'media' | 'quote' | 'offer' | 'system';
   imageUrl?: string;             // Optional image in message
+  /**
+   * Photos sent together in one pick share an albumId and render as a single grid.
+   * Each photo is still its own message (one attachment per message), so the album is
+   * assembled on the client from consecutive messages with the same id.
+   */
+  albumId?: string;
+  albumIndex?: number;
+  albumCount?: number;
   voiceUrl?: string;             // Voice note playback URL
   voiceDurationSec?: number;     // Voice note duration
   paymentLink?: string;          // Optional payment link

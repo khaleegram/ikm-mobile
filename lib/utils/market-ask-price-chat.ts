@@ -17,7 +17,6 @@ import {
   upsertInboxItem,
 } from '@/lib/chat/chat-query-cache';
 import {
-  migrateDealRoomQuery,
   navigateToDealRoom,
   prefetchDealRoom,
   seedDealRoomQuery,
@@ -317,8 +316,9 @@ export async function startPostQuoteChat({
         const pendingLocal =
           existingId && isPendingThreadId(existingId) ? existingId : null;
         if (pendingLocal) {
+          // The deal room reads the same query key as the chat thread, so this one move is
+          // enough — the room and the inbox both follow the real id afterwards.
           migrateChatThreadQuery(pendingLocal, realId);
-          migrateDealRoomQuery(pendingLocal, realId);
           replaceInboxThreadId(authUserId, pendingLocal, realId, {
             postId,
             status: thread.status,

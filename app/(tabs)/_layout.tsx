@@ -38,6 +38,9 @@ export default function TabLayout() {
   return (
     <Tabs
       tabBar={(props) => <CustomTabBar {...props} />}
+      // Hidden screens below (orders, customers, reports, …) are tabs, so back would otherwise
+      // always jump to the first tab. "history" returns to the screen you came from.
+      backBehavior="history"
       screenOptions={{
         headerShown: false,
         sceneStyle: { backgroundColor: colors.background },

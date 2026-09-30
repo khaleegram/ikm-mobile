@@ -11,6 +11,7 @@ import 'react-native-reanimated';
 
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AppAlertHost } from '@/components/app-alert';
+import { CallOverlay } from '@/components/calls/call-overlay';
 import { Toast } from '@/components/toast';
 import { useOfflineSync } from '@/lib/hooks/use-offline-sync';
 import { openDeepLink } from '@/lib/navigation/deep-links';
@@ -77,6 +78,8 @@ function AppShell() {
       <OfflineSyncBridge />
       {/* Keep root navigation minimal to avoid route/theme feedback loops. */}
       <Stack screenOptions={ROOT_STACK_OPTIONS} />
+      {/* Above the navigator on purpose: a call must be able to take over any screen. */}
+      <CallOverlay />
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} translucent backgroundColor="transparent" />
     </>
   );

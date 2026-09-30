@@ -4,7 +4,7 @@
     "slug": "chatcart",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/brand/market-street-icon.png",
+    "icon": "./assets/brand/app-icon.png",
     "scheme": "chatcart",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -18,7 +18,8 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#A67C52",
-        "foregroundImage": "./assets/brand/market-street-icon.png"
+        "foregroundImage": "./assets/brand/adaptive-icon-foreground.png",
+        "monochromeImage": "./assets/brand/adaptive-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -43,7 +44,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/brand/market-street-icon.png",
+          "image": "./assets/brand/splash-icon.png",
           "imageWidth": 220,
           "resizeMode": "contain",
           "backgroundColor": "#A67C52",
@@ -55,7 +56,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/brand/market-street-icon.png",
+          "icon": "./assets/brand/notification-icon.png",
           "color": "#A67C52"
         }
       ],
@@ -63,6 +64,13 @@
         "expo-image-picker",
         {
           "photosPermission": "The app accesses your photos to let you upload product images."
+        }
+      ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "The app uses your camera for video calls with buyers and sellers.",
+          "microphonePermission": "The app uses your microphone for voice and video calls with buyers and sellers."
         }
       ],
       "expo-document-picker"

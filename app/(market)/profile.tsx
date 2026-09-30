@@ -712,28 +712,23 @@ export default function ProfileScreen() {
 
       {/* Fixed island app bar */}
       <View style={[styles.islandHeader, { paddingTop: insets.top + 10, backgroundColor: colors.background }]}>
-        {/* Island pill — brand text left, mode toggle right (inside pill) */}
+        {/* Icons only. The card that used to sit here repeated the name and avatar right below it. */}
         <TouchableOpacity
-          style={[styles.nameIsland, styles.nameIslandRow, { backgroundColor: ACCENT }]}
-          activeOpacity={0.85}
+          style={styles.settingsPill}
+          activeOpacity={0.7}
           onPress={() => { haptics.light(); toggleTheme(); }}>
-          <View>
-            <Text style={styles.islandLabel}>{brand.headerLine}</Text>
-            <Text style={styles.islandTitle}>Profile</Text>
-          </View>
           <IconSymbol
             name={isDark ? 'sun.max.fill' : 'moon.fill'}
-            size={18}
-            color="rgba(255,255,255,0.85)"
+            size={20}
+            color={colors.text}
           />
         </TouchableOpacity>
 
-        {/* Settings — outside right */}
         <TouchableOpacity
           style={styles.settingsPill}
-          activeOpacity={0.75}
+          activeOpacity={0.7}
           onPress={() => { haptics.light(); router.push('/(market)/settings' as any); }}>
-          <IconSymbol name="gearshape.fill" size={18} color={colors.text} />
+          <IconSymbol name="gearshape.fill" size={20} color={colors.text} />
         </TouchableOpacity>
       </View>
 
@@ -770,7 +765,7 @@ export default function ProfileScreen() {
               </View>
               <Text style={[styles.emptyTitle, { color: colors.text }]}>No items listed yet</Text>
               <Text style={[styles.emptySub, { color: colors.textSecondary }]}>
-                List a product so buyers can find you and order with escrow.
+                List a product so buyers can find you and order with protection.
               </Text>
               <TouchableOpacity
                 style={[styles.emptyBtn, { backgroundColor: ACCENT }]}
@@ -808,36 +803,14 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   center: { justifyContent: 'center', alignItems: 'center' },
 
-  // ── Floating island header (mirrors settings screen) ──────────────────────
+  // ── Floating island header (icons right) ──────────────────────────────────
   islandHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'flex-end',
+    gap: 4,
     paddingHorizontal: H_PAD,
     marginBottom: 4,
-  },
-  nameIsland: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 22,
-  },
-  nameIslandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  islandLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: 1,
-    marginBottom: 2,
-  },
-  islandTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#FFFFFF',
   },
   settingsPill: {
     width: 44,

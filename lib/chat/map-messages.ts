@@ -7,7 +7,13 @@ export function chatMessageToMarketMessage(
   threadId: string,
   postId: string,
   peerId: string,
-  sellerId?: string
+  sellerId?: string,
+  /**
+   * Once the price is agreed (thread accepted / in order) the deal room's ribbon owns
+   * checkout — an "Buy Offer" chip inside the old accepted bubble would be a second,
+   * contradicting way to pay.
+   */
+  suppressOfferPaymentLink = false
 ): MarketMessage {
   const offer = message.offer;
   const attachment = message.attachment;
@@ -18,9 +24,14 @@ export function chatMessageToMarketMessage(
   let imageUrl: string | undefined;
   let quoteCard: MarketMessage['quoteCard'];
   let chatOffer: MarketMessage['chatOffer'];
-  const rawSendStatus = String((message.payload as Record<string, unknown> | undefined)?.sendStatus || '');
+  const payload = (message.payload || {}) as Record<string, unknown>;
+  const rawSendStatus = String(payload.sendStatus || '');
   const sendStatus =
     rawSendStatus === 'sending' || rawSendStatus === 'failed' ? rawSendStatus : undefined;
+  // Photos sent in one pick carry the same albumId; consecutive ones are grouped by ChatList.
+  const albumId = asString(payload.albumId) || undefined;
+  const albumIndex = albumId ? Number(payload.albumIndex) : NaN;
+  const albumCount = albumId ? Number(payload.albumCount) : NaN;
 
   if (message.type === 'offer' || message.type === 'counter') {
     type = 'offer';
@@ -33,7 +44,7 @@ export function chatMessageToMarketMessage(
         status: offer.status,
         lowball: (offer as { lowball?: boolean }).lowball,
       };
-      if (offer.status === 'accepted' && sellerId) {
+      if (offer.status === 'accepted' && sellerId && !suppressOfferPaymentLink) {
         paymentLink = buildMarketOfferLink({
           postId,
           sellerId,
@@ -44,7 +55,6 @@ export function chatMessageToMarketMessage(
     }
   } else if (message.type === 'quote') {
     type = 'quote';
-    const payload = message.payload || {};
     const nested = (payload.quote && typeof payload.quote === 'object'
       ? (payload.quote as Record<string, unknown>)
       : null) || {};
@@ -63,7 +73,6 @@ export function chatMessageToMarketMessage(
   } else if (message.type === 'voice' && attachment?.url) {
     type = 'media';
     text = '';
-    const payload = (message.payload || {}) as Record<string, unknown>;
     const status = String(payload.sendStatus || '');
     // Prefer local file while available so upload success never remounts / reloads playback.
     const localUri = asString(payload.localUri);
@@ -94,7 +103,6 @@ export function chatMessageToMarketMessage(
   ) {
     type = 'system';
     text = text || 'Deal update';
-    const payload = (message.payload || {}) as Record<string, unknown>;
     const photo =
       asString(payload.photoUrl) ||
       asString(payload.sentPhotoUrl) ||
@@ -130,6 +138,14 @@ export function chatMessageToMarketMessage(
     paymentLink,
     quoteCard,
     chatOffer,
+    // An album is several single-attachment messages; these fields let the list re-group them.
+    ...(albumId
+      ? {
+          albumId,
+          albumIndex: Number.isFinite(albumIndex) ? albumIndex : undefined,
+          albumCount: Number.isFinite(albumCount) ? albumCount : undefined,
+        }
+      : {}),
     clientMessageId: message.clientMsgId || undefined,
     sendStatus,
     read: true,

@@ -57,8 +57,6 @@ export const queryKeys = {
     batch: (postIds: string[]) => ['market-posts-batch', normalizeIdListKey(postIds)] as const,
     byPoster: (posterId: string | null | undefined) =>
       ['market-posts-by-poster', normalizeId(posterId)] as const,
-    bySound: (soundId: string | null | undefined) =>
-      ['market-posts-by-sound', normalizeId(soundId)] as const,
     search: (searchTerm: string | null | undefined) =>
       ['market-posts-search', String(searchTerm ?? '').trim().toLowerCase()] as const,
     sellersSearch: (searchTerm: string, city: string, state: string) =>
@@ -70,16 +68,6 @@ export const queryKeys = {
       ] as const,
     comments: (postId: string | null | undefined) =>
       ['market-post-comments', normalizeId(postId)] as const,
-  },
-
-  sounds: {
-    byId: (soundId: string | null | undefined) => ['sound', normalizeId(soundId)] as const,
-    list: (searchTerm: string | null | undefined, limit = 60) =>
-      ['sounds', 'list', String(searchTerm ?? '').trim().toLowerCase(), limit] as const,
-    saved: (userId: string | null | undefined) =>
-      ['sounds', 'saved', normalizeId(userId)] as const,
-    savedIds: (userId: string | null | undefined) =>
-      ['sounds', 'saved-ids', normalizeId(userId)] as const,
   },
 
   feed: {

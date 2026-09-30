@@ -5,6 +5,7 @@ import { SafeImage } from '@/components/safe-image';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { VerifiedBadge } from '@/components/ui/verified-badge';
 
+import { CallButtons } from './call-buttons';
 import { lightBrown } from './utils';
 import { styles } from './styles';
 
@@ -22,6 +23,11 @@ type ChatHeaderProps = {
   onOpenOffer: () => void;
   /** Opens store profile (seller) or buyer profile. */
   onOpenProfile?: () => void;
+  /** Deal room the call belongs to, plus who is on the other end. */
+  threadId?: string;
+  peerId?: string;
+  /** Calls are hidden on a room that is still opening or blocked. */
+  callsDisabled?: boolean;
 };
 
 export function ChatHeader({
@@ -36,6 +42,9 @@ export function ChatHeader({
   onBack,
   onOpenOffer,
   onOpenProfile,
+  threadId,
+  peerId,
+  callsDisabled = false,
 }: ChatHeaderProps) {
   const showName = Boolean(headerName.trim());
 
@@ -45,7 +54,7 @@ export function ChatHeader({
         styles.header,
         {
           backgroundColor: colors.background,
-          paddingTop: insetTop + 8,
+          paddingTop: insetTop + 6,
           borderBottomColor: colors.border,
         },
       ]}>
@@ -92,6 +101,17 @@ export function ChatHeader({
           </Text>
         </View>
       </TouchableOpacity>
+
+      {threadId && peerId ? (
+        <CallButtons
+          colors={colors}
+          threadId={threadId}
+          peerId={peerId}
+          peerName={headerName}
+          peerAvatarUri={headerAvatarUri}
+          disabled={callsDisabled}
+        />
+      ) : null}
 
       {canSendOffer ? (
         <TouchableOpacity

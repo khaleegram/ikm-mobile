@@ -7,11 +7,15 @@ const TRANSACTION_FUNCTIONS = {
 };
 
 export interface EarningsStats {
+  /** Withdrawable now — released orders only. */
   totalEarnings: number;
-  availableForPayout: number;
-  pendingEarnings: number;
-  withdrawnAmount: number;
-  lastPayoutAt?: string;
+  availableBalance: number;
+  /** Earned but still held in escrow until delivery is confirmed. */
+  pendingEscrow?: number;
+  pendingPayouts: number;
+  totalPayouts: number;
+  commissionPaid: number;
+  totalOrders: number;
 }
 
 export interface Transaction {

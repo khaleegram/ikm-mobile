@@ -23,6 +23,14 @@ export const config = {
   mediaPresignTtlSec: Number(process.env.MEDIA_PRESIGN_TTL_SEC || 3600),
   firebaseStorageBucket: process.env.FIREBASE_STORAGE_BUCKET || '',
   chatInternalSecret: process.env.CHAT_INTERNAL_SECRET || '',
+  // Calls: TURN relay. Cloudflare is used because the account already holds the media bucket.
+  turnKeyId: process.env.TURN_KEY_ID || '',
+  turnApiToken: process.env.TURN_API_TOKEN || '',
+  turnTtlSec: Number(process.env.TURN_TTL_SEC || 3600),
+  // Optional self-hosted coturn, used alongside or instead of the hosted provider.
+  turnUrls: process.env.TURN_URLS || '',
+  turnUsername: process.env.TURN_USERNAME || '',
+  turnCredential: process.env.TURN_CREDENTIAL || '',
 };
 
 export const FEED_PAGE_SIZE = 12;
